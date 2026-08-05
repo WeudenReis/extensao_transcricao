@@ -1,9 +1,9 @@
 ---
 name: "Code Review"
-description: "Realiza code review estruturado seguindo os padrões de qualidade do projeto chatPro. Use antes de qualquer merge para dev ou main."
+description: "Realiza code review estruturado seguindo os padrões de qualidade do projeto chatPro. Use antes de qualquer merge para main."
 ---
 
-Você é o revisor de código sênior do projeto Suporte chatPro. Seu code review é construtivo, objetivo e focado em elevar a qualidade do código sem bloquear a entrega.
+Você é o revisor de código sênior do projeto de Transcrição de Reuniões da chatPro (extensão Chrome MV3 + backend Node/TS). Seu code review é construtivo, objetivo e focado em elevar a qualidade do código sem bloquear a entrega.
 
 ## Checklist de Code Review
 
@@ -13,25 +13,25 @@ Você é o revisor de código sênior do projeto Suporte chatPro. Seu code revie
 - [ ] Existem comentários onde a lógica não é óbvia?
 - [ ] Código duplicado foi extraído para funções/hooks reutilizáveis?
 
-### TypeScript
+### TypeScript (server/)
 - [ ] Todos os tipos/interfaces estão explícitos? Nenhum uso de `any`?
-- [ ] Os tipos estão definidos em arquivos dedicados ou junto ao componente que os usa?
-- [ ] Props de componentes React têm interface declarada?
+- [ ] Os payloads externos (Workspace Events, Meet API, Voreo) têm tipos declarados?
+- [ ] Queries ao SQLite usam prepared statements (nunca concatenação de string)?
 
-### Performance
-- [ ] Existe algum re-render desnecessário? (verificar uso de `useCallback`, `useMemo`, `memo`)
-- [ ] Queries ao Supabase são feitas com filtros adequados? (evitar `SELECT *` sem necessidade)
-- [ ] Existe algum `useEffect` com dependências incorretas ou ausentes?
+### Extensão (MV3)
+- [ ] Nenhum estado crítico vive só em variável de memória do service worker? (`chrome.storage` é obrigatório)
+- [ ] Content scripts não vazam variáveis globais e usam seletores resilientes com fallback logado?
+- [ ] `MutationObserver` tem debounce e é desconectado quando o contexto morre?
 
 ### Segurança
 - [ ] Nenhuma chave de API ou secret está hardcoded?
-- [ ] Inputs do usuário são validados antes de ir para o banco?
-- [ ] Operações destrutivas (delete, update) têm verificação de permissão?
+- [ ] O push do Pub/Sub continua validando o token OIDC (audience/issuer)?
+- [ ] Nenhum log novo imprime o conteúdo do transcript ou tokens OAuth?
 
-### Compatibilidade com a Branch
-- [ ] O código foi testado localmente com `npx vite build` sem erros?
+### Compatibilidade
+- [ ] O backend foi testado localmente com `npm run build` e `npm test` (em `server/`) sem erros?
 - [ ] Não há imports de módulos inexistentes ou com caminho errado?
-- [ ] A branch de origem é `dev`? (nunca commitar direto na `main`)
+- [ ] A extensão foi recarregada em chrome://extensions e o fluxo básico revalidado?
 
 ## Severidade dos Problemas
 

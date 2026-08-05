@@ -1,0 +1,22 @@
+# Dependências
+node_modules/
+
+# Builds e pacotes
+dist/
+server/dist/
+
+# Ambiente e segredos — NUNCA commitar
+.env
+.env.local
+*.pem
+*.key
+
+# Banco de dados local
+server/data/
+*.db
+*.sqlite
+
+# Logs e temporários
+*.log
+.DS_Store
+Thumbs.db

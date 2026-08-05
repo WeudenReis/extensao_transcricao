@@ -17,7 +17,7 @@ Você é o guardião do **Design System chatPro**. Sua função é garantir que 
 --color-gray-2:          #E6E5E8
 --color-gray-3:          #F1F0F2
 
-/* Dark Theme (Kanban) */
+/* Dark Theme (popup da extensão) */
 --color-bg-primary:      #1d2125
 --color-bg-secondary:    #22272b
 --color-bg-card:         #2c333a
@@ -35,8 +35,8 @@ font-family-body:     'Space Grotesk', sans-serif   /* Subtítulos (Bold) e Text
 - Exceções documentadas devem ser justificadas
 
 ## Regras de Adição de Componentes
-1. Verifique se já existe um componente com a mesma função em `src/components/`
-2. Nomeie o componente em PascalCase e o arquivo `.tsx` com o mesmo nome
-3. Exporte sempre tipos/interfaces junto ao componente
-4. Documente as props obrigatórias e opcionais com comentários JSDoc
-5. Adicione a classe CSS base em `src/styles.css` se for reutilizável globalmente
+1. Verifique se já existe um bloco de UI com a mesma função em `extension/popup/` antes de criar outro
+2. A UI é HTML/CSS/JS puro (sem framework, sem build step) — componha por classes CSS reutilizáveis e funções JS pequenas
+3. Declare os tokens como custom properties CSS (`--color-brand-green`, etc.) no CSS do popup e consuma sempre via `var()`
+4. Documente funções e blocos não óbvios com comentários JSDoc
+5. Lembre do CSP de extensão: fontes empacotadas localmente (`@font-face`) ou fallback de sistema — nunca CDN

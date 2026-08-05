@@ -1,11 +1,11 @@
 ---
 name: chatpro-microcopy
-description: Constituição de microcopy, tom de voz e design tokens semânticos do produto Suporte chatPro / Trelado. Aplicar em qualquer texto de UI (botões, modais, toasts, empty states, tooltips, alertas) e em qualquer componente que use cores semânticas (destrutivas, informativas, de marca). Cruza com a skill UI/UX Pro Max para garantir consistência visual + verbal.
+description: Constituição de microcopy, tom de voz e design tokens semânticos dos produtos chatPro — neste repositório, a extensão Chrome de transcrição de reuniões (popup e mensagens ao atendente). Aplicar em qualquer texto de UI (botões, modais, toasts, empty states, tooltips, alertas) e em qualquer componente que use cores semânticas (destrutivas, informativas, de marca). Cruza com a skill UI/UX Pro Max para garantir consistência visual + verbal.
 ---
 
 # Constituição de Identidade chatPro
 
-Documento normativo. Toda nova tela ou refatoração deve passar por esta rubrica antes de ir pra `dev`.
+Documento normativo. Toda nova tela ou refatoração (popup da extensão incluído) deve passar por esta rubrica antes de ir pra `main`.
 
 ---
 
@@ -61,7 +61,7 @@ Estrutura fixa: **Verbo no título** + **frase de irreversibilidade** + **lista 
 ```
 Título:           Excluir permanentemente
 Linha 1:          Esta ação não pode ser desfeita.
-Linha 2 (opc.):   {N} cartões serão removidos.
+Linha 2 (opc.):   {N} transcrições serão removidas.
 Lista (≤ 5):      · {título} · {título} ...
 Input crítico:    Digite DELETAR para confirmar
 Botão:            Excluir permanentemente (vermelho)
@@ -76,12 +76,12 @@ Estrutura: **Substantivo + estado** em uma frase.
 
 | ✅ | ❌ |
 |----|----|
-| Nenhum cartão arquivado | Ops! Você ainda não arquivou nada. |
-| Nenhum item excluído ainda | Que bom! Nenhum item foi excluído permanentemente. |
+| Nenhuma sessão detectada | Ops! Você ainda não abriu nenhuma conversa. |
+| Nenhuma transcrição enviada ainda | Que bom! Nenhuma transcrição foi enviada. |
 | Nenhum resultado para a busca | Não encontramos nada que corresponda à sua busca |
 
 Permitido (mas opcional) adicionar **uma frase de orientação** se o estado é frequentemente confundido:
-> *Nenhum item excluído ainda. Itens excluídos permanentemente aparecem aqui para auditoria.*
+> *Nenhuma transcrição enviada ainda. Transcrições enviadas para análise aparecem aqui.*
 
 ### 2.4. Toasts e feedback assíncrono
 
@@ -99,9 +99,9 @@ Frase substantiva que descreve **o quê**, nunca **o como**.
 
 | ✅ | ❌ |
 |----|----|
-| Restaurar cartão | Clique para restaurar este cartão |
+| Reenviar transcrição | Clique para reenviar esta transcrição |
 | Excluir permanentemente | Apagar de vez (ação irreversível!) |
-| Filtrar por Alta | Aplicar filtro de prioridade alta no painel |
+| Vincular sessão | Aplicar o vínculo desta reunião com a sessão |
 | Alterar ordenação | Mudar como os itens são ordenados |
 
 ### 2.6. Labels e placeholders
@@ -115,18 +115,18 @@ Mensagem direta + responsável.
 
 | ✅ | ❌ |
 |----|----|
-| Apenas administradores podem excluir cartões | Você não tem permissão para realizar esta ação |
+| Apenas administradores podem excluir transcrições | Você não tem permissão para realizar esta ação |
 | Sem acesso a este departamento | Permissão negada — entre em contato com o suporte |
 
 ### 2.8. Confirmações leves (não destrutivas)
 
-Use ação inline em vez de modal. Ex: arquivar um card → desfazer via toast com botão "Desfazer", **não** um confirm() modal.
+Use ação inline em vez de modal. Ex: desfazer um vínculo de sessão → desfazer via toast com botão "Desfazer", **não** um confirm() modal.
 
 ---
 
 ## 3. Design tokens semânticos
 
-Os tokens primitivos (cores brutas) já existem em `src/styles.css`. Esta camada adiciona **intent tokens** (semânticos) que dizem **para que servem** as cores, não **quais são**.
+Os tokens primitivos (cores brutas) vivem no CSS do popup da extensão (`extension/popup/`). Esta camada adiciona **intent tokens** (semânticos) que dizem **para que servem** as cores, não **quais são**.
 
 ### 3.1. Hierarquia em camadas
 
@@ -185,17 +185,17 @@ Sempre que possível, consumir semântico (`--intent-destructive`) e nunca primi
 |-------|-------|-----|
 | `--motion-press-scale` | `0.95` | Press feedback universal em botões/CTAs interativos (canônico Apple) |
 | `--motion-tight-tracking` | `-0.025em` | Letter-spacing de títulos ≥18px (colunas, displays). NUNCA em body copy |
-| `--motion-glass-blur` | `blur(20px) saturate(180%)` | Filtro de barras flutuantes/sticky (BulkActionsBar, sub-nav frosted) |
+| `--motion-glass-blur` | `blur(20px) saturate(180%)` | Filtro de barras flutuantes/sticky (headers e barras de status do popup) |
 | `--shadow-lift` | `0 3px 30px rgba(0,0,0,0.22), inset 0 1px 0 rgba(36,255,114,0.04)` | "chatPro Lift" — elevação única para surfaces flutuantes (one shadow rule) |
 
 **Regras obrigatórias de uso:**
 
-1. **`prefers-reduced-motion`:** toda `transform: scale()` em interação **DEVE** vir com guard `motion-safe:` (Tailwind) ou `@media (prefers-reduced-motion: no-preference)` (CSS). WCAG 2.3.3 (AAA).
+1. **`prefers-reduced-motion`:** toda `transform: scale()` em interação **DEVE** vir com guard `@media (prefers-reduced-motion: no-preference)` no CSS. WCAG 2.3.3 (AAA).
 2. **Letter-spacing tight:** reservado a títulos ≥18px. Em body copy degrada legibilidade — palavras longas em PT-BR (`responsável`, `aprovação`) comprimem desconfortavelmente.
 3. **Backdrop-filter:** **DEVE** ter fallback `@supports not (backdrop-filter: blur(20px))` com fundo sólido `--glass-panel-strong`. iOS Safari < 14 e Android WebView pré-2022 podem renderizar transparente sem blur, deixando barras ilegíveis sobre cards coloridos.
 4. **Shadow-lift:** apenas em surfaces explicitamente "elevadas" (modais, dropdowns, sticky bars). Surfaces flat (botões, inputs, tags, cards inline) seguem regra Apple "no shadow".
 
-**Origem da calibração:** Apple `DESIGN.md` (signature moves §7) — *forma e movimento*, NÃO cor/tipografia. Hybrid: Apple aporta proporção e gestos; chatPro mantém `#25D066`, Paytone One e fundo dark Kanban como source-of-truth de identidade.
+**Origem da calibração:** Apple `DESIGN.md` (signature moves §7) — *forma e movimento*, NÃO cor/tipografia. Hybrid: Apple aporta proporção e gestos; chatPro mantém `#25D066`, Paytone One e o fundo dark (#1d2125/#22272b) como source-of-truth de identidade.
 
 ---
 
@@ -218,3 +218,4 @@ Antes de aprovar PR, conferir:
 |--------|------|---------|
 | 1.0 | 2026-05-07 | Constituição inicial — tom de voz, microcopy, intent tokens, glass tokens, radius scale |
 | 1.1 | 2026-05-08 | Wave 2.1 (Apple Hybrid) — adiciona `--radius-pill` à §3.4 + nova §3.5 Motion tokens (`--motion-press-scale`, `--motion-tight-tracking`, `--motion-glass-blur`, `--shadow-lift`). Press scale canônico Apple = `0.95` (substitui `0.97` da POC). Patch retroativo da POC `8037740` previsto na Fase 2 do rollout. |
+| 1.2 | 2026-08-05 | Adaptação de contexto para o projeto de extensão de transcrição (exemplos Kanban → sessões/transcrições, `dev` → `main`, `src/styles.css` → `extension/popup/`). Miolo de marca inalterado. |

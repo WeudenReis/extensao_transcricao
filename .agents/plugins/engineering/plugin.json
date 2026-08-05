@@ -2,7 +2,7 @@
   "name": "Engineering",
   "description": "Streamline workflows de engenharia — standups, code review, decisões de arquitetura, resposta a incidentes, deploy e qualidade de código.",
   "version": "1.0.0",
-  "author": "suportetrelado",
+  "author": "extensao_transcricao",
   "skills": [
     "skills/code-review.md",
     "skills/standup.md",

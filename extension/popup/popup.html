@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>chatPro Meet Transcripts</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header__brand">
+      <span class="header__logo">chatPro</span>
+      <span class="header__subtitle">Meet Transcripts</span>
+    </div>
+  </header>
+
+  <main class="content">
+    <!-- Sessão ativa do chatPro -->
+    <section class="card" id="card-session">
+      <h2 class="card__title">Sessão ativa</h2>
+      <div class="card__body">
+        <p class="empty" id="session-empty">Abra uma conversa no chatPro para começar.</p>
+        <div class="row hidden" id="session-row">
+          <code class="mono" id="session-id" title=""></code>
+          <button class="btn-icon" id="btn-copy" type="button" title="Copiar session id">Copiar</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Reunião do Google Meet -->
+    <section class="card" id="card-meet">
+      <h2 class="card__title">Meet</h2>
+      <div class="card__body">
+        <p class="empty" id="meet-empty">Nenhuma reunião detectada ainda.</p>
+        <div class="row hidden" id="meet-row">
+          <code class="mono" id="meet-code"></code>
+          <span class="pill" id="meet-status"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Último vínculo criado -->
+    <section class="card" id="card-link">
+      <h2 class="card__title">Vínculo</h2>
+      <div class="card__body">
+        <p class="empty" id="link-empty">Nenhum vínculo criado ainda.</p>
+        <div class="hidden" id="link-row">
+          <div class="link-pair">
+            <code class="mono" id="link-session"></code>
+            <span class="link-arrow">→</span>
+            <code class="mono" id="link-meet"></code>
+          </div>
+          <div class="link-meta">
+            <span class="pill" id="link-status"></span>
+            <span class="link-when" id="link-when"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <button class="btn-primary" id="btn-link" type="button" disabled>Vincular agora</button>
+    <p class="feedback hidden" id="feedback"></p>
+
+    <!-- Configuração discreta do backend -->
+    <div class="settings">
+      <button class="settings__toggle" id="btn-settings" type="button">Configurar backend</button>
+      <div class="settings__panel hidden" id="settings-panel">
+        <label class="settings__label" for="backend-url">Endereço do backend</label>
+        <div class="settings__row">
+          <input class="settings__input" id="backend-url" type="text"
+                 placeholder="http://localhost:3333" spellcheck="false">
+          <button class="btn-small" id="btn-save-settings" type="button">Salvar</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
