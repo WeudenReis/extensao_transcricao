@@ -1,0 +1,12 @@
+{
+  "name": "Design",
+  "description": "Acelera workflows de design — critique de UI/UX, gestão do sistema de design chatPro, UX writing, auditorias de acessibilidade e alinhamento com o Manual de Marca.",
+  "version": "1.0.0",
+  "author": "suportetrelado",
+  "skills": [
+    "skills/design-critique.md",
+    "skills/design-system.md",
+    "skills/ux-writing.md",
+    "skills/accessibility-audit.md"
+  ]
+}
