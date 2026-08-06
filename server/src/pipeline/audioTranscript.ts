@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Db, CaptureRow, CaptureHeartbeatRow } from '../db.js';
 import type { SttProvider, SttEntry } from '../stt/index.js';
 import { decodeChunksToPcm, writeWav, medirVolume } from '../stt/decode.js';
+import { extrairFala, temFala, normalizarFala, remapearMs } from '../stt/vad.js';
 import { createLogger, errorMessage } from '../log.js';
 
 /**
@@ -132,6 +133,8 @@ export class AudioPipeline {
   private readonly deps: AudioPipelineDeps;
   private readonly fetchImpl: typeof fetch;
   private readonly inFlight = new Set<string>();
+  /** Mapa do VAD por trilha: tempo do áudio reduzido → tempo real da reunião. */
+  private readonly mapaVad = new Map<string, { deMs: number; paraMs: number }[] | null>();
   private queue: string[] = [];
   private draining = false;
 
@@ -228,7 +231,7 @@ export class AudioPipeline {
           languageCode: this.deps.language,
           diarize: false,
         });
-        mic = labelMic(r.entries);
+        mic = this.remapear(labelMic(r.entries), 'mic');
       }
       if (remoteFile) {
         const r = await this.deps.stt.transcribe({
@@ -236,7 +239,7 @@ export class AudioPipeline {
           languageCode: this.deps.language,
           diarize: true,
         });
-        remote = labelRemote(r.entries);
+        remote = this.remapear(labelRemote(r.entries), 'remote');
       }
     } else {
       log.warn(`captura ${captureId}: sem STT configurado — só o áudio fica disponível.`);
@@ -270,9 +273,22 @@ export class AudioPipeline {
   }
 
   /**
-   * Monta a trilha: decodifica CADA pedaço e junta em PCM, gravando um .wav.
-   * (Colar os .webm byte a byte só produzia os primeiros segundos — ver
-   * decodeChunksToPcm.) Devolve o caminho do .wav ou null.
+   * Traz os tempos do áudio reduzido (só-fala) de volta pra linha do tempo real
+   * da reunião — senão tudo apareceria amontoado no começo.
+   */
+  private remapear(entradas: MergedEntry[], track: 'mic' | 'remote'): MergedEntry[] {
+    const mapa = this.mapaVad.get(track);
+    if (!mapa || mapa.length === 0) return entradas;
+    return entradas.map((e) => ({
+      ...e,
+      startMs: remapearMs(e.startMs, mapa),
+      endMs: remapearMs(e.endMs, mapa),
+    }));
+  }
+
+  /**
+   * Monta a trilha: junta os pedaços em PCM, aplica VAD e grava o .wav que vai
+   * pro Whisper (só fala). Devolve o caminho ou null se não houve fala.
    */
   private async assembleTrack(captureId: string, track: 'mic' | 'remote'): Promise<string | null> {
     const dir = join(this.deps.captureDir, captureId);
@@ -283,22 +299,41 @@ export class AudioPipeline {
       .map((f) => join(dir, f));
     if (files.length === 0) return null;
 
-    const pcm = await decodeChunksToPcm(files);
-    if (pcm.length === 0) return null;
+    const pcmBruto = await decodeChunksToPcm(files);
+    if (pcmBruto.length === 0) return null;
+
+    // VAD: manda ao Whisper SÓ os trechos com fala. Sem isso ele inventa
+    // conversas inteiras em cima de silêncio (caso real: 6 min fabricados).
+    const vad = extrairFala(pcmBruto);
+    if (!temFala(vad)) {
+      log.warn(
+        `trilha ${track} da captura ${captureId}: sem fala detectada ` +
+          `(${(vad.duracaoOriginalMs / 1000).toFixed(1)}s de áudio) — não será transcrita.`
+      );
+      // Grava o WAV bruto mesmo assim, pra você poder ouvir e conferir.
+      const bruto = join(dir, `${track}.wav`);
+      writeWav(pcmBruto, bruto);
+      this.mapaVad.set(track, null);
+      return null;
+    }
+    const pcm = normalizarFala(vad.fala);
+    this.mapaVad.set(track, vad.mapa);
 
     // Sinal mudo é falha silenciosa (já aconteceu: 155s de RMS 0 na trilha
     // remota). Avisa alto no log em vez de deixar o STT alucinar em cima.
-    const volume = medirVolume(pcm);
+    const volume = medirVolume(pcmBruto);
     if (volume < 0.0005) {
       log.warn(
-        `trilha ${track} da captura ${captureId} está MUDA (RMS ${volume.toFixed(6)}, ` +
-          `${(pcm.length / 16000).toFixed(1)}s) — verifique a captura no navegador.`
+        `trilha ${track} da captura ${captureId} está MUDA (RMS ${volume.toFixed(6)}) ` +
+          '— verifique a captura no navegador.'
       );
     }
 
-    const out = join(dir, `${track}.wav`);
-    writeWav(pcm, out);
-    return out;
+    // WAV completo (pra você ouvir no painel) e WAV só-fala (pro Whisper).
+    writeWav(pcmBruto, join(dir, `${track}.wav`));
+    const outFala = join(dir, `${track}-fala.wav`);
+    writeWav(pcm, outFala);
+    return outFala;
   }
 
   /**

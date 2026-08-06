@@ -86,25 +86,31 @@
   // ---------------------------------------------------------------------------
   // Ligar a legenda (e manter ligada)
   // ---------------------------------------------------------------------------
+  /**
+   * Botão de legenda da BARRA DE CONTROLES — estritamente.
+   *
+   * CUIDADO (bug real): um seletor solto como [aria-label*="legenda"] casa com o
+   * item "Legendas" do menu de Configurações e ABRE a janela de configurações.
+   * Como o laço re-clicava a cada 3s, o usuário não conseguia fechar a janela.
+   * Por isso aqui exigimos: ser <button>, ter rótulo de LIGAR/DESLIGAR legendas,
+   * e NÃO estar dentro de um diálogo/menu.
+   */
   function botaoLegenda() {
-    const seletores = [
-      '[aria-label*="legenda" i]',
-      '[aria-label*="Ativar legendas" i]',
-      '[aria-label*="Desativar legendas" i]',
-      '[aria-label*="caption" i]',
-      '[jsname="r8qRAd"]', // histórico do Meet
-    ];
-    for (const s of seletores) {
-      const el = document.querySelector(s);
-      if (el) return el;
+    const rotuloOk = /^(ativar|desativar)\s+legendas|^(turn on|turn off)\s+captions|legendas?\s*\(c\)/i;
+    for (const btn of document.querySelectorAll('button[aria-label]')) {
+      const label = btn.getAttribute('aria-label') || '';
+      if (!rotuloOk.test(label.trim())) continue;
+      if (btn.closest('[role="dialog"], [role="menu"], [role="listbox"]')) continue;
+      return btn;
     }
     return null;
   }
 
   function legendaLigada() {
+    // Sinal mais forte: o container de legendas existe na página.
+    if (containerLegendas()) return true;
     const btn = botaoLegenda();
     if (!btn) return false;
-    // aria-pressed é o indicador mais confiável; o rótulo é o fallback.
     const pressed = btn.getAttribute('aria-pressed');
     if (pressed === 'true') return true;
     if (pressed === 'false') return false;
@@ -112,20 +118,75 @@
     return label.includes('desativar') || label.includes('turn off');
   }
 
+  /** Fecha a janela de Configurações se ela tiver sido aberta por engano. */
+  function fecharDialogoAberto() {
+    try {
+      const dlg = document.querySelector('[role="dialog"]');
+      if (!dlg) return false;
+      const texto = (dlg.innerText || '').toLowerCase();
+      if (!texto.includes('legenda') && !texto.includes('configuraç')) return false;
+      const fechar = dlg.querySelector(
+        'button[aria-label*="Fechar" i], button[aria-label*="Close" i]'
+      );
+      if (fechar) fechar.click();
+      else {
+        const ev = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true };
+        document.dispatchEvent(new KeyboardEvent('keydown', ev));
+      }
+      debug('janela de configurações fechada');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Limites pra nunca "martelar" a interface do Meet.
+  const MAX_TENTATIVAS = 6;
+  const ESPERA_TENTATIVA_MS = 6000;
+  let tentativas = 0;
+  let ultimaTentativa = 0;
+
   function ligarLegenda() {
     try {
-      if (legendaLigada()) return;
-      const btn = botaoLegenda();
-      if (btn) {
-        btn.click();
-        debug('legenda ligada pelo botão');
+      if (legendaLigada()) {
+        tentativas = 0;
         return;
       }
-      // Sem botão visível: usa o atalho nativo do Meet (tecla "c").
-      const ev = { key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true };
-      document.dispatchEvent(new KeyboardEvent('keydown', ev));
-      document.dispatchEvent(new KeyboardEvent('keyup', ev));
-      debug('legenda ligada pelo atalho "c"');
+      const agora = Date.now();
+      if (agora - ultimaTentativa < ESPERA_TENTATIVA_MS) return;
+      if (tentativas >= MAX_TENTATIVAS) return; // desiste em silêncio
+      ultimaTentativa = agora;
+      tentativas++;
+
+      // 1) Atalho nativo "c" — é o caminho SEGURO (não abre janela nenhuma).
+      const alvo = document.activeElement;
+      const digitando =
+        alvo &&
+        (alvo.tagName === 'INPUT' ||
+          alvo.tagName === 'TEXTAREA' ||
+          alvo.isContentEditable);
+      if (!digitando) {
+        for (const tipo of ['keydown', 'keyup']) {
+          document.dispatchEvent(
+            new KeyboardEvent(tipo, {
+              key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true,
+            })
+          );
+        }
+        debug(`tentativa ${tentativas}: atalho "c"`);
+      }
+
+      // 2) Só se o atalho não resolver, o botão estrito da barra.
+      setTimeout(() => {
+        if (legendaLigada()) return;
+        const btn = botaoLegenda();
+        if (btn) {
+          btn.click();
+          debug(`tentativa ${tentativas}: botão da barra`);
+          // Se algo abriu por engano, fecha.
+          setTimeout(fecharDialogoAberto, 600);
+        }
+      }, 1200);
     } catch (err) {
       debug('falha ao ligar legenda:', err);
     }

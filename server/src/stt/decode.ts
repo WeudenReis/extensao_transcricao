@@ -18,11 +18,11 @@ export async function decodeToPcm16kMono(filePath: string): Promise<Float32Array
   if (!ffmpegPath) throw new Error('ffmpeg-static não disponível.');
 
   return new Promise<Float32Array>((resolve, reject) => {
-    // Cadeia LEVE: o Whisper foi treinado em áudio real, então processar demais
-    //  atrapalha. Só tiramos o ronco (highpass) e normalizamos o volume da fala
-    //  (loudnorm, padrão de broadcast) — a captura por tabCapture/getUserMedia já
-    //  vem limpa. Nada de porta de ruído/denoise agressivo (mutilava a fala).
-    const filtros = 'highpass=f=70,loudnorm=I=-16:TP=-1.5:LRA=11';
+    // Só corta ronco fora da faixa da voz. NADA de loudnorm/normalização aqui:
+    // amplificar um áudio quase mudo transforma ruído de fundo em "voz" e o
+    // Whisper ALUCINA conversas inteiras (aconteceu: 6 min de texto inventado
+    // a partir de silêncio). O ganho é aplicado depois, só nos trechos de fala.
+    const filtros = 'highpass=f=70';
     const args = [
       '-hide_banner',
       '-loglevel', 'error',

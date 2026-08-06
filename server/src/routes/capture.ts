@@ -26,7 +26,8 @@ const startSchema = z.object({
   meetingCode: z.string().max(120).nullable().optional(),
   sessionId: z.string().uuid().nullable().optional(),
   startedAt: z.string().datetime({ offset: true }),
-  mode: z.enum(['webrtc-tap', 'tab-capture']).default('webrtc-tap'),
+  // 'captions' = transcrição pela legenda do Meet (caminho principal).
+  mode: z.enum(['captions', 'webrtc-tap', 'tab-capture']).default('webrtc-tap'),
   mimeType: z.string().max(120).default(''),
 });
 
