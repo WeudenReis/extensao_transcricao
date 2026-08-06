@@ -21,8 +21,8 @@ Get-ChildItem (Join-Path $raiz 'server') -Force |
   ForEach-Object { Copy-Item $_.FullName (Join-Path $serverDst $_.Name) -Recurse -Force }
 
 # 3) Instalador + guia na raiz do pacote.
-Copy-Item (Join-Path $PSScriptRoot 'dist\INSTALAR.bat') $stage
-Copy-Item (Join-Path $PSScriptRoot 'dist\LEIA-ME.txt') $stage
+Copy-Item (Join-Path $PSScriptRoot 'pacote\INSTALAR.bat') $stage
+Copy-Item (Join-Path $PSScriptRoot 'pacote\LEIA-ME.txt') $stage
 
 # 4) Zipar.
 $versao = (Get-Content (Join-Path $raiz 'extension\manifest.json') -Raw | ConvertFrom-Json).version

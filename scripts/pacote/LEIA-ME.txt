@@ -1,0 +1,40 @@
+========================================================
+  chatPro Transcricao - Como instalar (5 minutos)
+========================================================
+
+Voce so faz isso UMA vez. Depois e automatico.
+
+--------------------------------------------------------
+PASSO 1 - Instalar o servidor
+--------------------------------------------------------
+- De dois cliques no arquivo:  INSTALAR.bat
+- Se pedir para instalar o Node.js, instale a versao "LTS",
+  reinicie o PC e rode o INSTALAR.bat de novo.
+- Espere ele terminar (na 1a vez demora alguns minutos).
+
+  >> O servidor passa a LIGAR SOZINHO toda vez que voce liga o
+     computador. Voce NAO precisa abrir terminal nenhum de novo.
+
+--------------------------------------------------------
+PASSO 2 - Instalar a extensao no Chrome
+--------------------------------------------------------
+1) Abra o Chrome e digite na barra de endereco:
+      chrome://extensions
+2) Ligue o "Modo do desenvolvedor" (canto superior direito).
+3) Clique em "Carregar sem compactacao".
+4) Escolha a pasta "extension" (que veio junto neste pacote).
+
+--------------------------------------------------------
+PRONTO!
+--------------------------------------------------------
+- Entre numa reuniao do Google Meet e converse normalmente.
+- A transcricao aparece em:  http://localhost:3333
+- A legenda liga sozinha e nao pode ser desligada.
+
+Precisa de ajuda? Fale com o Weuden.
+
+--------------------------------------------------------
+Para DESLIGAR tudo (se algum dia precisar):
+--------------------------------------------------------
+- Rode:  server\autostart\DESINSTALAR-inicializacao.vbs
+- E remova a extensao em chrome://extensions
