@@ -153,6 +153,7 @@ export function createApiRouter(deps: ApiRouterDeps): Router {
         queuePending: queue.pending,
         queueDead: queue.dead,
       },
+      captures: db.countCaptures(),
     });
   });
 

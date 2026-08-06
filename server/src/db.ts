@@ -53,6 +53,43 @@ export interface VoreoQueueRow {
   last_error: string | null;
 }
 
+export type CaptureStatus =
+  | 'recording'
+  | 'pending'
+  | 'transcribing'
+  | 'ready-for-review'
+  | 'sent'
+  | 'failed';
+
+export interface CaptureRow {
+  id: string;
+  session_id: string | null;
+  meeting_code: string | null;
+  mode: string;
+  mime_type: string | null;
+  started_at: string;
+  ended_at: string | null;
+  stop_reason: string | null;
+  status: string;
+  coverage_ratio: number | null;
+  gaps_json: string | null;
+  stt_provider: string | null;
+  transcript_json: string | null;
+  voreo_status: string | null;
+  error: string | null;
+}
+
+export interface CaptureHeartbeatRow {
+  id: number;
+  capture_id: string;
+  at: string;
+  capturing: number;
+  in_call: number;
+  mic_active: number;
+  remote_tracks: number;
+  bytes_sent: number;
+}
+
 export type EventStatus = 'pending' | 'done' | 'dead' | 'no-link';
 
 export interface EventQueueRow {
@@ -143,10 +180,41 @@ export class Db {
         last_error TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS captures (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        meeting_code TEXT,
+        mode TEXT NOT NULL,
+        mime_type TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        stop_reason TEXT,
+        status TEXT NOT NULL DEFAULT 'recording',
+        coverage_ratio REAL,
+        gaps_json TEXT,
+        stt_provider TEXT,
+        transcript_json TEXT,
+        voreo_status TEXT,
+        error TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS capture_heartbeats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        capture_id TEXT NOT NULL,
+        at TEXT NOT NULL,
+        capturing INTEGER NOT NULL DEFAULT 0,
+        in_call INTEGER NOT NULL DEFAULT 0,
+        mic_active INTEGER NOT NULL DEFAULT 0,
+        remote_tracks INTEGER NOT NULL DEFAULT 0,
+        bytes_sent INTEGER NOT NULL DEFAULT 0
+      );
+
       CREATE INDEX IF NOT EXISTS idx_links_space_name ON links (space_name);
       CREATE INDEX IF NOT EXISTS idx_links_meeting_code ON links (meeting_code);
       CREATE INDEX IF NOT EXISTS idx_voreo_queue_next ON voreo_queue (next_attempt_at);
       CREATE INDEX IF NOT EXISTS idx_event_queue_status_next ON event_queue (status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status);
+      CREATE INDEX IF NOT EXISTS idx_hb_capture ON capture_heartbeats (capture_id, at);
     `);
   }
 
@@ -498,6 +566,120 @@ export class Db {
     return this.db
       .prepare<[number], EventQueueRow>('SELECT * FROM event_queue WHERE id = ?')
       .get(id);
+  }
+
+  // ─── captures (captura de áudio + transcrição por STT) ────────────────────
+
+  createCapture(input: {
+    id: string;
+    sessionId: string | null;
+    meetingCode: string | null;
+    mode: string;
+    mimeType: string | null;
+    startedAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO captures (id, session_id, meeting_code, mode, mime_type, started_at, status)
+         VALUES (@id, @sessionId, @meetingCode, @mode, @mimeType, @startedAt, 'recording')`
+      )
+      .run(input);
+  }
+
+  getCapture(id: string): CaptureRow | undefined {
+    return this.db.prepare<[string], CaptureRow>('SELECT * FROM captures WHERE id = ?').get(id);
+  }
+
+  listCaptures(limit = 50): CaptureRow[] {
+    return this.db
+      .prepare<[number], CaptureRow>('SELECT * FROM captures ORDER BY started_at DESC LIMIT ?')
+      .all(limit);
+  }
+
+  markCaptureStopped(input: { id: string; endedAt: string; stopReason: string }): void {
+    this.db
+      .prepare(
+        `UPDATE captures SET ended_at = @endedAt, stop_reason = @stopReason, status = 'pending'
+         WHERE id = @id AND status = 'recording'`
+      )
+      .run(input);
+  }
+
+  setCaptureStatus(id: string, status: CaptureStatus, error: string | null = null): void {
+    this.db.prepare('UPDATE captures SET status = ?, error = ? WHERE id = ?').run(status, error, id);
+  }
+
+  saveCaptureTranscript(input: {
+    id: string;
+    transcriptJson: string;
+    coverageRatio: number;
+    gapsJson: string;
+    sttProvider: string;
+    status: CaptureStatus;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE captures SET transcript_json = @transcriptJson, coverage_ratio = @coverageRatio,
+           gaps_json = @gapsJson, stt_provider = @sttProvider, status = @status, error = NULL
+         WHERE id = @id`
+      )
+      .run(input);
+  }
+
+  setCaptureVoreoStatus(id: string, voreoStatus: string): void {
+    this.db.prepare('UPDATE captures SET voreo_status = ? WHERE id = ?').run(voreoStatus, id);
+  }
+
+  /** Captures 'pending' que sobraram (ex.: restart no meio) — pra retomar. */
+  pendingCaptures(): CaptureRow[] {
+    return this.db
+      .prepare<[], CaptureRow>(`SELECT * FROM captures WHERE status = 'pending' ORDER BY started_at ASC`)
+      .all();
+  }
+
+  countCaptures(): Record<string, number> {
+    const rows = this.db
+      .prepare<[], { status: string; n: number }>(
+        'SELECT status, COUNT(*) AS n FROM captures GROUP BY status'
+      )
+      .all();
+    const out: Record<string, number> = {};
+    for (const row of rows) out[row.status] = row.n;
+    return out;
+  }
+
+  addHeartbeat(input: {
+    captureId: string;
+    at: string;
+    capturing: boolean;
+    inCall: boolean;
+    micActive: boolean;
+    remoteTracks: number;
+    bytesSent: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO capture_heartbeats
+           (capture_id, at, capturing, in_call, mic_active, remote_tracks, bytes_sent)
+         VALUES (@captureId, @at, @capturing, @inCall, @micActive, @remoteTracks, @bytesSent)`
+      )
+      .run({
+        captureId: input.captureId,
+        at: input.at,
+        capturing: input.capturing ? 1 : 0,
+        inCall: input.inCall ? 1 : 0,
+        micActive: input.micActive ? 1 : 0,
+        remoteTracks: input.remoteTracks,
+        bytesSent: input.bytesSent,
+      });
+  }
+
+  listHeartbeats(captureId: string): CaptureHeartbeatRow[] {
+    return this.db
+      .prepare<[string], CaptureHeartbeatRow>(
+        'SELECT * FROM capture_heartbeats WHERE capture_id = ? ORDER BY at ASC'
+      )
+      .all(captureId);
   }
 
   close(): void {

@@ -3,7 +3,7 @@
   "name": "chatPro Meet Transcripts",
   "version": "0.1.0",
   "description": "Vincula a conversa ativa do chatPro com a reunião do Google Meet para juntar a transcrição automaticamente.",
-  "permissions": ["tabs", "storage", "alarms"],
+  "permissions": ["tabs", "storage", "alarms", "offscreen", "tabCapture"],
   "host_permissions": [
     "https://app.chatpro.com.br/*",
     "https://meet.google.com/*",
@@ -14,6 +14,12 @@
       "matches": ["https://app.chatpro.com.br/*"],
       "js": ["content/chatpro.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content/meet-tap.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     },
     {
       "matches": ["https://meet.google.com/*"],

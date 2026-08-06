@@ -39,6 +39,16 @@ const envSchema = z.object({
     .default(3333),
   DATABASE_PATH: z.string().min(1).default('./data/app.db'),
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  // ─── Captura de áudio + STT (transcrição em conta pessoal) ───
+  STT_PROVIDER: z.enum(['deepgram', 'assemblyai', 'whisper', 'none']).default('deepgram'),
+  STT_API_KEY: z.string().optional(),
+  STT_MODEL: z.string().optional(),
+  STT_LANGUAGE: z.string().default('pt-BR'),
+  STT_BASE_URL: z.string().url('STT_BASE_URL deve ser uma URL.').optional(),
+  CAPTURE_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
+  // Enviar automaticamente pra Voreo ao terminar a transcrição?
+  // Padrão FALSE: o atendente/admin revisa primeiro e envia pelo botão.
+  AUTO_SEND_VOREO: z.string().optional(),
 });
 
 export interface Config {
@@ -54,6 +64,13 @@ export interface Config {
   port: number;
   databasePath: string;
   tokenEncryptionKey: string | undefined;
+  sttProvider: 'deepgram' | 'assemblyai' | 'whisper' | 'none';
+  sttApiKey: string | undefined;
+  sttModel: string | undefined;
+  sttLanguage: string;
+  sttBaseUrl: string | undefined;
+  captureRetentionDays: number;
+  autoSendVoreo: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -93,5 +110,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: e.PORT,
     databasePath: e.DATABASE_PATH,
     tokenEncryptionKey: e.TOKEN_ENCRYPTION_KEY,
+    sttProvider: e.STT_PROVIDER,
+    sttApiKey: e.STT_API_KEY,
+    sttModel: e.STT_MODEL,
+    sttLanguage: e.STT_LANGUAGE,
+    sttBaseUrl: e.STT_BASE_URL,
+    captureRetentionDays: e.CAPTURE_RETENTION_DAYS,
+    autoSendVoreo: e.AUTO_SEND_VOREO === 'true',
   };
 }

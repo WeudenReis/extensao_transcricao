@@ -1,4 +1,5 @@
 import express from 'express';
+import { dirname, join, resolve } from 'node:path';
 import { loadConfig, ConfigError } from './config.js';
 import { Db } from './db.js';
 import { GoogleAuth, createOAuthRouter } from './google/auth.js';
@@ -6,9 +7,14 @@ import { MeetClient } from './google/meet.js';
 import { EventsClient, SubscriptionManager } from './google/events.js';
 import { TranscriptPipeline } from './pipeline/transcript.js';
 import { EventQueueWorker } from './pipeline/eventQueue.js';
+import { AudioPipeline } from './pipeline/audioTranscript.js';
 import { VoreoClient } from './voreo/client.js';
+import { createSttProvider } from './stt/index.js';
 import { createApiRouter } from './routes/api.js';
 import { createPubSubRouter } from './routes/pubsub.js';
+import { createCaptureRouter } from './routes/capture.js';
+import { createReviewRouter } from './routes/review.js';
+import { startCapturePurgeJob } from './pipeline/purge.js';
 import { createLogger, errorMessage } from './log.js';
 
 /**
@@ -69,8 +75,26 @@ function main(): void {
   const pipeline = new TranscriptPipeline({ db, meet, voreo });
   const eventQueue = new EventQueueWorker({ db, pipeline });
 
+  // Captura de áudio (caminho que funciona em conta pessoal @gmail).
+  const captureDir = join(dirname(resolve(config.databasePath)), 'captures');
+  const stt = createSttProvider(config);
+  const audioPipeline = new AudioPipeline({
+    db,
+    captureDir,
+    stt,
+    language: config.sttLanguage,
+    autoSendVoreo: config.autoSendVoreo,
+    voreoWebhookUrl: config.voreoWebhookUrl,
+    voreoApiKey: config.voreoApiKey,
+  });
+
   const app = express();
+  // express.json() só parseia application/json; a rota de chunk usa
+  // application/octet-stream com raw() próprio, então o json() global a ignora
+  // (não consome o stream) e o raw() da rota lê os bytes normalmente.
   app.use(express.json({ limit: '2mb' }));
+  app.use(createCaptureRouter({ db, captureDir, onCaptureStopped: (id) => audioPipeline.enqueue(id) }));
+  app.use(createReviewRouter({ db, captureDir, pipeline: audioPipeline }));
   app.use(createOAuthRouter(auth));
   app.use(createApiRouter({ db, meet, auth, voreo, eventQueue }));
   app.use(
@@ -94,14 +118,24 @@ function main(): void {
 
   const server = app.listen(config.port, () => {
     log.info(`servidor ouvindo em http://localhost:${config.port}`);
+    log.info(`Painel de revisão: http://localhost:${config.port}/`);
     log.info(`OAuth Google: http://localhost:${config.port}/oauth/start`);
     log.info(`Webhook Pub/Sub: POST http://localhost:${config.port}/webhooks/pubsub`);
+    if (!stt) {
+      log.warn('STT não configurado — capturas gravam áudio mas não transcrevem. Configure STT_API_KEY.');
+    }
   });
 
   // Tarefas de startup
   voreo.startWorker();
   eventQueue.startWorker();
   eventQueue.poke(); // retoma eventos pendentes que sobraram de antes do restart
+  audioPipeline.resumePending(); // retoma capturas que ficaram no meio
+  const stopPurge = startCapturePurgeJob({
+    db,
+    captureDir,
+    retentionDays: config.captureRetentionDays,
+  });
   const renewNow = (): void => {
     subscriptions?.renewIfExpiring().catch((err: unknown) => {
       log.error('renovação de subscription falhou', err);
@@ -114,6 +148,7 @@ function main(): void {
   const shutdown = (signal: string): void => {
     log.info(`${signal} recebido — encerrando…`);
     clearInterval(renewTimer);
+    stopPurge();
     voreo.stopWorker();
     eventQueue.stopWorker();
     server.close(() => {
