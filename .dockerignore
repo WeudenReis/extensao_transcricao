@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/data
+**/.env
+extension
+docs
+*.md
+.git

@@ -30,4 +30,6 @@ export interface SttInput {
 export interface SttProvider {
   readonly name: string;
   transcribe(input: SttInput): Promise<SttResult>;
+  /** Opcional: pré-carrega o modelo no boot (evita travar na 1ª transcrição). */
+  warmup?(): Promise<void>;
 }

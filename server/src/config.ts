@@ -7,12 +7,10 @@ import { z } from 'zod';
  */
 
 const envSchema = z.object({
-  GOOGLE_CLIENT_ID: z
-    .string({ required_error: 'GOOGLE_CLIENT_ID é obrigatório (OAuth Client do GCP).' })
-    .min(1, 'GOOGLE_CLIENT_ID é obrigatório (OAuth Client do GCP).'),
-  GOOGLE_CLIENT_SECRET: z
-    .string({ required_error: 'GOOGLE_CLIENT_SECRET é obrigatório (OAuth Client do GCP).' })
-    .min(1, 'GOOGLE_CLIENT_SECRET é obrigatório (OAuth Client do GCP).'),
+  // Opcionais: só o caminho Meet REST API v2 (conta Workspace) precisa deles.
+  // O caminho de captura de áudio (conta pessoal) funciona sem GCP nenhum.
+  GOOGLE_CLIENT_ID: z.string().default(''),
+  GOOGLE_CLIENT_SECRET: z.string().default(''),
   GOOGLE_REDIRECT_URI: z
     .string()
     .url('GOOGLE_REDIRECT_URI deve ser uma URL (ex.: http://localhost:3333/oauth/callback).')
@@ -40,7 +38,10 @@ const envSchema = z.object({
   DATABASE_PATH: z.string().min(1).default('./data/app.db'),
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
   // ─── Captura de áudio + STT (transcrição em conta pessoal) ───
-  STT_PROVIDER: z.enum(['deepgram', 'assemblyai', 'whisper', 'none']).default('deepgram'),
+  // 'local' = Whisper offline gratuito (padrão). Os demais são opcionais/pagos.
+  STT_PROVIDER: z
+    .enum(['local', 'deepgram', 'assemblyai', 'whisper', 'none'])
+    .default('local'),
   STT_API_KEY: z.string().optional(),
   STT_MODEL: z.string().optional(),
   STT_LANGUAGE: z.string().default('pt-BR'),
@@ -64,7 +65,7 @@ export interface Config {
   port: number;
   databasePath: string;
   tokenEncryptionKey: string | undefined;
-  sttProvider: 'deepgram' | 'assemblyai' | 'whisper' | 'none';
+  sttProvider: 'local' | 'deepgram' | 'assemblyai' | 'whisper' | 'none';
   sttApiKey: string | undefined;
   sttModel: string | undefined;
   sttLanguage: string;

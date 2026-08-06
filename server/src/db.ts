@@ -630,10 +630,15 @@ export class Db {
     this.db.prepare('UPDATE captures SET voreo_status = ? WHERE id = ?').run(voreoStatus, id);
   }
 
-  /** Captures 'pending' que sobraram (ex.: restart no meio) — pra retomar. */
+  /**
+   * Captures a retomar no boot: 'pending' (nunca começou) e 'transcribing'
+   * (o servidor morreu no meio da transcrição — reprocessa do zero).
+   */
   pendingCaptures(): CaptureRow[] {
     return this.db
-      .prepare<[], CaptureRow>(`SELECT * FROM captures WHERE status = 'pending' ORDER BY started_at ASC`)
+      .prepare<[], CaptureRow>(
+        `SELECT * FROM captures WHERE status IN ('pending', 'transcribing') ORDER BY started_at ASC`
+      )
       .all();
   }
 

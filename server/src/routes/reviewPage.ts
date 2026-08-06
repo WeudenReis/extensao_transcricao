@@ -57,6 +57,8 @@ export function reviewPageHtml(): string {
     border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer; }
   .btn:hover { background: var(--verde-hover); }
   .btn:disabled { opacity: .5; cursor: default; }
+  .btn.ghost { background: transparent; color: var(--cinza1); border: 1px solid #3a424a; }
+  .btn.ghost:hover { background: var(--card); color: var(--texto); }
   .actions { margin: 18px 0 8px; display: flex; align-items: center; gap: 14px; }
   .note { font-size: 12px; color: var(--cinza1); }
   h2 { margin: 0 0 4px; }
@@ -171,7 +173,7 @@ export function reviewPageHtml(): string {
     }
     if (players.childNodes.length) detailEl.appendChild(players);
 
-    // Ações Voreo
+    // Ações
     const actions = el('div', 'actions');
     const btn = el('button', 'btn', c.voreoStatus === 'sent' ? 'Enviado à Voreo ✓' : 'Enviar pra Voreo');
     btn.disabled = c.voreoStatus === 'sent';
@@ -185,6 +187,15 @@ export function reviewPageHtml(): string {
       selectCapture(c.id);
     });
     actions.appendChild(btn);
+
+    // Reprocessar (útil se a transcrição travou ou o modelo ainda baixava).
+    const reBtn = el('button', 'btn ghost', 'Transcrever de novo');
+    reBtn.addEventListener('click', async () => {
+      reBtn.disabled = true; reBtn.textContent = 'Reenfileirado…';
+      await fetch('/api/captures/' + c.id + '/reprocess', { method: 'POST' });
+      setTimeout(() => selectCapture(c.id), 800);
+    });
+    actions.appendChild(reBtn);
     if (c.voreoStatus && c.voreoStatus !== 'sent') {
       actions.appendChild(el('span', 'note', 'Status: ' + c.voreoStatus));
     }

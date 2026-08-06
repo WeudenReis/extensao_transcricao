@@ -90,6 +90,18 @@ export function createReviewRouter(deps: ReviewRouterDeps): Router {
     createReadStream(file).pipe(res);
   });
 
+  router.post('/api/captures/:id/reprocess', (req, res) => {
+    const c = db.getCapture(req.params.id);
+    if (!c) {
+      res.status(404).json({ error: 'captura não encontrada.' });
+      return;
+    }
+    db.setCaptureStatus(req.params.id, 'pending');
+    pipeline.enqueue(req.params.id);
+    log.info(`reprocessamento manual da captura ${req.params.id} enfileirado.`);
+    res.json({ ok: true });
+  });
+
   router.post('/api/captures/:id/send-voreo', async (req, res) => {
     const c = db.getCapture(req.params.id);
     if (!c) {

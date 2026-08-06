@@ -1,9 +1,11 @@
+import { join, dirname, resolve } from 'node:path';
 import type { Config } from '../config.js';
 import { createLogger } from '../log.js';
 import type { SttProvider } from './types.js';
 import { DeepgramProvider } from './deepgram.js';
 import { AssemblyAiProvider } from './assemblyai.js';
 import { WhisperProvider } from './whisper.js';
+import { LocalWhisperProvider } from './local.js';
 
 export type { SttProvider, SttResult, SttEntry, SttInput } from './types.js';
 
@@ -13,6 +15,7 @@ const DEFAULT_MODELS: Record<string, string> = {
   deepgram: 'nova-3',
   assemblyai: 'best',
   whisper: 'whisper-1',
+  local: 'Xenova/whisper-base',
 };
 
 /**
@@ -30,6 +33,14 @@ export function createSttProvider(config: Config): SttProvider | null {
     case 'none':
       log.warn('STT_PROVIDER=none — captura grava o áudio mas não transcreve.');
       return null;
+
+    case 'local': {
+      // 100% gratuito e offline: Whisper via transformers.js (baixa o modelo
+      // uma vez e roda em CPU). Cache dos modelos junto ao banco.
+      const cacheDir = join(dirname(resolve(config.databasePath)), 'models');
+      log.info('STT local (gratuito) — Whisper via transformers.js.');
+      return new LocalWhisperProvider(model, cacheDir);
+    }
 
     case 'deepgram':
       if (!config.sttApiKey) {

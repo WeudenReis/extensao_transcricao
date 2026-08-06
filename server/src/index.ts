@@ -116,11 +116,16 @@ function main(): void {
     }
   );
 
+  const googleConfigured = config.googleClientId !== '' && config.googleClientSecret !== '';
   const server = app.listen(config.port, () => {
     log.info(`servidor ouvindo em http://localhost:${config.port}`);
     log.info(`Painel de revisão: http://localhost:${config.port}/`);
-    log.info(`OAuth Google: http://localhost:${config.port}/oauth/start`);
-    log.info(`Webhook Pub/Sub: POST http://localhost:${config.port}/webhooks/pubsub`);
+    if (googleConfigured) {
+      log.info(`OAuth Google: http://localhost:${config.port}/oauth/start`);
+      log.info(`Webhook Pub/Sub: POST http://localhost:${config.port}/webhooks/pubsub`);
+    } else {
+      log.info('Google não configurado — caminho Meet REST API desativado (ok pra conta pessoal).');
+    }
     if (!stt) {
       log.warn('STT não configurado — capturas gravam áudio mas não transcrevem. Configure STT_API_KEY.');
     }
@@ -130,7 +135,20 @@ function main(): void {
   voreo.startWorker();
   eventQueue.startWorker();
   eventQueue.poke(); // retoma eventos pendentes que sobraram de antes do restart
-  audioPipeline.resumePending(); // retoma capturas que ficaram no meio
+  audioPipeline.resumePending(); // retoma capturas 'pending'/'transcribing' interrompidas
+
+  // Pré-carrega o modelo de STT em segundo plano (não bloqueia o boot).
+  if (stt?.warmup) {
+    stt.warmup().catch((err: unknown) => log.warn(`warmup do STT falhou (segue sob demanda): ${errorMessage(err)}`));
+  }
+
+  // Rede/serviço instável não pode derrubar o servidor — logamos e seguimos.
+  process.on('unhandledRejection', (reason) => {
+    log.error('promise rejeitada sem tratamento (ignorado p/ manter o servidor no ar)', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    log.error('exceção não capturada (ignorado p/ manter o servidor no ar)', err);
+  });
   const stopPurge = startCapturePurgeJob({
     db,
     captureDir,

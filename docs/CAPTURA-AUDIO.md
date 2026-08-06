@@ -42,25 +42,44 @@ diarização na trilha remota caso haja mais de um cliente na sala.
 
 ## O serviço de STT (Speech-to-Text)
 
-STT converte o áudio em texto. É um serviço externo (ou local). Escolha via `STT_PROVIDER`
-no `server/.env`:
+STT converte o áudio em texto. Escolha via `STT_PROVIDER` no `server/.env`:
 
-| Provedor | Como | Custo aprox. (com diarização) | Observação |
-|----------|------|-------------------------------|------------|
-| **deepgram** (padrão) | chave em https://console.deepgram.com | ~US$ 0,41/h | pt-BR ótimo, crédito grátis pra testar |
-| assemblyai | chave em https://assemblyai.com | ~US$ 0,15–0,27/h | mais barato |
-| whisper | servidor local compatível com OpenAI (`STT_BASE_URL`) | sem custo/min | exige GPU pra ficar rápido |
-| none | — | grátis | grava o áudio mas **não transcreve** (modo dev) |
+| Provedor | Custo | Conta/chave? | Observação |
+|----------|-------|--------------|------------|
+| **local** (padrão) | **100% grátis** | não | Whisper na sua máquina (transformers.js). Offline, sem nuvem. |
+| deepgram | ~US$ 0,41/h | sim (crédito grátis) | nuvem, pt-BR ótimo, rápido |
+| assemblyai | ~US$ 0,15–0,27/h | sim | nuvem, mais barato |
+| whisper | grátis (self-host) | não | servidor Whisper externo compatível com OpenAI (`STT_BASE_URL`) |
+| none | grátis | não | só grava o áudio, não transcreve |
 
-### Configurar o Deepgram (recomendado pra começar)
+### Padrão: transcrição LOCAL e gratuita (recomendado)
 
-1. Crie conta em https://console.deepgram.com (tem crédito inicial, sem cartão pra testar).
+Já vem configurado (`STT_PROVIDER=local`). Não precisa de conta, chave, nuvem nem
+cartão. O Whisper roda **na sua própria máquina**:
+
+1. Só rodar o backend (`npm run start`). Nada mais a configurar.
+2. Na **primeira** transcrição, o modelo é baixado uma vez (~465 MB, modelo `small`)
+   e fica em cache em `server/data/models`. Depois disso é tudo offline.
+3. A transcrição roda em CPU. É mais lenta que a nuvem — para uma call de 10 min,
+   pode levar alguns minutos após encerrar. Como o processamento é depois da chamada,
+   isso não atrapalha.
+
+**Escolher velocidade × qualidade** (`STT_MODEL` no `.env`):
+- `Xenova/whisper-small` — padrão, melhor pt-BR.
+- `Xenova/whisper-base` — ~3× mais rápido, um pouco menos preciso.
+- `Xenova/whisper-tiny` — o mais rápido, para máquinas fracas.
+
+Requisitos: nada além do Node — o `ffmpeg` já vem embutido (`ffmpeg-static`) e o
+motor de inferência (`onnxruntime`) também. Sem GPU obrigatória.
+
+### Alternativa paga (se quiser mais velocidade): Deepgram
+
+1. Crie conta em https://console.deepgram.com (crédito inicial, sem cartão pra testar).
 2. Crie uma API Key.
-3. No `server/.env`: `STT_PROVIDER=deepgram` e `STT_API_KEY=<sua-chave>`.
-4. Reinicie o backend. Pronto — as próximas capturas já vêm com texto.
+3. No `.env`: `STT_PROVIDER=deepgram` e `STT_API_KEY=<sua-chave>`. Reinicie.
 
-Sem chave, o sistema **ainda grava o áudio** e você consegue ouvir no painel — só não
-transcreve. Assim dá pra confirmar que a captura funciona antes de gastar com STT.
+Sem STT (`STT_PROVIDER=none`), o sistema **ainda grava o áudio** e você ouve no painel —
+só não transcreve.
 
 ## Cobertura (métrica anti-adulteração)
 
