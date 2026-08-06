@@ -47,6 +47,7 @@
   // ===========================================================================
   // Estado da captura
   // ===========================================================================
+  const peerConnections = new Set(); // conexões WebRTC vivas do Meet
   const remoteTracks = new Set(); // MediaStreamTrack de áudio dos participantes
   let micTrack = null; // NOSSA clone do microfone (independente do mute do Meet)
   let audioCtx = null;
@@ -149,41 +150,65 @@
     }
   }
 
-  // Mantém os elementos <audio> vivos (não podem ser coletados pelo GC).
-  const sinks = [];
+  // Elementos de mídia do Meet já ligados ao mix (evita ligar duas vezes).
+  const capturedElements = new WeakSet();
 
-  function connectRemoteTrack(track) {
+  /**
+   * Captura a voz dos participantes a partir dos elementos <audio>/<video> que
+   * o PRÓPRIO Meet usa pra tocar a reunião.
+   *
+   * POR QUE ASSIM (bug real de produção): pegar a track direto do
+   * RTCPeerConnection e embrulhar num MediaStream novo gravava 150s de silêncio
+   * absoluto (RMS 0,00000) — no Chrome o áudio remoto só "flui" pro Web Audio
+   * se o stream estiver de fato sendo tocado por um elemento de mídia. Os
+   * elementos do Meet já estão tocando (é o que você ouve), então usamos
+   * exatamente o srcObject deles. Não mexemos no elemento: só derivamos uma
+   * fonte a partir do mesmo stream, sem alterar o que o usuário escuta.
+   */
+  function scanMediaElements() {
     if (!audioCtx || !remoteDest) return;
-    if (connectedRemote.has(track)) return;
+    let novos = 0;
     try {
-      const stream = new MediaStream([track]);
-
-      // ATENÇÃO (bug real de produção): no Chrome, faixa remota de WebRTC
-      // roteada SÓ pelo Web Audio grava 155s de silêncio absoluto (RMS 0).
-      // O áudio só "flui" se o stream também estiver preso a um <audio>.
-      // Criamos um sink mudo (muted) só pra destravar o fluxo — quem toca a
-      // reunião de verdade continua sendo o player do próprio Meet.
-      const sink = new Audio();
-      sink.srcObject = stream;
-      sink.muted = true;
-      sink.autoplay = true;
-      sink.play().catch(() => {
-        /* autoplay bloqueado não impede a captura */
-      });
-      sinks.push(sink);
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(remoteDest);
-      connectedRemote.add(track);
-      debug('voz remota conectada ao mix (com sink de áudio)');
+      for (const el of document.querySelectorAll('audio, video')) {
+        if (capturedElements.has(el)) continue;
+        const stream = el.srcObject;
+        if (!stream || typeof stream.getAudioTracks !== 'function') continue;
+        const tracks = stream.getAudioTracks();
+        if (tracks.length === 0) continue;
+        // Ignora o eco do próprio microfone (se o Meet tiver um preview local).
+        if (tracks.every((t) => t.label && /default|microfone|microphone/i.test(t.label))) {
+          continue;
+        }
+        try {
+          const source = audioCtx.createMediaStreamSource(stream);
+          source.connect(remoteDest);
+          capturedElements.add(el);
+          for (const t of tracks) remoteTracks.add(t);
+          novos++;
+        } catch (err) {
+          debug('não consegui ligar elemento de mídia ao mix:', err);
+        }
+      }
     } catch (err) {
-      debug('falha ao conectar track remota ao mix:', err);
+      debug('falha ao varrer elementos de mídia:', err);
     }
+    if (novos > 0) debug(`${novos} elemento(s) de áudio do Meet ligados ao mix`);
   }
 
+  /**
+   * A chamada está REALMENTE acontecendo?
+   *
+   * NÃO dá pra usar "o microfone está vivo": nossa clone é independente de
+   * propósito (pra resistir ao mute), então ela continua viva no lobby e depois
+   * de desligar — foi assim que a gravação pegou conversa de antes e de depois
+   * da reunião. O sinal confiável é a conexão WebRTC do Meet estar CONECTADA.
+   */
   function hasActiveCall() {
-    const micLive = micTrack && micTrack.readyState === 'live';
-    return Boolean(micLive || remoteTracks.size > 0);
+    for (const pc of peerConnections) {
+      const estado = pc.connectionState || pc.iceConnectionState;
+      if (estado === 'connected' || estado === 'completed') return true;
+    }
+    return false;
   }
 
   function evaluateCapture() {
@@ -206,9 +231,10 @@
       startRecorder('mic', new MediaStream([micTrack]));
     }
 
-    // Trilha remota (mix das vozes dos participantes).
-    for (const track of remoteTracks) connectRemoteTrack(track);
-    if (remoteDest && remoteTracks.size > 0 && !recorders.remote) {
+    // Trilha remota: liga os elementos de áudio do Meet ao mix (ver
+    // scanMediaElements — pegar a track crua do WebRTC gravava silêncio).
+    scanMediaElements();
+    if (remoteDest && !recorders.remote) {
       startRecorder('remote', remoteDest.stream);
     }
 
@@ -255,6 +281,16 @@
     function Patched(...args) {
       const pc = new Native(...args);
       try {
+        // A conexão é o nosso sinal de "estou na chamada" (ver hasActiveCall).
+        peerConnections.add(pc);
+        pc.addEventListener('connectionstatechange', () => {
+          const estado = pc.connectionState;
+          debug('conexão WebRTC:', estado);
+          if (estado === 'closed' || estado === 'failed' || estado === 'disconnected') {
+            peerConnections.delete(pc);
+          }
+          evaluateCapture();
+        });
         pc.addEventListener('track', (event) => {
           try {
             const track = event.track;
@@ -365,6 +401,8 @@
         for (const track of remoteTracks) {
           if (track.readyState !== 'live') remoteTracks.delete(track);
         }
+        // O Meet cria elementos de áudio conforme gente entra na sala.
+        if (capturing) scanMediaElements();
         // Cinto de segurança: se um gravador parou sozinho (track trocada,
         // erro interno), derruba a referência pra evaluateCapture recriá-lo.
         for (const nome of ['mic', 'remote']) {

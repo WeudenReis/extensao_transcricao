@@ -15,7 +15,9 @@ const DEFAULT_MODELS: Record<string, string> = {
   deepgram: 'nova-3',
   assemblyai: 'best',
   whisper: 'whisper-1',
-  local: 'Xenova/whisper-base',
+  // 'small' erra bem menos que 'base' em pt-BR. Como a transcrição roda depois
+  // da chamada, vale trocar velocidade por precisão.
+  local: 'Xenova/whisper-small',
 };
 
 /**

@@ -21,7 +21,7 @@ const log = createLogger('stt/local');
  * não poluir a transcrição com texto que ninguém falou.
  */
 const HALLUCINATIONS = [
-  /^\[?\s*(música|music|musique|aplausos|applause|risos|laughter|silêncio|silence|ruído|inaudível)\s*\]?[.!]?$/i,
+  /^\[?\s*(música|music|musique|aplausos|applause|risos|laughter|silêncio|silence|ruído|inaudível|gritos?( de gol)?|torcida)\s*\]?[.!]?$/i,
   /^legenda(s|do|s? por)\b/i,
   /^subtitles? by\b/i,
   /^amara\.org$/i,
@@ -31,10 +31,25 @@ const HALLUCINATIONS = [
 export function isHallucination(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
-  // Repetição do mesmo marcador: "[Música] [Música] [Música]"
-  const semMarcadores = t.replace(/\[[^\]]{1,20}\]/g, '').trim();
+
+  // Só marcadores entre colchetes: "[Música]", "[GRITOS DE GOL] [GRITOS DE GOL]"
+  const semMarcadores = t.replace(/\[[^\]]{1,30}\]/g, '').trim();
   if (semMarcadores === '' && /\[/.test(t)) return true;
-  return HALLUCINATIONS.some((re) => re.test(t));
+
+  if (HALLUCINATIONS.some((re) => re.test(t))) return true;
+
+  // Loop de palavra repetida: "um, um, um, um, …" / "ai, ai, ai, ai, …"
+  const palavras = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (palavras.length >= 6) {
+    const unicas = new Set(palavras);
+    // Poucas palavras distintas em muitas repetições = delírio, não fala.
+    if (unicas.size <= 2) return true;
+    const maisComum = Math.max(
+      ...[...unicas].map((p) => palavras.filter((x) => x === p).length)
+    );
+    if (maisComum / palavras.length > 0.6) return true;
+  }
+  return false;
 }
 
 // Tipagem mínima da saída do pipeline (evita `any` do pacote dinâmico).
@@ -95,6 +110,12 @@ export class LocalWhisperProvider implements SttProvider {
       chunk_length_s: 30,
       stride_length_s: 5,
       return_timestamps: true,
+      // Anti-alucinação: em silêncio/ruído o Whisper entra em loop
+      // ("um, um, um…", "[GRITOS DE GOL]"). Estes parâmetros seguram isso:
+      temperature: 0, // determinístico, sem "criatividade"
+      no_repeat_ngram_size: 4, // proíbe repetir a mesma sequência de 4 tokens
+      repetition_penalty: 1.2,
+      condition_on_previous_text: false, // não arrasta o delírio pro trecho seguinte
     });
 
     const entries: SttEntry[] = [];

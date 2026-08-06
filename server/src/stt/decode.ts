@@ -18,10 +18,17 @@ export async function decodeToPcm16kMono(filePath: string): Promise<Float32Array
   if (!ffmpegPath) throw new Error('ffmpeg-static não disponível.');
 
   return new Promise<Float32Array>((resolve, reject) => {
+    // Cadeia de filtros pra melhorar o reconhecimento:
+    //  highpass/lowpass → corta ronco e chiado fora da faixa da voz
+    //  afftdn           → redução de ruído de fundo
+    //  speechnorm       → equaliza o volume da fala (o áudio vinha baixo:
+    //                     RMS 0,028 — voz baixa faz o Whisper errar e alucinar)
+    const filtros = 'highpass=f=80,lowpass=f=7500,afftdn=nf=-25,speechnorm=e=12.5:r=0.0001:l=1';
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
       '-i', filePath,
+      '-af', filtros,
       '-f', 'f32le', // PCM float32 little-endian cru
       '-acodec', 'pcm_f32le',
       '-ac', '1', // mono
