@@ -57,7 +57,20 @@
       </div>
     </section>
 
-    <button class="btn-primary" id="btn-link" type="button" disabled>Vincular agora</button>
+    <!-- Gravação da reunião (tabCapture) -->
+    <section class="card" id="card-record">
+      <h2 class="card__title">Gravação</h2>
+      <div class="card__body">
+        <div class="row">
+          <span class="rec-dot" id="rec-dot"></span>
+          <span id="rec-status">Parada</span>
+        </div>
+        <p class="empty" id="rec-hint">Entre numa reunião do Meet para gravar.</p>
+        <button class="btn-primary" id="btn-record" type="button" disabled>Iniciar gravação</button>
+      </div>
+    </section>
+
+    <button class="btn-primary btn-link-secondary" id="btn-link" type="button" disabled>Vincular agora</button>
     <p class="feedback hidden" id="feedback"></p>
 
     <!-- Configuração discreta do backend -->

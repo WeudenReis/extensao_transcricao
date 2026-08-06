@@ -182,10 +182,83 @@
     }
   });
 
+  // ---------- Gravação (tabCapture) ----------
+  const recEls = {
+    dot: document.getElementById('rec-dot'),
+    status: document.getElementById('rec-status'),
+    hint: document.getElementById('rec-hint'),
+    btn: document.getElementById('btn-record'),
+  };
+  let recording = false;
+
+  async function activeMeetTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url && tab.url.startsWith('https://meet.google.com/')) return tab;
+    return null;
+  }
+
+  const MEET_CODE = /meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i;
+
+  async function renderRecording() {
+    const { recording: rec } = await chrome.storage.local.get({ recording: null });
+    recording = Boolean(rec && rec.capturing);
+    recEls.dot.classList.toggle('rec-dot--on', recording);
+    const tab = await activeMeetTab();
+
+    if (recording) {
+      recEls.status.textContent = 'Gravando';
+      recEls.hint.classList.add('hidden');
+      recEls.btn.textContent = 'Parar gravação';
+      recEls.btn.disabled = false;
+    } else {
+      recEls.status.textContent = rec && rec.error ? 'Erro' : 'Parada';
+      recEls.btn.textContent = 'Iniciar gravação';
+      if (tab) {
+        recEls.hint.classList.add('hidden');
+        recEls.btn.disabled = false;
+      } else {
+        recEls.hint.textContent = 'Abra a aba de uma reunião do Meet para gravar.';
+        recEls.hint.classList.remove('hidden');
+        recEls.btn.disabled = true;
+      }
+    }
+  }
+
+  recEls.btn.addEventListener('click', async () => {
+    recEls.btn.disabled = true;
+    try {
+      if (recording) {
+        await chrome.runtime.sendMessage({ type: 'STOP_TAB_CAPTURE' });
+        showFeedback('Gravação encerrada.');
+        return;
+      }
+      const tab = await activeMeetTab();
+      if (!tab) {
+        showFeedback('Abra a aba do Meet e tente de novo.', true);
+        return;
+      }
+      // getMediaStreamId PRECISA rodar no gesto do clique (regra do Chrome).
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+      const m = MEET_CODE.exec(tab.url);
+      await chrome.runtime.sendMessage({
+        type: 'START_TAB_CAPTURE',
+        streamId,
+        tabId: tab.id,
+        meetingCode: m ? m[1].toLowerCase() : null,
+      });
+      showFeedback('Gravando esta reunião.');
+    } catch (err) {
+      showFeedback('Falha ao iniciar: ' + (err && err.message ? err.message : 'erro'), true);
+    } finally {
+      renderRecording();
+    }
+  });
+
   // ---------- Atualização ao vivo ----------
   chrome.storage.onChanged.addListener((_changes, areaName) => {
-    if (areaName === 'local') refresh();
+    if (areaName === 'local') { refresh(); renderRecording(); }
   });
 
   refresh();
+  renderRecording();
 })();

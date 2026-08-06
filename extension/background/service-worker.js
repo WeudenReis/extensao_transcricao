@@ -315,8 +315,105 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
     }
 
+    // Popup pediu pra iniciar a gravação (tabCapture). O streamId JÁ veio do
+    // popup, que o obteve no gesto do clique (o Chrome exige gesto pra capturar).
+    case 'START_TAB_CAPTURE': {
+      startTabCapture(message.streamId, message.tabId, message.meetingCode)
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
+    case 'STOP_TAB_CAPTURE': {
+      stopTabCapture()
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
+    // Vindas do offscreen:
+    case 'CAPTURE_STATUS': {
+      recordingTabId = message.capturing ? recordingTabId : null;
+      chrome.storage.local.set({
+        recording: {
+          capturing: Boolean(message.capturing),
+          captureId: message.captureId || null,
+          bytesSent: message.bytesSent || 0,
+          meetingCode: message.meetingCode || null,
+        },
+      });
+      return false;
+    }
+    case 'CAPTURE_ERROR': {
+      chrome.storage.local.set({ recording: { capturing: false, error: message.error || 'erro' } });
+      closeOffscreen();
+      return false;
+    }
+    case 'CAPTURE_ENDED': {
+      recordingTabId = null;
+      chrome.storage.local.set({ recording: { capturing: false } });
+      closeOffscreen();
+      return false;
+    }
+
     default:
       return false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// tabCapture + offscreen: gravação confiável do áudio da reunião.
+// A aba (tabCapture) traz as vozes remotas (cliente); o microfone é capturado
+// no próprio offscreen. Precisa de um clique do usuário no popup (regra do Chrome).
+// ---------------------------------------------------------------------------
+let recordingTabId = null;
+
+async function ensureOffscreen() {
+  const has = await chrome.offscreen.hasDocument?.();
+  if (has) return;
+  await chrome.offscreen.createDocument({
+    url: 'offscreen/offscreen.html',
+    reasons: ['USER_MEDIA'],
+    justification: 'Gravar o áudio da reunião do Meet para transcrição.',
+  });
+}
+
+async function closeOffscreen() {
+  try {
+    if (await chrome.offscreen.hasDocument?.()) await chrome.offscreen.closeDocument();
+  } catch (err) {
+    debug('falha ao fechar offscreen:', err);
+  }
+}
+
+async function startTabCapture(streamId, tabId, meetingCode) {
+  if (!streamId) throw new Error('streamId ausente');
+  await ensureOffscreen();
+  const state = await getState();
+  const sessionId =
+    state.lastSession && isSessionFresh(state.lastSession) ? state.lastSession.sessionId : null;
+  recordingTabId = tabId || null;
+  // Pequena espera pra garantir que o offscreen registrou o listener.
+  await new Promise((r) => setTimeout(r, 150));
+  chrome.runtime.sendMessage({
+    target: 'offscreen',
+    type: 'START',
+    streamId,
+    backendUrl: state.settings.backendUrl,
+    meetingCode: meetingCode || (state.lastMeet && state.lastMeet.meetingCode) || null,
+    sessionId,
+  });
+}
+
+async function stopTabCapture() {
+  chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP' });
+}
+
+// Se a aba que está sendo gravada fechar, encerra a captura.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (recordingTabId && tabId === recordingTabId) {
+    stopTabCapture().catch(() => {});
+    recordingTabId = null;
   }
 });
 
