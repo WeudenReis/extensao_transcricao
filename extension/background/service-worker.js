@@ -483,6 +483,9 @@ async function startTabCapture(streamId, tabId, meetingCode) {
   const sessionId =
     state.lastSession && isSessionFresh(state.lastSession) ? state.lastSession.sessionId : null;
   recordingTabId = tabId || null;
+  const codigo = meetingCode || (state.lastMeet && state.lastMeet.meetingCode) || null;
+  // Sessão compartilhada: o offscreen usa a MESMA captura da legenda/áudio.
+  const captureId = await obterOuCriarCaptura(codigo, 'tab-capture');
   // Pequena espera pra garantir que o offscreen registrou o listener.
   await new Promise((r) => setTimeout(r, 150));
   chrome.runtime.sendMessage({
@@ -490,8 +493,9 @@ async function startTabCapture(streamId, tabId, meetingCode) {
     type: 'START',
     streamId,
     backendUrl: state.settings.backendUrl,
-    meetingCode: meetingCode || (state.lastMeet && state.lastMeet.meetingCode) || null,
+    meetingCode: codigo,
     sessionId,
+    captureId,
   });
 }
 
@@ -505,6 +509,33 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     stopTabCapture().catch(() => {});
     recordingTabId = null;
   }
+});
+
+/**
+ * Rede de segurança: se não sobrar nenhuma aba na reunião que está sendo
+ * capturada (fechou ou navegou pra fora), encerra a sessão. Sem isso, uma
+ * captura poderia ficar "aberta" pra sempre e nunca transcrever.
+ */
+async function encerrarSeNaoHaAbaDaReuniao() {
+  if (!capturaAtual) return;
+  const codigo = capturaAtual.meetingCode;
+  try {
+    const abas = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+    const aindaAberta = abas.some((t) => (t.url || '').includes(codigo));
+    if (!aindaAberta) {
+      debug('nenhuma aba da reunião', codigo, '— encerrando captura');
+      await encerrarCaptura('tab-closed');
+    }
+  } catch (err) {
+    debug('falha ao checar abas da reunião:', err);
+  }
+}
+
+chrome.tabs.onRemoved.addListener(() => {
+  setTimeout(() => encerrarSeNaoHaAbaDaReuniao(), 500);
+});
+chrome.tabs.onUpdated.addListener((_id, changeInfo) => {
+  if (changeInfo.url) setTimeout(() => encerrarSeNaoHaAbaDaReuniao(), 500);
 });
 
 // ---------------------------------------------------------------------------

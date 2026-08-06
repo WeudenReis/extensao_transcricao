@@ -143,21 +143,26 @@
       s.micStream = null;
     }
 
-    // Abre a captura no backend.
+    // Usa a sessão COMPARTILHADA (o service worker é o dono único). Criar uma
+    // sessão própria aqui fazia a reunião aparecer duplicada no painel.
     try {
-      const r = await fetch(backend('/api/capture/start'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meetingCode: s.meetingCode,
-          sessionId: msg.sessionId || null,
-          startedAt: new Date().toISOString(),
-          mode: 'tab-capture',
-          mimeType: mime,
-        }),
-      });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      s.captureId = (await r.json()).captureId;
+      if (msg.captureId) {
+        s.captureId = msg.captureId;
+      } else {
+        const r = await fetch(backend('/api/capture/start'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            meetingCode: s.meetingCode,
+            sessionId: msg.sessionId || null,
+            startedAt: new Date().toISOString(),
+            mode: 'tab-capture',
+            mimeType: mime,
+          }),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        s.captureId = (await r.json()).captureId;
+      }
     } catch (err) {
       debug('falha ao abrir captura no backend:', err && err.message);
       chrome.runtime.sendMessage({ type: 'CAPTURE_ERROR', error: 'backend: ' + (err && err.message) });

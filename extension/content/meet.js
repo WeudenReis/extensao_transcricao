@@ -378,25 +378,27 @@
   // --- Handlers dos eventos do tap ------------------------------------------
   async function onCaptureStart(msg) {
     await loadSettings();
-    const sessionId = await getSessionId();
     const meetingCode = currentMeetingCode();
     try {
-      const resp = await fetch(backend('/api/capture/start'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meetingCode,
-          sessionId,
-          startedAt: new Date().toISOString(),
-          mode: msg.mode || 'webrtc-tap',
-          mimeType: msg.mimeType || '',
-        }),
+      // Pede a captura ao service worker (dono ÚNICO da sessão). NÃO chamamos
+      // /api/capture/start direto: o script da legenda também captura esta mesma
+      // reunião e cada um criando a sua fazia a reunião aparecer DUPLICADA
+      // (uma sessão só com áudio, outra só com legenda).
+      const id = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'GET_CAPTURE', meetingCode, mode: msg.mode || 'webrtc-tap' },
+            (r) => {
+              if (chrome.runtime.lastError || !r || !r.ok) return resolve(null);
+              resolve(r.captureId);
+            }
+          );
+        } catch (_) { resolve(null); }
       });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-      captureId = data.captureId;
+      if (!id) throw new Error('service worker não devolveu captureId');
+      captureId = id;
       bytesSent = 0;
-      debug('captura iniciada no backend:', captureId);
+      debug('captura (compartilhada) ativa:', captureId);
       showBanner();
       startHeartbeat();
       reportStatus();
@@ -419,23 +421,17 @@
 
   async function onCaptureStop(msg) {
     lastStats.capturing = false;
-    await flushQueue();
-    if (captureId) {
+    await flushQueue(); // garante que os últimos pedaços subiram
+    // NÃO encerramos a sessão aqui: ela é COMPARTILHADA com a legenda, que
+    // costuma continuar depois que o áudio para. Quem encerra é o service
+    // worker (ao sair da chamada ou fechar a aba) — assim nada é cortado.
+    if (msg && msg.reason === 'tab-closed') {
       try {
-        await fetch(backend('/api/capture/stop'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            captureId,
-            endedAt: new Date().toISOString(),
-            reason: msg.reason || 'call-ended',
-            totalChunks: msg.totalChunks || { mic: 0, remote: 0 },
-          }),
-        });
-        debug('captura encerrada no backend:', captureId);
-      } catch (err) {
-        debug('falha ao encerrar captura:', err && err.message);
-      }
+        chrome.runtime.sendMessage(
+          { type: 'END_CAPTURE', reason: 'tab-closed' },
+          () => void chrome.runtime.lastError
+        );
+      } catch (_) {}
     }
     captureId = null;
     stopHeartbeat();
