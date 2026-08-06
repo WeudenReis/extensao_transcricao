@@ -315,6 +315,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
     }
 
+    // Os content scripts (legenda e áudio) pedem a MESMA captura por aqui.
+    case 'GET_CAPTURE': {
+      obterOuCriarCaptura(message.meetingCode, message.mode)
+        .then((captureId) => sendResponse({ ok: Boolean(captureId), captureId }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
+    case 'END_CAPTURE': {
+      encerrarCaptura(message.reason)
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
     // Popup pediu pra iniciar a gravação (tabCapture). O streamId JÁ veio do
     // popup, que o obteve no gesto do clique (o Chrome exige gesto pra capturar).
     case 'START_TAB_CAPTURE': {
@@ -360,6 +375,81 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
   }
 });
+
+// ---------------------------------------------------------------------------
+// DONO ÚNICO DA SESSÃO DE CAPTURA.
+//
+// Existem dois caminhos capturando a mesma reunião (legenda e áudio). Se cada um
+// chamar /api/capture/start, a reunião aparece DUPLICADA no painel — foi o que
+// aconteceu. Aqui o service worker cria a captura UMA vez por meetingCode e
+// entrega o mesmo captureId para os dois.
+// ---------------------------------------------------------------------------
+let capturaAtual = null; // { meetingCode, captureId }
+let criacaoEmAndamento = null; // Promise (evita corrida entre os dois scripts)
+
+async function obterOuCriarCaptura(meetingCode, modo) {
+  if (!meetingCode) return null;
+  if (capturaAtual && capturaAtual.meetingCode === meetingCode) {
+    return capturaAtual.captureId;
+  }
+  if (criacaoEmAndamento) return criacaoEmAndamento;
+
+  criacaoEmAndamento = (async () => {
+    const state = await getState();
+    const sessionId =
+      state.lastSession && isSessionFresh(state.lastSession)
+        ? state.lastSession.sessionId
+        : null;
+    const url = `${state.settings.backendUrl.replace(/\/+$/, '')}/api/capture/start`;
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          meetingCode,
+          sessionId,
+          startedAt: new Date().toISOString(),
+          mode: modo || 'captions',
+          mimeType: 'text/vtt',
+        }),
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const { captureId } = await resp.json();
+      capturaAtual = { meetingCode, captureId };
+      debug('captura única criada:', captureId, 'para', meetingCode);
+      return captureId;
+    } catch (err) {
+      debug('falha ao criar captura:', err && err.message);
+      return null;
+    } finally {
+      criacaoEmAndamento = null;
+    }
+  })();
+  return criacaoEmAndamento;
+}
+
+async function encerrarCaptura(motivo) {
+  if (!capturaAtual) return;
+  const { captureId } = capturaAtual;
+  capturaAtual = null;
+  const state = await getState();
+  const url = `${state.settings.backendUrl.replace(/\/+$/, '')}/api/capture/stop`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        captureId,
+        endedAt: new Date().toISOString(),
+        reason: motivo || 'call-ended',
+        totalChunks: { mic: 0, remote: 0 },
+      }),
+    });
+    debug('captura encerrada:', captureId);
+  } catch (err) {
+    debug('falha ao encerrar captura:', err && err.message);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // tabCapture + offscreen: gravação confiável do áudio da reunião.

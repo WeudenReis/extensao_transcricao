@@ -131,10 +131,16 @@ export function reviewPageHtml(): string {
     render(c);
   }
 
+  // Cores estáveis por participante (a legenda traz nomes reais, não só
+  // "Atendente"/"Cliente"), pra bater o olho e saber quem falou.
+  const coresPorNome = new Map();
   function whoClass(speaker) {
-    if (speaker === 'Atendente') return 'who at';
+    if (speaker === 'Atendente' || speaker === 'Você') return 'who at';
     if (speaker === 'Cliente') return 'who cl';
-    return 'who ot';
+    if (!coresPorNome.has(speaker)) {
+      coresPorNome.set(speaker, coresPorNome.size % 2 === 0 ? 'who cl' : 'who ot');
+    }
+    return coresPorNome.get(speaker);
   }
 
   function render(c) {
@@ -206,18 +212,69 @@ export function reviewPageHtml(): string {
       detailEl.appendChild(el('p', 'note',
         c.sttProvider === 'none'
           ? 'Sem STT configurado — configure STT_API_KEY pra ver o texto. O áudio acima já confirma que a captura funcionou.'
-          : 'Transcrição vazia (áudio muito curto ou sem fala detectada).'));
+          : 'Transcrição vazia (nenhuma fala detectada).'));
       return;
     }
-    for (const line of c.transcript) {
-      const row = el('div', 'line');
-      const who = el('div', whoClass(line.speaker));
-      who.appendChild(el('div', null, line.speaker));
-      who.appendChild(el('div', 't', fmtMs(line.startMs)));
-      row.appendChild(who);
-      row.appendChild(el('div', 'txt', line.text));
-      detailEl.appendChild(row);
+
+    // Quem falou (nomes reais quando vêm da legenda do Meet).
+    const nomes = [...new Set(c.transcript.map(l => l.speaker))];
+    const resumo = el('p', 'note',
+      c.transcript.length + ' falas · participantes: ' + nomes.join(', '));
+    detailEl.appendChild(resumo);
+
+    // Copiar tudo
+    const barra = el('div', 'actions');
+    const btnCopiar = el('button', 'btn ghost', 'Copiar transcrição');
+    btnCopiar.addEventListener('click', async () => {
+      const texto = c.transcript
+        .map(l => '[' + fmtMs(l.startMs) + '] ' + l.speaker + ': ' + l.text)
+        .join('\\n');
+      try {
+        await navigator.clipboard.writeText(texto);
+        btnCopiar.textContent = 'Copiado ✓';
+        setTimeout(() => { btnCopiar.textContent = 'Copiar transcrição'; }, 2000);
+      } catch (_) {
+        btnCopiar.textContent = 'Não foi possível copiar';
+      }
+    });
+    barra.appendChild(btnCopiar);
+    detailEl.appendChild(barra);
+
+    // Paginação: reuniões longas não travam a página.
+    const POR_PAGINA = 150;
+    const totalPaginas = Math.ceil(c.transcript.length / POR_PAGINA);
+    let pagina = 0;
+    const lista = el('div', null);
+    const nav = el('div', 'actions');
+    detailEl.appendChild(lista);
+    if (totalPaginas > 1) detailEl.appendChild(nav);
+
+    function desenharPagina() {
+      lista.replaceChildren();
+      const ini = pagina * POR_PAGINA;
+      for (const line of c.transcript.slice(ini, ini + POR_PAGINA)) {
+        const row = el('div', 'line');
+        const who = el('div', whoClass(line.speaker));
+        who.appendChild(el('div', null, line.speaker));
+        who.appendChild(el('div', 't', fmtMs(line.startMs)));
+        row.appendChild(who);
+        row.appendChild(el('div', 'txt', line.text));
+        lista.appendChild(row);
+      }
+      if (totalPaginas > 1) {
+        nav.replaceChildren();
+        const ant = el('button', 'btn ghost', '← Anteriores');
+        ant.disabled = pagina === 0;
+        ant.addEventListener('click', () => { pagina--; desenharPagina(); lista.scrollIntoView(); });
+        const prox = el('button', 'btn ghost', 'Próximas →');
+        prox.disabled = pagina >= totalPaginas - 1;
+        prox.addEventListener('click', () => { pagina++; desenharPagina(); lista.scrollIntoView(); });
+        nav.appendChild(ant);
+        nav.appendChild(el('span', 'note', 'Página ' + (pagina + 1) + ' de ' + totalPaginas));
+        nav.appendChild(prox);
+      }
     }
+    desenharPagina();
   }
 
   loadList();

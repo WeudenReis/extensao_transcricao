@@ -20,7 +20,7 @@
   'use strict';
 
   const LOG = '[chatPro cc]';
-  const CHECK_MS = 3000; // religa a legenda se cair
+  const CHECK_MS = 400; // vigia a legenda ~2,5x por segundo (religa quase na hora)
   const FINALIZE_MS = 2500; // silêncio que fecha uma fala
   const HEARTBEAT_MS = 15000;
 
@@ -37,7 +37,6 @@
   let iniciando = false;
   let heartbeatTimer = null;
   const pendentes = []; // falas aguardando envio (backend fora do ar)
-  const blocos = new Map(); // elemento -> { speaker, text, timer }
 
   const MEET_CODE = /meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i;
   function meetingCode() {
@@ -140,9 +139,11 @@
     }
   }
 
-  // Limites pra nunca "martelar" a interface do Meet.
-  const MAX_TENTATIVAS = 6;
-  const ESPERA_TENTATIVA_MS = 6000;
+  // Religa quase instantaneamente: 700ms é só o tempo de o Meet aplicar o
+  // atalho antes de tentarmos de novo (evita ficar batendo à toa).
+  // O limite alto só existe pra não martelar a interface se o Meet mudar.
+  const MAX_TENTATIVAS = 200;
+  const ESPERA_TENTATIVA_MS = 700;
   let tentativas = 0;
   let ultimaTentativa = 0;
 
@@ -183,10 +184,9 @@
         if (btn) {
           btn.click();
           debug(`tentativa ${tentativas}: botão da barra`);
-          // Se algo abriu por engano, fecha.
-          setTimeout(fecharDialogoAberto, 600);
+          setTimeout(fecharDialogoAberto, 500); // fecha se abriu algo por engano
         }
-      }, 1200);
+      }, 400);
     } catch (err) {
       debug('falha ao ligar legenda:', err);
     }
@@ -268,95 +268,121 @@
   }
 
   /**
-   * Extrai (falante, texto) de um bloco de legenda.
-   * O Meet monta cada fala como: avatar + nome + texto.
+   * Separa o texto do painel em falas por participante.
+   *
+   * O painel do Meet acumula as últimas falas assim:
+   *    Você
+   *    Não falou outra coisa, né?
+   *    Marcelo
+   *    Esse teste vai ser divulgado?
+   *
+   * Linha curta, sem pontuação final e seguida de outra linha = nome de quem fala.
    */
-  function lerBloco(bloco) {
-    try {
-      const txt = (bloco.innerText || '').trim();
-      if (!txt) return null;
-      const linhas = txt.split('\n').map((l) => l.trim()).filter(Boolean);
-      if (linhas.length === 0) return null;
-      // Heurística: 1ª linha curta e sem pontuação final = nome do falante.
-      let speaker = 'Participante';
-      let texto = linhas.join(' ');
-      if (linhas.length >= 2 && linhas[0].length <= 40 && !/[.?!]$/.test(linhas[0])) {
-        speaker = linhas[0];
-        texto = linhas.slice(1).join(' ');
+  function parsearLegendas(txtBruto) {
+    const linhas = (txtBruto || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const falas = [];
+    let atual = null;
+    for (let i = 0; i < linhas.length; i++) {
+      const linha = linhas[i];
+      const pareceNome =
+        linha.length <= 40 &&
+        !/[.?!…]$/.test(linha) &&
+        linha.split(/\s+/).length <= 5 &&
+        i < linhas.length - 1;
+      if (pareceNome) {
+        if (atual && atual.texto) falas.push(atual);
+        atual = { speaker: linha, texto: '' };
+      } else if (atual) {
+        atual.texto = (atual.texto ? atual.texto + ' ' : '') + linha;
+      } else {
+        atual = { speaker: 'Participante', texto: linha };
       }
-      texto = texto.trim();
-      if (!texto) return null;
-      // Segunda barreira: mesmo achando o container certo, nunca deixamos
-      // texto de interface virar "fala".
-      if (ehLixoDeInterface(speaker, texto)) return null;
-      return { speaker, texto };
-    } catch (_) {
-      return null;
     }
+    if (atual && atual.texto) falas.push(atual);
+    return falas
+      .map((f) => ({ speaker: f.speaker, texto: f.texto.trim() }))
+      .filter((f) => f.texto && !ehLixoDeInterface(f.speaker, f.texto));
   }
 
-  function agendarFinalizacao(bloco) {
-    const st = blocos.get(bloco);
+  /**
+   * Texto JÁ registrado de cada participante. O Meet reescreve a fala enquanto a
+   * pessoa fala e mantém as anteriores na tela — sem isso, cada leitura reenviava
+   * tudo de novo e o transcrito ficava com o histórico inteiro repetido.
+   */
+  const jaVistoPorFalante = new Map();
+
+  /** Devolve só a parte NOVA do que a pessoa falou. */
+  function novidade(speaker, texto) {
+    const anterior = jaVistoPorFalante.get(speaker) || '';
+    if (texto === anterior) return '';
+    if (anterior && texto.startsWith(anterior)) {
+      jaVistoPorFalante.set(speaker, texto);
+      return texto.slice(anterior.length).trim();
+    }
+    jaVistoPorFalante.set(speaker, texto);
+    return texto;
+  }
+
+  /** Fecha as falas pendentes (quem parou de falar) e envia. */
+  const pendentesPorFalante = new Map(); // speaker -> { texto, timer }
+
+  function agendarEnvio(speaker) {
+    const st = pendentesPorFalante.get(speaker);
     if (!st) return;
     if (st.timer) clearTimeout(st.timer);
-    st.timer = setTimeout(() => finalizar(bloco), FINALIZE_MS);
-  }
-
-  function finalizar(bloco) {
-    const st = blocos.get(bloco);
-    if (!st) return;
-    blocos.delete(bloco);
-    if (!st.texto) return;
-    enviarFala(st.speaker, st.texto);
+    st.timer = setTimeout(() => {
+      pendentesPorFalante.delete(speaker);
+      if (st.texto) enviarFala(speaker, st.texto);
+    }, FINALIZE_MS);
   }
 
   function processarMutacoes() {
     const cont = containerLegendas();
     if (!cont) return;
-    // Cada filho direto costuma ser uma fala; se não houver, trata o próprio.
-    const candidatos = cont.children.length ? Array.from(cont.children) : [cont];
-    for (const bloco of candidatos) {
-      const lido = lerBloco(bloco);
-      if (!lido) continue;
-      const atual = blocos.get(bloco);
-      if (!atual) {
-        blocos.set(bloco, { speaker: lido.speaker, texto: lido.texto, timer: null });
-      } else {
-        // O Meet reescreve a fala enquanto a pessoa fala: guardamos a versão mais longa.
-        if (lido.texto.length >= atual.texto.length) atual.texto = lido.texto;
-        atual.speaker = lido.speaker || atual.speaker;
-      }
-      agendarFinalizacao(bloco);
+    for (const fala of parsearLegendas(cont.innerText || '')) {
+      const novo = novidade(fala.speaker, fala.texto);
+      if (!novo) continue;
+      const st = pendentesPorFalante.get(fala.speaker) || { texto: '', timer: null };
+      st.texto = (st.texto ? st.texto + ' ' : '') + novo;
+      pendentesPorFalante.set(fala.speaker, st);
+      agendarEnvio(fala.speaker);
     }
   }
 
   // ---------------------------------------------------------------------------
   // Envio ao backend
   // ---------------------------------------------------------------------------
+  /**
+   * Pede a captura ao service worker (dono ÚNICO da sessão). Assim legenda e
+   * áudio compartilham o mesmo captureId — antes cada um criava a sua e a
+   * reunião aparecia duplicada no painel.
+   */
   async function garantirCaptura() {
     if (captureId || iniciando) return;
     iniciando = true;
     try {
       await carregarSettings();
-      const sessionId = await pedirSessionId();
-      const r = await fetch(backend('/api/capture/start'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meetingCode: meetingCode(),
-          sessionId,
-          startedAt: new Date().toISOString(),
-          mode: 'captions',
-          mimeType: 'text/vtt',
-        }),
+      const id = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'GET_CAPTURE', meetingCode: meetingCode(), mode: 'captions' },
+            (r) => {
+              if (chrome.runtime.lastError || !r || !r.ok) return resolve(null);
+              resolve(r.captureId);
+            }
+          );
+        } catch (_) { resolve(null); }
       });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      captureId = (await r.json()).captureId;
-      debug('captura de legenda iniciada:', captureId);
+      if (!id) throw new Error('service worker não devolveu captureId');
+      captureId = id;
+      debug('captura (compartilhada) ativa:', captureId);
       iniciarHeartbeat();
       escoar();
     } catch (err) {
-      debug('não consegui abrir a captura (tenta de novo):', err && err.message);
+      debug('não consegui obter a captura (tenta de novo):', err && err.message);
     } finally {
       iniciando = false;
     }
@@ -423,20 +449,21 @@
 
   async function encerrar(motivo) {
     if (!captureId) return;
-    for (const bloco of Array.from(blocos.keys())) finalizar(bloco);
+    // Fecha o que estava em andamento antes de encerrar.
+    for (const [speaker, st] of pendentesPorFalante) {
+      if (st.timer) clearTimeout(st.timer);
+      if (st.texto) enviarFala(speaker, st.texto);
+    }
+    pendentesPorFalante.clear();
+    jaVistoPorFalante.clear();
     await escoar();
+    // Quem encerra é o service worker (dono único da sessão).
     try {
-      await fetch(backend('/api/capture/stop'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          captureId,
-          endedAt: new Date().toISOString(),
-          reason: motivo || 'call-ended',
-          totalChunks: { mic: 0, remote: 0 },
-        }),
-      });
-      debug('captura de legenda encerrada');
+      chrome.runtime.sendMessage(
+        { type: 'END_CAPTURE', reason: motivo || 'call-ended' },
+        () => void chrome.runtime.lastError
+      );
+      debug('captura encerrada (via service worker)');
     } catch (_) {}
     captureId = null;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
