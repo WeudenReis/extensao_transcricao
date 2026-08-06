@@ -18,12 +18,18 @@ export async function decodeToPcm16kMono(filePath: string): Promise<Float32Array
   if (!ffmpegPath) throw new Error('ffmpeg-static não disponível.');
 
   return new Promise<Float32Array>((resolve, reject) => {
-    // Cadeia de filtros pra melhorar o reconhecimento:
+    // Cadeia de filtros pra melhorar o reconhecimento SEM inflar o silêncio:
     //  highpass/lowpass → corta ronco e chiado fora da faixa da voz
     //  afftdn           → redução de ruído de fundo
-    //  speechnorm       → equaliza o volume da fala (o áudio vinha baixo:
-    //                     RMS 0,028 — voz baixa faz o Whisper errar e alucinar)
-    const filtros = 'highpass=f=80,lowpass=f=7500,afftdn=nf=-25,speechnorm=e=12.5:r=0.0001:l=1';
+    //  agate            → porta de ruído: silêncio/ambiente abaixo do limiar é
+    //                     zerado, pra o Whisper não alucinar "[Som de...]" em
+    //                     cima de silêncio (limiar baixo pra não cortar fala)
+    //  dynaudnorm       → normalização SUAVE do volume (não amplifica o silêncio
+    //                     como o speechnorm anterior fazia)
+    const filtros =
+      'highpass=f=80,lowpass=f=7500,afftdn=nf=-25,' +
+      'agate=threshold=0.006:ratio=3:attack=10:release=250,' +
+      'dynaudnorm=f=250:g=7:p=0.6';
     const args = [
       '-hide_banner',
       '-loglevel', 'error',

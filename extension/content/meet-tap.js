@@ -154,16 +154,18 @@
   const capturedElements = new WeakSet();
 
   /**
-   * Captura a voz dos participantes a partir dos elementos <audio>/<video> que
-   * o PRÓPRIO Meet usa pra tocar a reunião.
+   * Captura a voz dos participantes grampeando a SAÍDA dos elementos de mídia
+   * que o próprio Meet usa pra tocar a reunião.
    *
-   * POR QUE ASSIM (bug real de produção): pegar a track direto do
-   * RTCPeerConnection e embrulhar num MediaStream novo gravava 150s de silêncio
-   * absoluto (RMS 0,00000) — no Chrome o áudio remoto só "flui" pro Web Audio
-   * se o stream estiver de fato sendo tocado por um elemento de mídia. Os
-   * elementos do Meet já estão tocando (é o que você ouve), então usamos
-   * exatamente o srcObject deles. Não mexemos no elemento: só derivamos uma
-   * fonte a partir do mesmo stream, sem alterar o que o usuário escuta.
+   * POR QUE createMediaElementSource E NÃO createMediaStreamSource (bug real,
+   * medido: 150s de RMS 0,00000): no Chrome, `createMediaStreamSource` de uma
+   * faixa REMOTA de WebRTC entrega silêncio absoluto — é um bug antigo e
+   * conhecido. Já `createMediaElementSource` pega o áudio DEPOIS que o elemento
+   * <audio>/<video> o reproduziu, e isso funciona pro áudio remoto.
+   *
+   * Efeito colateral: createMediaElementSource redireciona a saída do elemento
+   * pro nosso grafo. Por isso reconectamos a `audioCtx.destination` — senão o
+   * usuário PARA de ouvir a reunião. Cada elemento só aceita a chamada uma vez.
    */
   function scanMediaElements() {
     if (!audioCtx || !remoteDest) return;
@@ -175,24 +177,26 @@
         if (!stream || typeof stream.getAudioTracks !== 'function') continue;
         const tracks = stream.getAudioTracks();
         if (tracks.length === 0) continue;
-        // Ignora o eco do próprio microfone (se o Meet tiver um preview local).
+        // Ignora preview do próprio microfone (evita gravar o mic em dobro).
         if (tracks.every((t) => t.label && /default|microfone|microphone/i.test(t.label))) {
           continue;
         }
+        capturedElements.add(el); // marca ANTES: se falhar, não tenta de novo
         try {
-          const source = audioCtx.createMediaStreamSource(stream);
-          source.connect(remoteDest);
-          capturedElements.add(el);
+          const source = audioCtx.createMediaElementSource(el);
+          source.connect(remoteDest); // ramo que grava
+          source.connect(audioCtx.destination); // ramo que o usuário ouve
           for (const t of tracks) remoteTracks.add(t);
           novos++;
         } catch (err) {
-          debug('não consegui ligar elemento de mídia ao mix:', err);
+          // "already connected" = outro elemento/instância já grampeou; ok.
+          debug('elemento de mídia não grampeado (provável já conectado):', err && err.message);
         }
       }
     } catch (err) {
       debug('falha ao varrer elementos de mídia:', err);
     }
-    if (novos > 0) debug(`${novos} elemento(s) de áudio do Meet ligados ao mix`);
+    if (novos > 0) debug(`${novos} elemento(s) de mídia do Meet grampeados`);
   }
 
   /**
@@ -429,7 +433,7 @@
     patchRTCPeerConnection();
     patchGetUserMedia();
     startKeepAlive();
-    debug('tap instalado');
+    debug('tap instalado — v3 (captura remota via createMediaElementSource)');
   } catch (err) {
     debug('falha no bootstrap do tap:', err);
   }

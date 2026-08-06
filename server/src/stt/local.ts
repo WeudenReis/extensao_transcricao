@@ -28,6 +28,20 @@ const HALLUCINATIONS = [
   /^♪+$/,
 ];
 
+/**
+ * Limpa marcadores que o Whisper inventa em silêncio/ruído e que vêm MISTURADOS
+ * com fala real: "[Som de telefone]", "[MÚSICA]", "♪", "(Para o chão)".
+ * Devolve o texto sem esses marcadores (ou vazio, se só tinha lixo).
+ */
+export function cleanText(text: string): string {
+  return text
+    .replace(/\[[^\]]{1,40}\]/g, ' ') // [Som de X], [MÚSICA]
+    .replace(/\((?:som|músic|ru[íi]do|risos|aplausos)[^)]*\)/gi, ' ') // (Som de X)
+    .replace(/♪+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export function isHallucination(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
@@ -121,14 +135,18 @@ export class LocalWhisperProvider implements SttProvider {
     const entries: SttEntry[] = [];
     if (result.chunks && result.chunks.length > 0) {
       for (const chunk of result.chunks) {
-        const text = chunk.text.trim();
-        if (!text || isHallucination(text)) continue;
+        if (isHallucination(chunk.text)) continue;
+        const text = cleanText(chunk.text);
+        if (!text) continue; // sobrou só marcador → descarta
         const startMs = Math.round((chunk.timestamp[0] ?? 0) * 1000);
         const endMs = Math.round((chunk.timestamp[1] ?? chunk.timestamp[0] ?? 0) * 1000);
         entries.push({ speaker: 'Falante', text, startMs, endMs });
       }
-    } else if (result.text.trim() && !isHallucination(result.text.trim())) {
-      entries.push({ speaker: 'Falante', text: result.text.trim(), startMs: 0, endMs: 0 });
+    } else {
+      const text = cleanText(result.text);
+      if (text && !isHallucination(result.text)) {
+        entries.push({ speaker: 'Falante', text, startMs: 0, endMs: 0 });
+      }
     }
 
     log.info(`transcrição local ok (${entries.length} trechos).`);
