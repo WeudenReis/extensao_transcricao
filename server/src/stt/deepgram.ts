@@ -56,7 +56,8 @@ export class DeepgramProvider implements SttProvider {
       method: 'POST',
       headers: {
         Authorization: `Token ${this.apiKey}`,
-        'Content-Type': 'audio/webm',
+        // O pipeline entrega .wav (PCM 16 kHz mono) — ver stt/decode.ts.
+        'Content-Type': input.filePath.endsWith('.wav') ? 'audio/wav' : 'audio/webm',
       },
       // Uint8Array é aceito como BodyInit; evita depender de tipos de Buffer.
       body: new Uint8Array(audio),

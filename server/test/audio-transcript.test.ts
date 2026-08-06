@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   mergeTracks,
   labelRemote,
   labelMic,
   computeCoverage,
-  concatChunks,
   type MergedEntry,
 } from '../src/pipeline/audioTranscript.js';
+import { writeWav } from '../src/stt/decode.js';
 import type { SttEntry } from '../src/stt/types.js';
 import type { CaptureHeartbeatRow } from '../src/db.js';
 
@@ -72,10 +75,17 @@ describe('fusão das trilhas', () => {
   });
 });
 
-describe('concatenação de chunks', () => {
-  it('junta os buffers na ordem recebida', () => {
-    const out = concatChunks([Buffer.from([1, 2]), Buffer.from([3]), Buffer.from([4, 5])]);
-    expect(Array.from(out)).toEqual([1, 2, 3, 4, 5]);
+describe('montagem do áudio', () => {
+  it('gera um WAV válido (cabeçalho RIFF/WAVE) a partir do PCM', () => {
+    const pcm = new Float32Array([0, 0.5, -0.5, 1, -1]);
+    const out = join(tmpdir(), `chatpro-test-${Date.now()}.wav`);
+    writeWav(pcm, out);
+    const bytes = readFileSync(out);
+    expect(bytes.subarray(0, 4).toString()).toBe('RIFF');
+    expect(bytes.subarray(8, 12).toString()).toBe('WAVE');
+    // 44 bytes de cabeçalho + 2 bytes por amostra
+    expect(bytes.length).toBe(44 + pcm.length * 2);
+    rmSync(out, { force: true });
   });
 });
 

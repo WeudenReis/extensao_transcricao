@@ -72,20 +72,20 @@ export function createReviewRouter(deps: ReviewRouterDeps): Router {
       error: c.error,
       transcript: c.transcript_json ? JSON.parse(c.transcript_json) : [],
       hasAudio: {
-        mic: existsSync(join(captureDir, c.id, 'mic.webm')),
-        remote: existsSync(join(captureDir, c.id, 'remote.webm')),
+        mic: existsSync(join(captureDir, c.id, 'mic.wav')),
+        remote: existsSync(join(captureDir, c.id, 'remote.wav')),
       },
     });
   });
 
   router.get('/api/captures/:id/audio/:track', (req, res) => {
     const track = req.params.track === 'mic' ? 'mic' : 'remote';
-    const file = join(captureDir, req.params.id, `${track}.webm`);
+    const file = join(captureDir, req.params.id, `${track}.wav`);
     if (!existsSync(file)) {
       res.status(404).json({ error: 'áudio não disponível.' });
       return;
     }
-    res.setHeader('Content-Type', 'audio/webm');
+    res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('Content-Length', statSync(file).size);
     createReadStream(file).pipe(res);
   });

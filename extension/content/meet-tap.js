@@ -135,22 +135,47 @@
   // não há mais nenhum sinal de chamada ativa.
   // ===========================================================================
   function ensureAudioContext() {
-    if (audioCtx) return;
+    if (audioCtx) {
+      // Um AudioContext suspenso também grava silêncio — reativa sempre.
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      return;
+    }
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       remoteDest = audioCtx.createMediaStreamDestination();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     } catch (err) {
       debug('AudioContext indisponível:', err);
     }
   }
 
+  // Mantém os elementos <audio> vivos (não podem ser coletados pelo GC).
+  const sinks = [];
+
   function connectRemoteTrack(track) {
     if (!audioCtx || !remoteDest) return;
     if (connectedRemote.has(track)) return;
     try {
-      const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+      const stream = new MediaStream([track]);
+
+      // ATENÇÃO (bug real de produção): no Chrome, faixa remota de WebRTC
+      // roteada SÓ pelo Web Audio grava 155s de silêncio absoluto (RMS 0).
+      // O áudio só "flui" se o stream também estiver preso a um <audio>.
+      // Criamos um sink mudo (muted) só pra destravar o fluxo — quem toca a
+      // reunião de verdade continua sendo o player do próprio Meet.
+      const sink = new Audio();
+      sink.srcObject = stream;
+      sink.muted = true;
+      sink.autoplay = true;
+      sink.play().catch(() => {
+        /* autoplay bloqueado não impede a captura */
+      });
+      sinks.push(sink);
+
+      const source = audioCtx.createMediaStreamSource(stream);
       source.connect(remoteDest);
       connectedRemote.add(track);
+      debug('voz remota conectada ao mix (com sink de áudio)');
     } catch (err) {
       debug('falha ao conectar track remota ao mix:', err);
     }
@@ -293,16 +318,28 @@
         if (wantsAudio) {
           const audioTracks = stream.getAudioTracks();
           if (audioTracks.length > 0) {
-            // Descarta uma clone anterior (troca de microfone/renegociação).
-            if (micTrack) {
+            // O Meet chama getUserMedia MAIS DE UMA VEZ (lobby → chamada, troca
+            // de microfone, renegociação). A cada vez trocamos a clone — e é
+            // OBRIGATÓRIO derrubar o gravador antigo junto, senão ele fica preso
+            // a uma track morta e a gravação do microfone para calada (bug real:
+            // 1 pedaço de 5s numa call de 2min).
+            const anterior = micTrack;
+            micTrack = audioTracks[0].clone();
+            micTrack.enabled = true;
+            stopRecorder('mic'); // força recriar o gravador na nova clone
+            if (anterior) {
               try {
-                micTrack.stop();
+                anterior.stop();
               } catch (_) {
                 /* ignore */
               }
             }
-            micTrack = audioTracks[0].clone();
-            micTrack.enabled = true;
+            // Se a clone acabar sozinha, também recria.
+            micTrack.addEventListener('ended', () => {
+              debug('clone do microfone terminou');
+              stopRecorder('mic');
+              evaluateCapture();
+            });
             debug('microfone clonado (independente do mute do Meet)');
             evaluateCapture();
           }
@@ -327,6 +364,15 @@
         // Limpa tracks remotas mortas que não dispararam 'ended'.
         for (const track of remoteTracks) {
           if (track.readyState !== 'live') remoteTracks.delete(track);
+        }
+        // Cinto de segurança: se um gravador parou sozinho (track trocada,
+        // erro interno), derruba a referência pra evaluateCapture recriá-lo.
+        for (const nome of ['mic', 'remote']) {
+          const rec = recorders[nome];
+          if (rec && rec.state === 'inactive') {
+            debug('gravador', nome, 'estava inativo — recriando');
+            recorders[nome] = null;
+          }
         }
         evaluateCapture();
       } catch (err) {

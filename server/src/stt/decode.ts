@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import ffmpegStatic from 'ffmpeg-static';
 import { createLogger } from '../log.js';
 
@@ -51,4 +52,73 @@ export async function decodeToPcm16kMono(filePath: string): Promise<Float32Array
       resolve(samples);
     });
   });
+}
+
+export const SAMPLE_RATE = 16000;
+
+/**
+ * Junta os pedaços do MediaRecorder e devolve o áudio em PCM.
+ *
+ * COMO: cola os .webm byte a byte num arquivo temporário e manda UMA passada de
+ * ffmpeg. Só o primeiro pedaço traz o cabeçalho, e os seguintes são continuação
+ * do mesmo fluxo — o ffmpeg lê tudo (medido: 31 pedaços → 154,9 s).
+ *
+ * NÃO tente decodificar pedaço a pedaço: do segundo em diante não há cabeçalho e
+ * cada um falha isoladamente (rendia 4 s de 155 s).
+ */
+export async function decodeChunksToPcm(filePaths: string[]): Promise<Float32Array> {
+  if (filePaths.length === 0) return new Float32Array(0);
+
+  const joined = filePaths[0]!.replace(/-\d+\.webm$/, '') + '-joined.webm';
+  writeFileSync(joined, Buffer.concat(filePaths.map((p) => readFileSync(p))));
+  try {
+    const pcm = await decodeToPcm16kMono(joined);
+    log.info(
+      `áudio montado: ${filePaths.length} pedaços → ${(pcm.length / SAMPLE_RATE).toFixed(1)}s`
+    );
+    return pcm;
+  } finally {
+    try {
+      rmSync(joined, { force: true });
+    } catch {
+      /* temporário — ignorar */
+    }
+  }
+}
+
+/** RMS do sinal: perto de 0 = silêncio (usado pra avisar no log). */
+export function medirVolume(pcm: Float32Array): number {
+  if (pcm.length === 0) return 0;
+  let soma = 0;
+  for (const v of pcm) soma += v * v;
+  return Math.sqrt(soma / pcm.length);
+}
+
+/**
+ * Escreve PCM float32 como WAV PCM 16 bits mono 16 kHz.
+ * WAV é trivialmente válido: toca no navegador e é aceito por qualquer STT.
+ */
+export function writeWav(pcm: Float32Array, outPath: string): void {
+  const dataBytes = pcm.length * 2; // 16 bits por amostra
+  const buffer = Buffer.alloc(44 + dataBytes);
+
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16); // tamanho do bloco fmt
+  buffer.writeUInt16LE(1, 20); // PCM
+  buffer.writeUInt16LE(1, 22); // mono
+  buffer.writeUInt32LE(SAMPLE_RATE, 24);
+  buffer.writeUInt32LE(SAMPLE_RATE * 2, 28); // byte rate
+  buffer.writeUInt16LE(2, 32); // block align
+  buffer.writeUInt16LE(16, 34); // bits por amostra
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(dataBytes, 40);
+
+  for (let i = 0; i < pcm.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, pcm[i] ?? 0));
+    buffer.writeInt16LE(Math.round(clamped * 32767), 44 + i * 2);
+  }
+  writeFileSync(outPath, buffer);
 }

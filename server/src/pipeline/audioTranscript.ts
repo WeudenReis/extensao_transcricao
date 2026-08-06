@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Db, CaptureRow, CaptureHeartbeatRow } from '../db.js';
 import type { SttProvider, SttEntry } from '../stt/index.js';
+import { decodeChunksToPcm, writeWav, medirVolume } from '../stt/decode.js';
 import { createLogger, errorMessage } from '../log.js';
 
 /**
@@ -36,15 +37,6 @@ export interface Coverage {
 }
 
 // ─── Funções puras (testáveis isoladamente) ──────────────────────────────────
-
-/**
- * Concatena chunks webm/opus do MESMO MediaRecorder por bytes.
- * Só o primeiro chunk traz o header/inicialização; os demais são continuação,
- * então a concatenação binária em ordem de seq produz um arquivo tocável.
- */
-export function concatChunks(buffers: Buffer[]): Buffer {
-  return Buffer.concat(buffers);
-}
 
 /** Renomeia falantes da trilha remota: 1 falante → "Cliente"; vários → mantém. */
 export function labelRemote(entries: SttEntry[]): MergedEntry[] {
@@ -190,9 +182,9 @@ export class AudioPipeline {
     }
     db.setCaptureStatus(captureId, 'transcribing');
 
-    // 1) Concatena chunks de cada trilha.
-    const micFile = this.assembleTrack(captureId, 'mic');
-    const remoteFile = this.assembleTrack(captureId, 'remote');
+    // 1) Monta cada trilha (decodifica pedaço a pedaço e grava um .wav válido).
+    const micFile = await this.assembleTrack(captureId, 'mic');
+    const remoteFile = await this.assembleTrack(captureId, 'remote');
 
     // 2) Transcreve (se houver provedor configurado).
     let mic: MergedEntry[] = [];
@@ -247,17 +239,35 @@ export class AudioPipeline {
     }
   }
 
-  /** Concatena os chunks de uma trilha; devolve o caminho do arquivo ou null. */
-  private assembleTrack(captureId: string, track: 'mic' | 'remote'): string | null {
+  /**
+   * Monta a trilha: decodifica CADA pedaço e junta em PCM, gravando um .wav.
+   * (Colar os .webm byte a byte só produzia os primeiros segundos — ver
+   * decodeChunksToPcm.) Devolve o caminho do .wav ou null.
+   */
+  private async assembleTrack(captureId: string, track: 'mic' | 'remote'): Promise<string | null> {
     const dir = join(this.deps.captureDir, captureId);
     if (!existsSync(dir)) return null;
     const files = readdirSync(dir)
-      .filter((f) => f.startsWith(`${track}-`) && f.endsWith('.webm') && f !== `${track}.webm`)
-      .sort(); // zero-pad garante ordem correta
+      .filter((f) => f.startsWith(`${track}-`) && f.endsWith('.webm'))
+      .sort() // zero-pad garante a ordem correta
+      .map((f) => join(dir, f));
     if (files.length === 0) return null;
-    const buffers = files.map((f) => readFileSync(join(dir, f)));
-    const out = join(dir, `${track}.webm`);
-    writeFileSync(out, concatChunks(buffers));
+
+    const pcm = await decodeChunksToPcm(files);
+    if (pcm.length === 0) return null;
+
+    // Sinal mudo é falha silenciosa (já aconteceu: 155s de RMS 0 na trilha
+    // remota). Avisa alto no log em vez de deixar o STT alucinar em cima.
+    const volume = medirVolume(pcm);
+    if (volume < 0.0005) {
+      log.warn(
+        `trilha ${track} da captura ${captureId} está MUDA (RMS ${volume.toFixed(6)}, ` +
+          `${(pcm.length / 16000).toFixed(1)}s) — verifique a captura no navegador.`
+      );
+    }
+
+    const out = join(dir, `${track}.wav`);
+    writeWav(pcm, out);
     return out;
   }
 

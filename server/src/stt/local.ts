@@ -15,6 +15,28 @@ import { decodeToPcm16kMono } from './decode.js';
 
 const log = createLogger('stt/local');
 
+/**
+ * Em trechos de silêncio ou ruído o Whisper "alucina" marcadores como
+ * "[Música]", "Legendado por...", "Obrigado." Filtramos os casos clássicos pra
+ * não poluir a transcrição com texto que ninguém falou.
+ */
+const HALLUCINATIONS = [
+  /^\[?\s*(música|music|musique|aplausos|applause|risos|laughter|silêncio|silence|ruído|inaudível)\s*\]?[.!]?$/i,
+  /^legenda(s|do|s? por)\b/i,
+  /^subtitles? by\b/i,
+  /^amara\.org$/i,
+  /^♪+$/,
+];
+
+export function isHallucination(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  // Repetição do mesmo marcador: "[Música] [Música] [Música]"
+  const semMarcadores = t.replace(/\[[^\]]{1,20}\]/g, '').trim();
+  if (semMarcadores === '' && /\[/.test(t)) return true;
+  return HALLUCINATIONS.some((re) => re.test(t));
+}
+
 // Tipagem mínima da saída do pipeline (evita `any` do pacote dinâmico).
 interface AsrChunk {
   timestamp: [number | null, number | null];
@@ -79,12 +101,12 @@ export class LocalWhisperProvider implements SttProvider {
     if (result.chunks && result.chunks.length > 0) {
       for (const chunk of result.chunks) {
         const text = chunk.text.trim();
-        if (!text) continue;
+        if (!text || isHallucination(text)) continue;
         const startMs = Math.round((chunk.timestamp[0] ?? 0) * 1000);
         const endMs = Math.round((chunk.timestamp[1] ?? chunk.timestamp[0] ?? 0) * 1000);
         entries.push({ speaker: 'Falante', text, startMs, endMs });
       }
-    } else if (result.text.trim()) {
+    } else if (result.text.trim() && !isHallucination(result.text.trim())) {
       entries.push({ speaker: 'Falante', text: result.text.trim(), startMs: 0, endMs: 0 });
     }
 
