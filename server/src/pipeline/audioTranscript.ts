@@ -182,6 +182,36 @@ export class AudioPipeline {
     }
     db.setCaptureStatus(captureId, 'transcribing');
 
+    // CAMINHO PRINCIPAL: legenda do Meet. O texto já vem pronto (e com o nome de
+    // quem falou) do reconhecimento do Google — melhor que o STT local em pt-BR.
+    const captions = db.listCaptions(captureId);
+    if (captions.length > 0) {
+      const transcript: MergedEntry[] = [];
+      const t0 = Date.parse(capture.started_at);
+      for (const c of captions) {
+        const ms = Math.max(0, Date.parse(c.at) - t0);
+        transcript.push({ speaker: c.speaker, text: c.text, startMs: ms, endMs: ms });
+      }
+      const coverage = computeCoverage(
+        capture.started_at,
+        capture.ended_at,
+        db.listHeartbeats(captureId)
+      );
+      db.saveCaptureTranscript({
+        id: captureId,
+        transcriptJson: JSON.stringify(transcript),
+        coverageRatio: coverage.ratio,
+        gapsJson: JSON.stringify(coverage.gaps),
+        sttProvider: 'meet-captions',
+        status: 'ready-for-review',
+      });
+      log.info(
+        `captura ${captureId} pronta pela LEGENDA: ${transcript.length} falas, cobertura ${(coverage.ratio * 100).toFixed(0)}%.`
+      );
+      if (this.deps.autoSendVoreo) await this.sendToVoreo(captureId);
+      return;
+    }
+
     // 1) Monta cada trilha (decodifica pedaço a pedaço e grava um .wav válido).
     const micFile = await this.assembleTrack(captureId, 'mic');
     const remoteFile = await this.assembleTrack(captureId, 'remote');

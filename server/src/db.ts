@@ -79,6 +79,15 @@ export interface CaptureRow {
   error: string | null;
 }
 
+export interface CaptionRow {
+  id: number;
+  capture_id: string;
+  seq: number;
+  speaker: string;
+  text: string;
+  at: string;
+}
+
 export interface CaptureHeartbeatRow {
   id: number;
   capture_id: string;
@@ -213,8 +222,18 @@ export class Db {
       CREATE INDEX IF NOT EXISTS idx_links_meeting_code ON links (meeting_code);
       CREATE INDEX IF NOT EXISTS idx_voreo_queue_next ON voreo_queue (next_attempt_at);
       CREATE INDEX IF NOT EXISTS idx_event_queue_status_next ON event_queue (status, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS capture_captions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        capture_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        speaker TEXT NOT NULL,
+        text TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status);
       CREATE INDEX IF NOT EXISTS idx_hb_capture ON capture_heartbeats (capture_id, at);
+      CREATE INDEX IF NOT EXISTS idx_cc_capture ON capture_captions (capture_id, seq);
     `);
   }
 
@@ -677,6 +696,38 @@ export class Db {
         remoteTracks: input.remoteTracks,
         bytesSent: input.bytesSent,
       });
+  }
+
+  addCaption(input: {
+    captureId: string;
+    seq: number;
+    speaker: string;
+    text: string;
+    at: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO capture_captions (capture_id, seq, speaker, text, at)
+         VALUES (@captureId, @seq, @speaker, @text, @at)`
+      )
+      .run(input);
+  }
+
+  listCaptions(captureId: string): CaptionRow[] {
+    return this.db
+      .prepare<[string], CaptionRow>(
+        'SELECT * FROM capture_captions WHERE capture_id = ? ORDER BY seq ASC'
+      )
+      .all(captureId);
+  }
+
+  countCaptions(captureId: string): number {
+    const r = this.db
+      .prepare<[string], { n: number }>(
+        'SELECT COUNT(*) AS n FROM capture_captions WHERE capture_id = ?'
+      )
+      .get(captureId);
+    return r?.n ?? 0;
   }
 
   listHeartbeats(captureId: string): CaptureHeartbeatRow[] {

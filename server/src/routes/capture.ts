@@ -46,6 +46,14 @@ const heartbeatSchema = z.object({
   bytesSent: z.number().int().nonnegative(),
 });
 
+const captionSchema = z.object({
+  captureId: z.string().uuid(),
+  seq: z.number().int().nonnegative(),
+  speaker: z.string().min(1).max(120),
+  text: z.string().min(1).max(5000),
+  at: z.string().datetime({ offset: true }),
+});
+
 const stopSchema = z.object({
   captureId: z.string().uuid(),
   endedAt: z.string().datetime({ offset: true }),
@@ -145,6 +153,22 @@ export function createCaptureRouter(deps: CaptureRouterDeps): Router {
       res.status(204).end();
     }
   );
+
+  // Legenda do Meet (caminho principal de transcrição): cada fala fechada vira
+  // uma linha. Não passa por STT — o texto já vem pronto do Google.
+  router.post('/api/capture/caption', (req, res) => {
+    const parsed = captionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'caption inválida.', issues: parsed.error.issues });
+      return;
+    }
+    if (!db.getCapture(parsed.data.captureId)) {
+      res.status(404).json({ error: 'captureId desconhecido.' });
+      return;
+    }
+    db.addCaption(parsed.data);
+    res.status(204).end();
+  });
 
   router.post('/api/capture/heartbeat', (req, res) => {
     const parsed = heartbeatSchema.safeParse(req.body);
