@@ -267,6 +267,68 @@
   }
 
   // ===========================================================================
+  // MONKEYPATCH 0 — Web Audio: captura TUDO que o Meet toca nos alto-falantes.
+  //
+  // POR QUE ESTE É O CAMINHO CERTO (descoberto pelos logs do próprio Meet:
+  // "loadAudioAnalyzer", "NetEq", TensorFlow Lite): o Meet NÃO toca a voz dos
+  // participantes por elementos <audio> — ele processa e reproduz via Web Audio.
+  // Por isso tanto createMediaStreamSource (faixa WebRTC = silêncio) quanto
+  // createMediaElementSource (não há elemento) falharam.
+  //
+  // Aqui embrulhamos AudioNode.connect: sempre que QUALQUER nó do Meet se
+  // conectar à saída de som (AudioDestinationNode), conectamos o mesmo nó também
+  // a um destino nosso. Resultado: gravamos exatamente o que sai no alto-falante,
+  // sem alterar em nada o que o usuário ouve.
+  // ===========================================================================
+  const webAudioTaps = new WeakMap(); // AudioContext -> MediaStreamAudioDestinationNode
+
+  function patchWebAudio() {
+    if (typeof AudioNode === 'undefined' || !AudioNode.prototype.connect) return;
+    const nativeConnect = AudioNode.prototype.connect;
+
+    AudioNode.prototype.connect = function (destino, ...resto) {
+      const resultado = nativeConnect.call(this, destino, ...resto);
+      try {
+        const ehSaida =
+          destino &&
+          typeof AudioDestinationNode !== 'undefined' &&
+          destino instanceof AudioDestinationNode;
+        if (ehSaida) {
+          const ctx = destino.context;
+          let tap = webAudioTaps.get(ctx);
+          if (!tap) {
+            tap = ctx.createMediaStreamDestination();
+            webAudioTaps.set(ctx, tap);
+            onNovoTap(tap);
+          }
+          // Liga o MESMO nó ao nosso destino (ramo paralelo, não substitui nada).
+          nativeConnect.call(this, tap);
+        }
+      } catch (err) {
+        debug('falha ao grampear nó de áudio:', err);
+      }
+      return resultado;
+    };
+    debug('Web Audio embrulhado (captura da saída de som)');
+  }
+
+  /** Liga o stream grampeado ao nosso mix de gravação. */
+  function onNovoTap(tap) {
+    try {
+      ensureAudioContext();
+      if (!audioCtx || !remoteDest) return;
+      // Stream local (não é faixa WebRTC), então createMediaStreamSource funciona.
+      const src = audioCtx.createMediaStreamSource(tap.stream);
+      src.connect(remoteDest);
+      for (const t of tap.stream.getAudioTracks()) remoteTracks.add(t);
+      debug('saída de áudio do Meet grampeada — voz do cliente será gravada');
+      evaluateCapture();
+    } catch (err) {
+      debug('falha ao ligar tap de Web Audio:', err);
+    }
+  }
+
+  // ===========================================================================
   // MONKEYPATCH 1 — RTCPeerConnection: captura as vozes remotas.
   //
   // Toda chamada do Meet cria RTCPeerConnection(s). As faixas de áudio que
@@ -430,10 +492,11 @@
   // Bootstrap — instala os patches o mais cedo possível.
   // ===========================================================================
   try {
+    patchWebAudio(); // primeiro: precisa existir antes de o Meet montar o áudio
     patchRTCPeerConnection();
     patchGetUserMedia();
     startKeepAlive();
-    debug('tap instalado — v3 (captura remota via createMediaElementSource)');
+    debug('tap instalado — v4 (grampo do Web Audio: grava a saída de som do Meet)');
   } catch (err) {
     debug('falha no bootstrap do tap:', err);
   }

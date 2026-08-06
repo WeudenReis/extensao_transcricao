@@ -17,6 +17,12 @@
     },
     {
       "matches": ["https://meet.google.com/*"],
+      "js": ["content/meet-tap.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://meet.google.com/*"],
       "js": ["content/meet.js"],
       "run_at": "document_idle"
     }
