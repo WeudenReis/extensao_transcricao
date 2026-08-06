@@ -212,19 +212,57 @@
   // ---------------------------------------------------------------------------
   // Leitura das legendas
   // ---------------------------------------------------------------------------
-  /** Acha o container de legendas (seletores conhecidos + varredura genérica). */
+  /**
+   * Texto que é INTERFACE do Meet, não fala de gente.
+   *
+   * Bug real: a janela "Sua reunião está pronta / Adicionar outras pessoas" foi
+   * gravada 18 vezes como se fosse legenda. Aqui barramos os nomes de ícone que
+   * vazam como texto (person_add, content_copy…) e as frases fixas da interface.
+   */
+  const ICONES = /\b(person_add|content_copy|close|more_vert|mic_off|mic|videocam|call_end|present_to_all|pan_tool|emoji|arrow_back|arrow_forward|settings|info|lock|chat|group|link)\b/i;
+  const FRASES_UI = [
+    /reuni[ãa]o est[áa] pronta/i,
+    /adicionar outras pessoas/i,
+    /compartilhe este link/i,
+    /copiar link/i,
+    /participando como/i,
+    /meet\.google\.com\//i,
+    /precisar[ãa]o receber sua permiss[ãa]o/i,
+    /^fechar$/i,
+    /a c[âa]mera n[ãa]o foi encontrada/i,
+    /sua c[âa]mera est[áa]/i,
+  ];
+
+  function ehLixoDeInterface(speaker, texto) {
+    const alvo = `${speaker} ${texto}`;
+    if (ICONES.test(alvo)) return true;
+    if (FRASES_UI.some((re) => re.test(alvo))) return true;
+    // Legenda real raramente é gigante num bloco só.
+    if (texto.length > 1200) return true;
+    return false;
+  }
+
+  /** Acha o container de legendas (seletores conhecidos + varredura cuidadosa). */
   function containerLegendas() {
     const conhecidos = ['[jsname="dsyhDe"]', '.a4cQT', '.iOzk7', '.nMcdL'];
     for (const s of conhecidos) {
       const el = document.querySelector(s);
       if (el) return el;
     }
-    // Genérico: região aria-live com texto (o Meet muda classes com frequência).
+    // Genérico — mas NUNCA dentro de diálogo/menu (era de onde vinha o lixo).
     const vivos = document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"]');
     for (const el of vivos) {
-      if (el.textContent && el.textContent.trim().length > 0 && el.querySelector('*')) {
-        return el;
-      }
+      if (el.closest('[role="dialog"], [role="alertdialog"], [role="menu"]')) continue;
+      const txt = (el.innerText || '').trim();
+      if (!txt) continue;
+      if (ehLixoDeInterface('', txt)) continue;
+      if (!el.querySelector('*')) continue;
+      // Legenda fica na metade de baixo da tela.
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.top < window.innerHeight * 0.4) continue;
+      } catch (_) {}
+      return el;
     }
     return null;
   }
@@ -247,7 +285,11 @@
         texto = linhas.slice(1).join(' ');
       }
       texto = texto.trim();
-      return texto ? { speaker, texto } : null;
+      if (!texto) return null;
+      // Segunda barreira: mesmo achando o container certo, nunca deixamos
+      // texto de interface virar "fala".
+      if (ehLixoDeInterface(speaker, texto)) return null;
+      return { speaker, texto };
     } catch (_) {
       return null;
     }
@@ -320,7 +362,14 @@
     }
   }
 
+  const jaEnviadas = new Set(); // evita a mesma fala repetida (o Meet reescreve)
+
   function enviarFala(speaker, texto) {
+    if (ehLixoDeInterface(speaker, texto)) return;
+    const chave = `${speaker}::${texto}`;
+    if (jaEnviadas.has(chave)) return;
+    jaEnviadas.add(chave);
+    if (jaEnviadas.size > 500) jaEnviadas.clear(); // reunião longa: não vaza memória
     pendentes.push({ speaker, text: texto, at: new Date().toISOString(), seq: seq++ });
     escoar();
   }
