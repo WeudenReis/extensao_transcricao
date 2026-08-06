@@ -609,6 +609,22 @@ export class Db {
     return this.db.prepare<[string], CaptureRow>('SELECT * FROM captures WHERE id = ?').get(id);
   }
 
+  /**
+   * Captura ABERTA (ainda gravando, sem fim) do mesmo meetingCode iniciada há
+   * pouco. Serve pra DEDUPLICAR: legenda e áudio pedem /start separadamente e o
+   * service worker do MV3 dorme entre uma e outra — sem isso, a reunião aparecia
+   * DUPLICADA. Aqui os dois caem na mesma captura.
+   */
+  findOpenCaptureByMeetingCode(meetingCode: string, sinceIso: string): CaptureRow | undefined {
+    return this.db
+      .prepare<[string, string], CaptureRow>(
+        `SELECT * FROM captures
+         WHERE meeting_code = ? AND ended_at IS NULL AND started_at >= ?
+         ORDER BY started_at DESC LIMIT 1`
+      )
+      .get(meetingCode, sinceIso);
+  }
+
   listCaptures(limit = 50): CaptureRow[] {
     return this.db
       .prepare<[number], CaptureRow>('SELECT * FROM captures ORDER BY started_at DESC LIMIT ?')

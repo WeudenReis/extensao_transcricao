@@ -100,11 +100,25 @@ export function createCaptureRouter(deps: CaptureRouterDeps): Router {
       res.status(400).json({ error: 'start inválido.', issues: parsed.error.issues });
       return;
     }
+    // Dedup: se já existe uma captura ABERTA do mesmo meetingCode iniciada nas
+    // últimas 4h, reaproveita — assim legenda e áudio ficam na MESMA sessão
+    // (o service worker do MV3 dorme e não dá pra confiar só nele).
+    const meetingCode = parsed.data.meetingCode ?? null;
+    if (meetingCode) {
+      const desde = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+      const aberta = db.findOpenCaptureByMeetingCode(meetingCode, desde);
+      if (aberta) {
+        log.info(`captura reaproveitada p/ ${meetingCode}: ${aberta.id} (dedup).`);
+        res.status(200).json({ captureId: aberta.id, reused: true });
+        return;
+      }
+    }
+
     const id = randomUUID();
     db.createCapture({
       id,
       sessionId: parsed.data.sessionId ?? null,
-      meetingCode: parsed.data.meetingCode ?? null,
+      meetingCode,
       mode: parsed.data.mode,
       mimeType: parsed.data.mimeType || null,
       startedAt: parsed.data.startedAt,

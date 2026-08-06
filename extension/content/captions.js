@@ -268,87 +268,98 @@
   }
 
   /**
-   * Separa o texto do painel em falas por participante.
+   * Extrai (falante, texto) de UM bloco de fala do painel.
    *
-   * O painel do Meet acumula as últimas falas assim:
-   *    Você
-   *    Não falou outra coisa, né?
-   *    Marcelo
-   *    Esse teste vai ser divulgado?
-   *
-   * Linha curta, sem pontuação final e seguida de outra linha = nome de quem fala.
+   * O Meet monta cada fala como: nome do participante + o que ele disse. A 1ª
+   * linha curta e sem pontuação final é o nome; o resto é a fala.
    */
-  function parsearLegendas(txtBruto) {
-    const linhas = (txtBruto || '')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const falas = [];
-    let atual = null;
-    for (let i = 0; i < linhas.length; i++) {
-      const linha = linhas[i];
-      const pareceNome =
-        linha.length <= 40 &&
-        !/[.?!…]$/.test(linha) &&
-        linha.split(/\s+/).length <= 5 &&
-        i < linhas.length - 1;
-      if (pareceNome) {
-        if (atual && atual.texto) falas.push(atual);
-        atual = { speaker: linha, texto: '' };
-      } else if (atual) {
-        atual.texto = (atual.texto ? atual.texto + ' ' : '') + linha;
-      } else {
-        atual = { speaker: 'Participante', texto: linha };
-      }
+  function lerBloco(el) {
+    const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!txt) return null;
+    const linhas = (el.innerText || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    let speaker = 'Participante';
+    let texto = linhas.join(' ');
+    if (
+      linhas.length >= 2 &&
+      linhas[0].length <= 40 &&
+      !/[.?!…]$/.test(linhas[0]) &&
+      linhas[0].split(/\s+/).length <= 5
+    ) {
+      speaker = linhas[0];
+      texto = linhas.slice(1).join(' ');
     }
-    if (atual && atual.texto) falas.push(atual);
-    return falas
-      .map((f) => ({ speaker: f.speaker, texto: f.texto.trim() }))
-      .filter((f) => f.texto && !ehLixoDeInterface(f.speaker, f.texto));
+    texto = texto.trim();
+    if (!texto || ehLixoDeInterface(speaker, texto)) return null;
+    return { speaker, texto };
+  }
+
+  /** Os "blocos" de fala dentro do painel (cada fala é um filho). */
+  function blocosDeFala(cont) {
+    const filhos = Array.from(cont.children).filter((c) => (c.innerText || '').trim());
+    return filhos.length ? filhos : [cont];
   }
 
   /**
-   * Texto JÁ registrado de cada participante. O Meet reescreve a fala enquanto a
-   * pessoa fala e mantém as anteriores na tela — sem isso, cada leitura reenviava
-   * tudo de novo e o transcrito ficava com o histórico inteiro repetido.
+   * RASTREAMENTO POR ELEMENTO (a correção do texto repetido).
+   *
+   * Em vez de ler o painel inteiro (que acumula e se reescreve, gerando aquela
+   * repetição gigante), acompanhamos CADA fala pelo seu próprio elemento no DOM.
+   * O texto de um elemento só CRESCE enquanto a pessoa fala; quando ela para (o
+   * texto fica estável por FINALIZE_MS) ou o Meet remove o elemento, fechamos a
+   * fala e enviamos UMA vez, com o texto final. Sem repetição, sem histórico.
    */
-  const jaVistoPorFalante = new Map();
+  const rastreados = new Map(); // Element -> { speaker, texto, timer }
 
-  /** Devolve só a parte NOVA do que a pessoa falou. */
-  function novidade(speaker, texto) {
-    const anterior = jaVistoPorFalante.get(speaker) || '';
-    if (texto === anterior) return '';
-    if (anterior && texto.startsWith(anterior)) {
-      jaVistoPorFalante.set(speaker, texto);
-      return texto.slice(anterior.length).trim();
-    }
-    jaVistoPorFalante.set(speaker, texto);
-    return texto;
-  }
-
-  /** Fecha as falas pendentes (quem parou de falar) e envia. */
-  const pendentesPorFalante = new Map(); // speaker -> { texto, timer }
-
-  function agendarEnvio(speaker) {
-    const st = pendentesPorFalante.get(speaker);
+  function finalizarBloco(el) {
+    const st = rastreados.get(el);
     if (!st) return;
     if (st.timer) clearTimeout(st.timer);
-    st.timer = setTimeout(() => {
-      pendentesPorFalante.delete(speaker);
-      if (st.texto) enviarFala(speaker, st.texto);
-    }, FINALIZE_MS);
+    rastreados.delete(el);
+    if (st.texto) enviarFala(st.speaker, st.texto);
+  }
+
+  function agendarFinalizacao(el) {
+    const st = rastreados.get(el);
+    if (!st) return;
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(() => finalizarBloco(el), FINALIZE_MS);
   }
 
   function processarMutacoes() {
     const cont = containerLegendas();
     if (!cont) return;
-    for (const fala of parsearLegendas(cont.innerText || '')) {
-      const novo = novidade(fala.speaker, fala.texto);
-      if (!novo) continue;
-      const st = pendentesPorFalante.get(fala.speaker) || { texto: '', timer: null };
-      st.texto = (st.texto ? st.texto + ' ' : '') + novo;
-      pendentesPorFalante.set(fala.speaker, st);
-      agendarEnvio(fala.speaker);
+    for (const el of blocosDeFala(cont)) {
+      const lido = lerBloco(el);
+      if (!lido) continue;
+      const st = rastreados.get(el);
+      if (!st) {
+        rastreados.set(el, { speaker: lido.speaker, texto: lido.texto, timer: null });
+        agendarFinalizacao(el);
+      } else {
+        // Continuação da mesma fala? (o texto novo estende o anterior)
+        if (lido.texto.length >= st.texto.length && lido.texto.startsWith(st.texto.slice(0, 20))) {
+          st.texto = lido.texto;
+          st.speaker = lido.speaker || st.speaker;
+        } else {
+          // O Meet reciclou o elemento pra uma fala NOVA: fecha a anterior e recomeça.
+          finalizarBloco(el);
+          rastreados.set(el, { speaker: lido.speaker, texto: lido.texto, timer: null });
+        }
+        agendarFinalizacao(el);
+      }
+    }
+  }
+
+  /** Quando o Meet REMOVE um bloco do DOM, fechamos a fala (não perde nada). */
+  function aoRemoverNos(mutacoes) {
+    for (const m of mutacoes) {
+      for (const no of m.removedNodes) {
+        if (rastreados.has(no)) finalizarBloco(no);
+        // Bloco pode ser removido junto com um ancestral.
+        for (const el of rastreados.keys()) {
+          if (no.contains && no.contains(el)) finalizarBloco(el);
+        }
+      }
     }
   }
 
@@ -449,13 +460,8 @@
 
   async function encerrar(motivo) {
     if (!captureId) return;
-    // Fecha o que estava em andamento antes de encerrar.
-    for (const [speaker, st] of pendentesPorFalante) {
-      if (st.timer) clearTimeout(st.timer);
-      if (st.texto) enviarFala(speaker, st.texto);
-    }
-    pendentesPorFalante.clear();
-    jaVistoPorFalante.clear();
+    // Fecha todas as falas que ainda estavam em andamento antes de encerrar.
+    for (const el of Array.from(rastreados.keys())) finalizarBloco(el);
     await escoar();
     // Quem encerra é o service worker (dono único da sessão).
     try {
@@ -501,8 +507,10 @@
   }
 
   try {
-    observer = new MutationObserver(() => {
-      if (emChamadaAntes) processarMutacoes();
+    observer = new MutationObserver((mutacoes) => {
+      if (!emChamadaAntes) return;
+      processarMutacoes();
+      aoRemoverNos(mutacoes); // fecha falas cujo bloco o Meet removeu do DOM
     });
     observer.observe(document.body || document.documentElement, {
       subtree: true,
@@ -512,7 +520,7 @@
     setInterval(tick, CHECK_MS);
     window.addEventListener('pagehide', () => encerrar('tab-closed'));
     tick();
-    debug('legenda: monitor ativo (v5)');
+    debug('legenda: monitor ativo (v6 — rastreio por fala, sem repeticao)');
   } catch (err) {
     debug('falha no bootstrap:', err);
   }
