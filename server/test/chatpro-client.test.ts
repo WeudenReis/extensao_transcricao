@@ -245,6 +245,49 @@ describe('entrega', () => {
     expect(chamadas).toHaveLength(0);
   });
 
+  it('o provider vem da SESSÃO, não de um valor fixo', async () => {
+    // Cada conversa tem o seu canal: a mesma conta tem sessões em 'whatsapp' e
+    // em 'cloud'. Mandar fixo do .env dá 400 "Provider está errado!" nas que
+    // não batem — foi o que aconteceu de verdade.
+    const { fetchImpl, chamadas } = gravador([
+      new Response(JSON.stringify({ id: SESSION, provider: 'cloud' }), { status: 200 }),
+      ok(),
+    ]);
+
+    const r = await cliente(fetchImpl).enviarMensagem({
+      sessionId: SESSION,
+      message: 'oi',
+    });
+
+    expect(r.ok).toBe(true);
+    expect(chamadas[0]?.url).toContain('/sessions/getSessionById');
+    expect(chamadas[1]?.url).toContain('/messages/sendMessage');
+    expect(chamadas[1]?.body.provider).toBe('cloud');
+  });
+
+  it('provider informado pelo chamador dispensa a consulta', async () => {
+    const { fetchImpl, chamadas } = gravador([ok()]);
+
+    await cliente(fetchImpl).enviarMensagem({
+      sessionId: SESSION,
+      message: 'oi',
+      provider: 'instagram',
+    });
+
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0]?.body.provider).toBe('instagram');
+  });
+
+  it('se a consulta da sessão falhar, envia mesmo assim com o padrão', async () => {
+    // Não vale deixar de enviar o link por causa de uma consulta auxiliar.
+    const { fetchImpl, chamadas } = gravador([new Response('erro', { status: 500 }), ok()]);
+
+    const r = await cliente(fetchImpl).enviarMensagem({ sessionId: SESSION, message: 'oi' });
+
+    expect(r.ok).toBe(true);
+    expect(chamadas[1]?.body.provider).toBe('whatsapp');
+  });
+
   it('erro HTTP vira failed com o motivo, sem vazar o instance-token', async () => {
     const { fetchImpl } = gravador([new Response('token inválido', { status: 401 })]);
 

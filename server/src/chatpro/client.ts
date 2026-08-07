@@ -287,8 +287,8 @@ export class ChatproClient {
     sessionId: string;
     message: string;
     instanceId?: string | null;
-    /** Canal da conversa. Cai em CHATPRO_PROVIDER quando não informado. */
-    provider?: ChatproProvider | null;
+    /** Força o canal. Sem isto, é lido da própria sessão. */
+    provider?: string | null;
   }): Promise<{ ok: true } | { ok: false; motivo: string }> {
     if (!this.instanceToken) {
       return { ok: false, motivo: 'CHATPRO_INSTANCE_TOKEN não configurado.' };
@@ -296,12 +296,18 @@ export class ChatproClient {
     const instanceId = entrada.instanceId ?? this.instanceId;
     if (!instanceId) return { ok: false, motivo: 'sem instanceId do chatPro' };
 
+    // O provider é POR CONVERSA, não por instância: a mesma conta tem sessões
+    // em 'whatsapp' e em 'cloud'. Mandar um valor fixo do .env dá
+    // "Provider está errado!" (HTTP 400) nas que não batem. Então perguntamos
+    // à sessão qual é o dela.
+    const provider = entrada.provider ?? (await this.providerDaSessao(entrada.sessionId, instanceId));
+
     try {
       await this.postar('/messages/sendMessage', {
         instanceId,
         sessionId: entrada.sessionId,
         message: entrada.message,
-        provider: entrada.provider ?? this.provider,
+        provider,
         // Opcional no contrato: só mandamos quando temos.
         ...(this.userId ? { userId: this.userId } : {}),
       });
@@ -320,11 +326,39 @@ export class ChatproClient {
     message: string;
     userId: string;
   }): Promise<void> {
-    return this.postar('/messages/addComments', corpo);
+    // O corpo da resposta não interessa aqui — o sucesso é o status.
+    return this.postar('/messages/addComments', corpo).then(() => undefined);
+  }
+
+  /**
+   * Lê o canal da conversa em `/sessions/getSessionById`.
+   *
+   * Se falhar, cai no CHATPRO_PROVIDER em vez de abortar: é melhor tentar
+   * enviar com o palpite do .env do que não enviar nada por causa de uma
+   * consulta auxiliar.
+   */
+  async providerDaSessao(sessionId: string, instanceId: string): Promise<string> {
+    try {
+      const sessao = await this.postar('/sessions/getSessionById', { instanceId, sessionId });
+      const raiz = (sessao ?? {}) as Record<string, unknown>;
+      const dados = (raiz.session ?? raiz.data ?? raiz) as Record<string, unknown>;
+      const p = dados?.provider;
+      if (typeof p === 'string' && p !== '') {
+        log.info(`sessão ${sessionId} usa provider '${p}'`);
+        return p;
+      }
+      log.warn(`sessão ${sessionId} não informou provider — usando '${this.provider}'.`);
+    } catch (err) {
+      log.warn(
+        `não deu pra ler o provider da sessão ${sessionId} (${errorMessage(err)}) — ` +
+          `usando '${this.provider}'.`
+      );
+    }
+    return this.provider;
   }
 
   /** POST autenticado no chatPro Chat. Lança com o motivo em caso de erro. */
-  private async postar(caminho: string, corpo: Record<string, unknown>): Promise<void> {
+  private async postar(caminho: string, corpo: Record<string, unknown>): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
@@ -338,12 +372,19 @@ export class ChatproClient {
         body: JSON.stringify(corpo),
         signal: controller.signal,
       });
+      const texto = await resposta.text().catch(() => '');
       if (!resposta.ok) {
         // O corpo do erro pode citar o motivo; nunca inclui o nosso token.
-        const detalhe = await resposta.text().catch(() => '');
         throw new Error(
-          `chatPro respondeu HTTP ${resposta.status}${detalhe ? ` — ${detalhe.slice(0, 200)}` : ''}`
+          `chatPro respondeu HTTP ${resposta.status}${texto ? ` — ${texto.slice(0, 200)}` : ''}`
         );
+      }
+      if (!texto) return null;
+      try {
+        return JSON.parse(texto) as unknown;
+      } catch {
+        // Endpoint que responde vazio ou texto puro: o sucesso é o status.
+        return null;
       }
     } catch (err) {
       if (controller.signal.aborted) {
