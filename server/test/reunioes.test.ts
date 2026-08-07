@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
 import { Db } from '../src/db.js';
 import { RecallClient } from '../src/recall/client.js';
 import { ChatproClient } from '../src/chatpro/client.js';
-import { ContasGoogle } from '../src/google/contas.js';
+import { ContasGoogle, ContaGoogleExpirada } from '../src/google/contas.js';
 import { createReunioesRouter } from '../src/routes/reunioes.js';
 import { extrairMeetUrl, criarLinkDoMeet } from '../src/google/meetLink.js';
 import { jsonResponse } from './helpers.js';
@@ -188,6 +188,25 @@ describe('POST /api/reunioes/iniciar', () => {
     const reuniao = app.db.listMeetings()[0];
     expect(reuniao?.session_id).toBe(SESSION);
     expect(reuniao?.meeting_code).toBe('abc-defg-hij');
+  });
+
+  it('token do Google expirado pede pra reconectar, não vira erro genérico', async () => {
+    // Com o app OAuth em modo "Testing" o Google MATA o refresh token a cada
+    // 7 dias. Antes isso subia como 502 "não foi possível criar o link" e a
+    // saída (reconectar) não ficava óbvia pra ninguém.
+    const app = await montarApp();
+    const expirado = new ContaGoogleExpirada(DEVICE);
+    expect(expirado).toBeInstanceOf(Error);
+    // A herança é o que faz o tratamento existente cobrir os dois casos.
+    expect(expirado.name).toBe('ContaGoogleExpirada');
+    expect(expirado.message).toContain('7 dias');
+
+    // E a rota devolve 409 + precisaConectar, igual ao caso "nunca conectou".
+    app.db.removerContaGoogle(DEVICE);
+    const res = await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE });
+    const corpo = (await res.json()) as { precisaConectar: boolean };
+    expect(res.status).toBe(409);
+    expect(corpo.precisaConectar).toBe(true);
   });
 
   it('sem conta Google conectada, avisa pra conectar em vez de falhar seco', async () => {

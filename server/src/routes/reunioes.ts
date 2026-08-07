@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Db } from '../db.js';
 import type { RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
-import { ContasGoogle, ContaNaoConectada } from '../google/contas.js';
+import { ContasGoogle, ContaNaoConectada, ContaGoogleExpirada } from '../google/contas.js';
 import { criarLinkDoMeet, MeetLinkError } from '../google/meetLink.js';
 import { criarReuniao } from '../recall/criarReuniao.js';
 import { resumirReuniao } from './meetings.js';
@@ -162,9 +162,14 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         });
       } catch (err) {
         if (err instanceof ContaNaoConectada) {
+          // Cobre os dois casos: nunca conectou, e conectou mas o token venceu
+          // (ContaGoogleExpirada herda desta). A saída é a mesma; o texto muda.
           res.status(409).json({
-            error: 'Conta Google não conectada.',
-            detail: 'Abra a extensão e clique em "Conectar conta Google".',
+            error:
+              err instanceof ContaGoogleExpirada
+                ? 'Conexão com o Google expirou.'
+                : 'Conta Google não conectada.',
+            detail: `${err.message} Abra a extensão e clique em "Conectar conta Google".`,
             precisaConectar: true,
           });
           return;

@@ -129,7 +129,24 @@ export class ContasGoogle {
     client.setCredentials({
       refresh_token: decryptSecret(conta.refresh_token_encrypted, this.encryptionKey),
     });
-    const { token } = await client.getAccessToken();
+
+    let token: string | null | undefined;
+    try {
+      ({ token } = await client.getAccessToken());
+    } catch (err) {
+      // `invalid_grant` = o refresh token morreu. Acontece por três motivos, e
+      // o primeiro é o mais comum aqui: com o app OAuth em "Testing" e tipo
+      // Externo, o Google EXPIRA o refresh token em 7 dias. Também acontece se
+      // a pessoa revogar o acesso, ou se a senha do Google mudar.
+      //
+      // Sem esta guarda o erro subia como 502 genérico ("não foi possível criar
+      // o link"), e a saída — reconectar a conta — não ficava óbvia pra ninguém.
+      if (ehGrantInvalido(err)) {
+        log.warn(`refresh token do dispositivo ${deviceId} não vale mais — precisa reconectar.`);
+        throw new ContaGoogleExpirada(deviceId);
+      }
+      throw err;
+    }
     if (!token) throw new Error('Google não devolveu access token na renovação.');
 
     const expiry = client.credentials.expiry_date
@@ -170,8 +187,37 @@ export class ContasGoogle {
 }
 
 export class ContaNaoConectada extends Error {
-  constructor(readonly deviceId: string) {
-    super('Esta instalação ainda não conectou uma conta Google.');
+  constructor(
+    readonly deviceId: string,
+    mensagem = 'Esta instalação ainda não conectou uma conta Google.'
+  ) {
+    super(mensagem);
     this.name = 'ContaNaoConectada';
   }
+}
+
+/**
+ * A conta ESTAVA conectada, mas o refresh token não vale mais.
+ *
+ * Herda de ContaNaoConectada de propósito: pra quem chama, a saída é a mesma
+ * (mandar reconectar pela extensão), então o tratamento que já existe serve —
+ * só a mensagem muda, pra pessoa não achar que nunca conectou.
+ */
+export class ContaGoogleExpirada extends ContaNaoConectada {
+  constructor(deviceId: string) {
+    super(
+      deviceId,
+      'A conexão com o Google expirou. Isso acontece a cada 7 dias enquanto o ' +
+        'app OAuth estiver em modo de teste — publique em produção pra parar de acontecer.'
+    );
+    this.name = 'ContaGoogleExpirada';
+  }
+}
+
+/** O Google devolve `invalid_grant` quando o refresh token morreu. */
+function ehGrantInvalido(err: unknown): boolean {
+  const texto = (
+    err instanceof Error ? `${err.message} ${JSON.stringify((err as { response?: unknown }).response ?? '')}` : String(err)
+  ).toLowerCase();
+  return texto.includes('invalid_grant') || texto.includes('token has been expired or revoked');
 }
