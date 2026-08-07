@@ -46,11 +46,13 @@ const envSchema = z.object({
     .default(3333),
   DATABASE_PATH: z.string().min(1).default('./data/app.db'),
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
-  // ─── Captura de áudio + STT (transcrição em conta pessoal) ───
-  // 'local' = Whisper offline gratuito (padrão). Os demais são opcionais/pagos.
+  // ─── Captura de áudio + STT (caminho ANTIGO, da extensão que gravava) ───
+  // Padrão 'none': a transcrição hoje vem pronta do Recall.ai, então ligar isto
+  // só faz o servidor baixar ~320 MB de modelo Whisper e carregá-lo no boot sem
+  // necessidade. Só mude se for usar de novo a captura de áudio local.
   STT_PROVIDER: z
     .enum(['local', 'deepgram', 'assemblyai', 'whisper', 'none'])
-    .default('local'),
+    .default('none'),
   STT_API_KEY: z.string().optional(),
   STT_MODEL: z.string().optional(),
   STT_LANGUAGE: z.string().default('pt-BR'),
