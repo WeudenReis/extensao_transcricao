@@ -31,10 +31,41 @@ const log = createLogger('painelAuth');
 export const COOKIE_TOKEN = 'painel_token';
 
 /** Caminhos que nunca exigem token (têm autenticação própria, ou não vazam nada). */
-const LIVRES = ['/webhooks/', '/api/health'];
+const LIVRES = [
+  '/webhooks/',
+  '/api/health',
+  /**
+   * O retorno do consentimento do Google.
+   *
+   * Precisa ser livre por dois motivos, e os dois são inescapáveis:
+   *
+   * 1. Quem navega até aqui é o Google, redirecionando o navegador. Não há como
+   *    ele carregar o nosso PANEL_TOKEN nessa volta.
+   * 2. Mesmo com o cookie do painel já gravado, ele NÃO viria: é uma navegação
+   *    cross-site (accounts.google.com → localhost), e cookie SameSite não
+   *    acompanha isso.
+   *
+   * Não fica desprotegido: a rota só aceita um `state` que NÓS emitimos, de uso
+   * único e com 10 min de validade. Sem state válido, `concluirConexao` recusa.
+   */
+  '/oauth/google/callback',
+];
 
+/**
+ * Livre?
+ *
+ * Entrada terminada em `/` é PASTA: libera tudo abaixo (`/webhooks/` cobre
+ * `/webhooks/recall`). Qualquer outra é caminho EXATO.
+ *
+ * A distinção importa: com prefixo solto, `/api/health` liberaria também
+ * `/api/healthzzz`, e `/oauth/google/callback` liberaria
+ * `/oauth/google/callbackqualquercoisa` — bastaria alguém registrar uma rota
+ * com esse começo pra ela nascer sem tranca sem ninguém perceber.
+ */
 export function ehCaminhoLivre(caminho: string): boolean {
-  return LIVRES.some((prefixo) => caminho === prefixo || caminho.startsWith(prefixo));
+  return LIVRES.some((entrada) =>
+    entrada.endsWith('/') ? caminho.startsWith(entrada) : caminho === entrada
+  );
 }
 
 /** Comparação em tempo constante — evita descobrir o token por cronometragem. */
@@ -116,10 +147,16 @@ export function criarPainelAuth(token: string | undefined): RequestHandler {
         // Secure quando a requisição chegou por HTTPS (túnel/produção): sem
         // isso o cookie com o token vazaria numa eventual requisição http.
         const seguro = req.secure || req.headers['x-forwarded-proto'] === 'https';
+        // Lax, não Strict: com Strict o cookie não acompanha nenhuma chegada
+        // vinda de fora — voltar de um link, de um e-mail ou de um redirect do
+        // Google derrubava a pessoa na tela de "acesso restrito" mesmo já tendo
+        // entrado. Lax manda o cookie em navegação GET de topo (que é esse
+        // caso) e continua NÃO mandando em POST cross-site, que é o que a
+        // proteção contra CSRF precisa.
         res.setHeader(
           'Set-Cookie',
           `${COOKIE_TOKEN}=${encodeURIComponent(token)}; Path=/; HttpOnly; ` +
-            `SameSite=Strict; Max-Age=604800${seguro ? '; Secure' : ''}`
+            `SameSite=Lax; Max-Age=604800${seguro ? '; Secure' : ''}`
         );
       }
       next();

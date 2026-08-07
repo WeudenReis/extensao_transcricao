@@ -87,6 +87,17 @@ describe('caminhos livres', () => {
     expect(ehCaminhoLivre('/api/capture/chunk')).toBe(false);
   });
 
+  it('o callback do Google é livre — senão o OAuth nunca fecha', () => {
+    // Quem navega até lá é o Google redirecionando o navegador: não tem como
+    // levar o PANEL_TOKEN, e o cookie não acompanha navegação cross-site.
+    // Quem protege a rota é o `state` de uso único que nós emitimos.
+    expect(ehCaminhoLivre('/oauth/google/callback')).toBe(true);
+    // Mas só ela: as outras rotas /oauth/ seguem trancadas.
+    expect(ehCaminhoLivre('/oauth/google/conectar')).toBe(false);
+    expect(ehCaminhoLivre('/oauth/start')).toBe(false);
+    expect(ehCaminhoLivre('/oauth/google/callbackfalso')).toBe(false);
+  });
+
   it('painel e leitura de reunião NÃO são livres', () => {
     expect(ehCaminhoLivre('/')).toBe(false);
     expect(ehCaminhoLivre('/api/meetings')).toBe(false);
@@ -94,6 +105,8 @@ describe('caminhos livres', () => {
     expect(ehCaminhoLivre('/api/captures')).toBe(false);
     // Não pode ser burlado por um caminho que só COMECE parecido.
     expect(ehCaminhoLivre('/api/capturesecreto')).toBe(false);
+    // Entrada sem barra final é caminho EXATO — prefixo não basta.
+    expect(ehCaminhoLivre('/api/healthzzz')).toBe(false);
     expect(ehCaminhoLivre('/webhooksfalso/x')).toBe(false);
   });
 });
@@ -133,6 +146,9 @@ describe('middleware com PANEL_TOKEN configurado', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie')).toContain(COOKIE_TOKEN);
     expect(res.headers.get('set-cookie')).toContain('HttpOnly');
+    // Lax e não Strict: com Strict, voltar de um link externo (ou de um
+    // redirect do Google) cairia em "acesso restrito" mesmo já autenticado.
+    expect(res.headers.get('set-cookie')).toContain('SameSite=Lax');
   });
 
   it('o webhook do Recall continua passando sem token', async () => {
