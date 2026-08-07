@@ -64,7 +64,18 @@ export function createApiRouter(deps: ApiRouterDeps): Router {
   const router = Router();
   const startedAt = Date.now();
 
-  router.use('/api', apiCors);
+  // CORS SÓ nos caminhos que a extensão realmente chama.
+  //
+  // Era `router.use('/api', apiCors)`, que casa por PREFIXO: o header
+  // `Allow-Origin: *` vazava para /api/meetings/* — porque este router é
+  // registrado antes, o middleware grava o header, chama next(), e a resposta
+  // sai do router de reuniões já contaminada. Resultado: qualquer site aberto
+  // no navegador conseguia LER a transcrição via fetch pra localhost, apesar do
+  // router de reuniões não aplicar CORS de propósito. Listar caminho a caminho
+  // é o que impede esse vazamento de voltar.
+  for (const caminho of ['/api/health', '/api/status', '/api/links', '/api/spaces']) {
+    router.use(caminho, apiCors);
+  }
 
   router.post('/api/links', async (req, res) => {
     const parsed = linkBodySchema.safeParse(req.body);

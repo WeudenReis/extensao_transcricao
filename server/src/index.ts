@@ -17,6 +17,9 @@ import { createReviewRouter } from './routes/review.js';
 import { createMeetingsRouter } from './routes/meetings.js';
 import { createRecallHookRouter } from './routes/recallHook.js';
 import { criarPainelAuth } from './routes/painelAuth.js';
+import { createChatproHookRouter } from './routes/chatproHook.js';
+import { createReunioesRouter } from './routes/reunioes.js';
+import { ContasGoogle } from './google/contas.js';
 import { RecallClient } from './recall/client.js';
 import { ChatproClient } from './chatpro/client.js';
 import { RecallQueueWorker } from './pipeline/recallQueue.js';
@@ -97,12 +100,30 @@ function main(): void {
   // Recall.ai: bot server-side que entra na reunião, grava e transcreve.
   // Sem RECALL_API_KEY o caminho fica desligado (as rotas respondem 503).
   const recall = config.recallApiKey
-    ? new RecallClient({ apiKey: config.recallApiKey, region: config.recallRegion })
+    ? new RecallClient({
+        apiKey: config.recallApiKey,
+        region: config.recallRegion,
+        baseUrl: config.recallBaseUrl,
+      })
     : undefined;
+  // chatPro Chat (produto de conversas): a transcrição vira um comentário na
+  // sessão do atendimento. Sem as três variáveis, a entrega fica pendente.
   const chatpro = new ChatproClient({
-    apiUrl: config.chatproApiUrl,
-    apiKey: config.chatproApiKey,
+    baseUrl: config.chatproBaseUrl,
+    instanceToken: config.chatproInstanceToken,
+    instanceId: config.chatproInstanceId,
+    userId: config.chatproUserId,
   });
+  // Conta Google de cada atendente (a extensão conecta a dela). É com ela que
+  // o link do Meet é criado — funciona em conta pessoal @gmail.
+  const contasGoogle = new ContasGoogle({
+    clientId: config.googleClientId,
+    clientSecret: config.googleClientSecret,
+    redirectUri: config.googleRedirectUriExtensao,
+    tokenEncryptionKey: config.tokenEncryptionKey,
+    db,
+  });
+
   const recallQueue = new RecallQueueWorker({
     db,
     recall,
@@ -134,6 +155,28 @@ function main(): void {
   app.use(createOAuthRouter(auth));
   app.use(createApiRouter({ db, meet, auth, voreo, eventQueue }));
   app.use(createMeetingsRouter({ db, recall, chatpro, botName: config.recallBotName }));
+  // Gatilho automático: link do Meet numa conversa do chatPro → bot na sala.
+  // Fica depois do json() (precisa do corpo parseado) e passa livre pela
+  // tranca do painel, porque /webhooks/ está na lista de caminhos livres.
+  app.use(
+    createReunioesRouter({
+      db,
+      contas: contasGoogle,
+      chatpro,
+      recall,
+      botName: config.recallBotName,
+    })
+  );
+  app.use(
+    createChatproHookRouter({
+      db,
+      recall,
+      botName: config.recallBotName,
+      secret: config.chatproWebhookSecret,
+      autoStart: config.chatproAutoStartBot,
+      aceitarDoCliente: config.chatproAceitarLinkDoCliente,
+    })
+  );
   app.use(
     createPubSubRouter({
       eventQueue,

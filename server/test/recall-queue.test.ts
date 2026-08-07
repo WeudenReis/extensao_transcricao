@@ -98,8 +98,12 @@ describe('worker da fila do Recall', () => {
       db,
       recall: options.semApiKey ? undefined : new RecallClient({ apiKey: API_KEY, fetchImpl }),
       chatpro: new ChatproClient({
-        apiUrl: options.chatproUrl,
-        apiKey: undefined,
+        // chatproUrl no teste = "chatPro configurado". As três variáveis andam
+        // juntas: sem qualquer uma delas a entrega é pulada.
+        baseUrl: options.chatproUrl,
+        instanceToken: options.chatproUrl ? 'token-de-teste' : undefined,
+        instanceId: options.chatproUrl ? 'chatpro-teste' : undefined,
+        userId: options.chatproUrl ? 'user-teste' : undefined,
         fetchImpl,
       }),
       autoSendChatpro: options.autoSendChatpro ?? false,
@@ -372,7 +376,7 @@ describe('worker da fila do Recall', () => {
 
     await worker.processOnce();
 
-    expect(urlsChamadas[2]).toBe('https://chatpro.exemplo/api');
+    expect(urlsChamadas[2]).toBe('https://chatpro.exemplo/api/messages/addComments');
     expect(db.getMeeting(MEETING_ID)?.chatpro_status).toBe('sent');
   });
 
@@ -423,7 +427,7 @@ describe('worker da fila do Recall', () => {
     await worker.processOnce();
 
     // Não rebaixou o transcript, mas tentou a entrega de novo — e deu certo.
-    expect(urlsChamadas.at(-1)).toBe('https://chatpro.exemplo/api');
+    expect(urlsChamadas.at(-1)).toBe('https://chatpro.exemplo/api/messages/addComments');
     expect(db.getMeeting(MEETING_ID)?.chatpro_status).toBe('sent');
   });
 
@@ -603,8 +607,10 @@ describe('entrega ao chatPro a partir da reunião salva', () => {
       botName: 'chatPro (gravando)',
     });
     const chatpro = new ChatproClient({
-      apiUrl: 'https://chatpro.exemplo/api',
-      apiKey: undefined,
+      baseUrl: 'https://chatpro.exemplo',
+      instanceToken: 'token-de-teste',
+      instanceId: 'chatpro-teste',
+      userId: 'user-teste',
       fetchImpl: () => Promise.reject(new Error('não deveria chamar a rede')),
     });
 

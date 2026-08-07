@@ -168,9 +168,47 @@ export async function entregarAoChatpro(
     participants: salvo.participantes,
     transcript: salvo.falas,
     source: 'recall-ai',
+    instanceId: meeting.chatpro_instance_id,
+    // Retomada: se uma tentativa anterior entregou parte das mensagens, esta
+    // continua de onde parou em vez de repetir o que já está na conversa.
+    partesEnviadas: meeting.chatpro_parts_sent ?? 0,
+    // Grava parte a parte. Se o processo cair no meio da entrega, o que já
+    // entrou fica registrado e a retomada não republica.
+    aoEntregarParte: (n) => {
+      db.setMeetingChatproStatus(meeting.id, 'pending', n);
+    },
   });
-  db.setMeetingChatproStatus(meeting.id, resultado.status);
+  db.setMeetingChatproStatus(meeting.id, resultado.status, resultado.partesEnviadas);
   return resultado;
+}
+
+/**
+ * Trava por reunião: duas entregas simultâneas (o worker automático e o botão
+ * do painel, por exemplo) leriam `chatpro_parts_sent` antes de qualquer uma
+ * gravar e postariam a transcrição em dobro na conversa do cliente.
+ */
+const entregasEmCurso = new Map<string, Promise<ResultadoEntrega>>();
+
+export function entregarAoChatproComTrava(
+  db: Db,
+  chatpro: ChatproClient,
+  meeting: MeetingRow
+): Promise<ResultadoEntrega> {
+  const emCurso = entregasEmCurso.get(meeting.id);
+  if (emCurso) {
+    log.info(`entrega da reunião ${meeting.id} já está em curso — aguardando a que já roda.`);
+    return emCurso;
+  }
+  // Relê a linha na hora de entregar: quem esperou a trava precisa do
+  // chatpro_parts_sent atualizado pela entrega anterior.
+  const promessa = (async (): Promise<ResultadoEntrega> => {
+    const atual = db.getMeeting(meeting.id) ?? meeting;
+    return entregarAoChatpro(db, chatpro, atual);
+  })().finally(() => {
+    entregasEmCurso.delete(meeting.id);
+  });
+  entregasEmCurso.set(meeting.id, promessa);
+  return promessa;
 }
 
 // ─── Worker ──────────────────────────────────────────────────────────────────
@@ -449,7 +487,7 @@ export class RecallQueueWorker {
     // Relê a linha: precisa do transcript e dos horários recém-gravados.
     const atual = this.db.getMeeting(meetingId);
     if (!atual) return;
-    const resultado = await entregarAoChatpro(this.db, this.chatpro, atual);
+    const resultado = await entregarAoChatproComTrava(this.db, this.chatpro, atual);
     if (!resultado.ok && resultado.status === 'failed') {
       log.warn(
         `entrega automática ao chatPro falhou (reunião ${meetingId}) — reenvie pelo painel.`

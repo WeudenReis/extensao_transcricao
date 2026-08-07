@@ -114,6 +114,17 @@ export interface EventQueueRow {
   last_error: string | null;
 }
 
+/** Conta Google conectada por uma instalação da extensão. */
+export interface GoogleAccountRow {
+  device_id: string;
+  email: string | null;
+  refresh_token_encrypted: string;
+  access_token: string | null;
+  expiry: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Recall.ai ───────────────────────────────────────────────────────────────
 
 /** Ciclo de vida da reunião gravada pelo bot do Recall. */
@@ -141,6 +152,10 @@ export interface MeetingRow {
   transcript_json: string | null;
   duration_seconds: number | null;
   chatpro_status: string | null;
+  /** Instância do chatPro dona da conversa — vem no webhook, cai no .env. */
+  chatpro_instance_id: string | null;
+  /** Partes do comentário já entregues; o reenvio continua daqui. */
+  chatpro_parts_sent: number;
   error: string | null;
   created_at: string;
 }
@@ -317,7 +332,37 @@ export class Db {
       CREATE INDEX IF NOT EXISTS idx_meetings_created ON meetings (created_at);
       CREATE INDEX IF NOT EXISTS idx_recall_events_status_next ON recall_events (status, next_attempt_at);
       CREATE INDEX IF NOT EXISTS idx_recall_events_bot ON recall_events (bot_id);
+
+      -- Conta Google de CADA atendente (a tabela google_tokens acima é de uma
+      -- conta só, do servidor). Aqui cada instalação da extensão conecta a sua,
+      -- e é com ela que o link do Meet é gerado — assim a reunião nasce na
+      -- agenda de quem vai atender.
+      CREATE TABLE IF NOT EXISTS google_accounts (
+        device_id TEXT PRIMARY KEY,
+        email TEXT,
+        refresh_token_encrypted TEXT NOT NULL,
+        access_token TEXT,
+        expiry TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
+
+    // Colunas acrescentadas depois: o CREATE TABLE acima não roda em banco que
+    // já existe, então quem já tinha a tabela precisa do ALTER.
+    this.garantirColuna('meetings', 'chatpro_instance_id', 'TEXT');
+    this.garantirColuna('meetings', 'chatpro_parts_sent', 'INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /** ALTER TABLE idempotente — não faz nada se a coluna já existe. */
+  private garantirColuna(tabela: string, coluna: string, definicao: string): void {
+    const colunas = this.db
+      .prepare<[], { name: string }>(`PRAGMA table_info(${tabela})`)
+      .all()
+      .map((c) => c.name);
+    if (colunas.includes(coluna)) return;
+    this.db.exec(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${definicao}`);
+    log.info(`coluna ${tabela}.${coluna} criada.`);
   }
 
   // ─── links ────────────────────────────────────────────────────────────────
@@ -381,6 +426,49 @@ export class Db {
     this.db
       .prepare('UPDATE links SET conference_record = ? WHERE id = ?')
       .run(conferenceRecord, id);
+  }
+
+  // ─── google_accounts (uma conta por instalação da extensão) ───────────────
+
+  salvarContaGoogle(input: {
+    deviceId: string;
+    email: string | null;
+    refreshTokenEncrypted: string;
+    accessToken: string | null;
+    expiry: string | null;
+  }): void {
+    const agora = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO google_accounts
+           (device_id, email, refresh_token_encrypted, access_token, expiry, created_at, updated_at)
+         VALUES (@deviceId, @email, @refreshTokenEncrypted, @accessToken, @expiry, @agora, @agora)
+         ON CONFLICT (device_id) DO UPDATE SET
+           email = COALESCE(excluded.email, google_accounts.email),
+           refresh_token_encrypted = excluded.refresh_token_encrypted,
+           access_token = excluded.access_token,
+           expiry = excluded.expiry,
+           updated_at = excluded.updated_at`
+      )
+      .run({ ...input, agora });
+  }
+
+  buscarContaGoogle(deviceId: string): GoogleAccountRow | undefined {
+    return this.db
+      .prepare<[string], GoogleAccountRow>('SELECT * FROM google_accounts WHERE device_id = ?')
+      .get(deviceId);
+  }
+
+  atualizarAccessTokenGoogle(deviceId: string, accessToken: string, expiry: string | null): void {
+    this.db
+      .prepare(
+        'UPDATE google_accounts SET access_token = ?, expiry = ?, updated_at = ? WHERE device_id = ?'
+      )
+      .run(accessToken, expiry, new Date().toISOString(), deviceId);
+  }
+
+  removerContaGoogle(deviceId: string): void {
+    this.db.prepare('DELETE FROM google_accounts WHERE device_id = ?').run(deviceId);
   }
 
   // ─── google_tokens ────────────────────────────────────────────────────────
@@ -846,14 +934,17 @@ export class Db {
     meetingUrl: string;
     meetingCode: string | null;
     botName: string | null;
+    chatproInstanceId?: string | null;
     status?: MeetingStatus;
     createdAt?: string;
   }): MeetingRow {
     this.db
       .prepare(
         `INSERT INTO meetings
-           (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name, chatpro_status, created_at)
-         VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName, 'pending', @createdAt)`
+           (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name,
+            chatpro_status, chatpro_instance_id, chatpro_parts_sent, created_at)
+         VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName,
+            'pending', @chatproInstanceId, 0, @createdAt)`
       )
       .run({
         id: input.id,
@@ -863,6 +954,7 @@ export class Db {
         meetingCode: input.meetingCode,
         status: input.status ?? 'created',
         botName: input.botName,
+        chatproInstanceId: input.chatproInstanceId ?? null,
         createdAt: input.createdAt ?? new Date().toISOString(),
       });
     const row = this.getMeeting(input.id);
@@ -892,17 +984,29 @@ export class Db {
    * senão uma reunião de ontem impediria a de hoje. A janela de tempo é a
    * segunda rede: uma linha travada em 'created' não bloqueia pra sempre.
    */
-  findActiveMeetingByCode(meetingCode: string, desdeIso: string): MeetingRow | undefined {
+  findActiveMeetingByCode(
+    meetingCode: string,
+    desdeIso: string,
+    /**
+     * Linhas SEM bot_id só bloqueiam se forem recentes. Uma reunião que ficou
+     * presa em 'created' (o processo caiu entre gravar a linha e receber o id
+     * do bot) travaria a mesma sala pelas 12 h inteiras — ninguém conseguiria
+     * gravar de novo. Essa janela curta é o suficiente pra segurar o duplo
+     * clique e o retry, que é pra isso que o dedup existe.
+     */
+    semBotDesdeIso: string = desdeIso
+  ): MeetingRow | undefined {
     return this.db
-      .prepare<[string, string], MeetingRow>(
+      .prepare<[string, string, string], MeetingRow>(
         `SELECT * FROM meetings
           WHERE meeting_code = ?
             AND status IN ('created', 'joining', 'waiting_room', 'recording')
             AND created_at >= ?
+            AND (bot_id IS NOT NULL OR created_at >= ?)
           ORDER BY created_at DESC
           LIMIT 1`
       )
-      .get(meetingCode, desdeIso);
+      .get(meetingCode, desdeIso, semBotDesdeIso);
   }
 
   listMeetings(limit = 50): MeetingRow[] {
@@ -946,14 +1050,41 @@ export class Db {
   }): void {
     this.db
       .prepare(
-        `UPDATE meetings SET transcript_json = @transcriptJson, duration_seconds = @durationSeconds
-         WHERE id = @id`
+        // Zera chatpro_parts_sent: transcrição nova = fatiamento novo. Manter o
+        // contador antigo faria a entrega começar no meio de um texto que não
+        // existe mais, e o começo da transcrição nunca chegaria na conversa.
+        `UPDATE meetings
+            SET transcript_json = @transcriptJson,
+                duration_seconds = @durationSeconds,
+                chatpro_parts_sent = 0
+          WHERE id = @id`
       )
       .run(input);
   }
 
-  setMeetingChatproStatus(id: string, chatproStatus: ChatproStatus): void {
-    this.db.prepare('UPDATE meetings SET chatpro_status = ? WHERE id = ?').run(chatproStatus, id);
+  /**
+   * Carimba o resultado da entrega. `partsSent` só AVANÇA (MAX): uma tentativa
+   * que falhou logo no começo não pode apagar o que uma anterior já entregou —
+   * senão o reenvio republicaria as partes que já estão na conversa.
+   */
+  setMeetingChatproStatus(id: string, chatproStatus: ChatproStatus, partsSent?: number): void {
+    if (partsSent === undefined) {
+      this.db.prepare('UPDATE meetings SET chatpro_status = ? WHERE id = ?').run(chatproStatus, id);
+      return;
+    }
+    this.db
+      .prepare(
+        `UPDATE meetings
+            SET chatpro_status = @status,
+                chatpro_parts_sent = MAX(COALESCE(chatpro_parts_sent, 0), @parts)
+          WHERE id = @id`
+      )
+      .run({ id, status: chatproStatus, parts: partsSent });
+  }
+
+  /** Instância do chatPro da conversa (descoberta pelo webhook). */
+  setMeetingChatproInstance(id: string, instanceId: string): void {
+    this.db.prepare('UPDATE meetings SET chatpro_instance_id = ? WHERE id = ?').run(instanceId, id);
   }
 
   /**

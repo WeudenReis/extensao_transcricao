@@ -16,8 +16,10 @@ import { createLogger } from '../log.js';
  * O que NÃO passa por aqui:
  * - `/webhooks/*` — quem chama é o Recall/Google, que se autentica por
  *   assinatura própria (Svix / OIDC). Exigir token quebraria a entrega.
- * - `/api/capture/*` — ingestão da extensão (só escrita, não devolve
- *   transcrição). Exigir token ali quebraria a extensão já distribuída.
+ * O que NÃO fica livre (e antes ficava): `/api/capture/*`. Era a ingestão da
+ * extensão antiga de áudio/legenda, que saiu de cena com o Recall. Aberta junto
+ * com o túnel, ela deixava qualquer um FORJAR transcrição e encher o disco. A
+ * extensão nova só usa /api/reunioes/*, que passa pela tranca normalmente.
  *
  * Sem PANEL_TOKEN configurado tudo continua aberto, com aviso alto no boot:
  * é o modo de desenvolvimento em localhost, que é onde o projeto começa.
@@ -29,7 +31,7 @@ const log = createLogger('painelAuth');
 export const COOKIE_TOKEN = 'painel_token';
 
 /** Caminhos que nunca exigem token (têm autenticação própria, ou não vazam nada). */
-const LIVRES = ['/webhooks/', '/api/capture/', '/api/health'];
+const LIVRES = ['/webhooks/', '/api/health'];
 
 export function ehCaminhoLivre(caminho: string): boolean {
   return LIVRES.some((prefixo) => caminho === prefixo || caminho.startsWith(prefixo));
@@ -111,9 +113,13 @@ export function criarPainelAuth(token: string | undefined): RequestHandler {
       // Veio pela URL: guarda no cookie pra navegação seguinte não precisar
       // repetir o token (e pra ele sumir da barra de endereço).
       if (typeof req.query.token === 'string' && req.query.token !== '') {
+        // Secure quando a requisição chegou por HTTPS (túnel/produção): sem
+        // isso o cookie com o token vazaria numa eventual requisição http.
+        const seguro = req.secure || req.headers['x-forwarded-proto'] === 'https';
         res.setHeader(
           'Set-Cookie',
-          `${COOKIE_TOKEN}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`
+          `${COOKIE_TOKEN}=${encodeURIComponent(token)}; Path=/; HttpOnly; ` +
+            `SameSite=Strict; Max-Age=604800${seguro ? '; Secure' : ''}`
         );
       }
       next();

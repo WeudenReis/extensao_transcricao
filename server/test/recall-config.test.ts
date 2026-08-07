@@ -43,7 +43,9 @@ describe('configuração do Recall.ai', () => {
 
   it('recusa região desconhecida e URL inválida com mensagem clara', () => {
     expect(() => loadConfig({ RECALL_REGION: 'br-south-1' })).toThrow(ConfigError);
-    expect(() => loadConfig({ CHATPRO_API_URL: 'nao-e-url' })).toThrow(/CHATPRO_API_URL/);
+    expect(() => loadConfig({ CHATPRO_BASE_URL: 'nao-e-url' })).toThrow(/CHATPRO_BASE_URL/);
+    // Segredo curto demais é adivinhável — e é ele que protege a criação de bots.
+    expect(() => loadConfig({ CHATPRO_WEBHOOK_SECRET: 'curto' })).toThrow(/CHATPRO_WEBHOOK_SECRET/);
     expect(() => loadConfig({ PUBLIC_BASE_URL: 'nao-e-url' })).toThrow(/PUBLIC_BASE_URL/);
   });
 
@@ -53,14 +55,18 @@ describe('configuração do Recall.ai', () => {
     expect(avisos.join(' ')).toContain('RECALL_API_KEY');
     expect(avisos.join(' ')).toContain('403');
     expect(avisos.join(' ')).toContain('PANEL_TOKEN');
-    expect(avisos).toHaveLength(5);
+    expect(avisos.join(' ')).toContain('CHATPRO_INSTANCE_TOKEN');
+    expect(avisos).toHaveLength(6);
 
     const completo = recallConfigWarnings(
       loadConfig({
         RECALL_API_KEY: 'chave-fake',
         RECALL_WEBHOOK_SECRET: 'whsec_fake',
         PUBLIC_BASE_URL: 'https://tunel.exemplo.app',
-        CHATPRO_API_URL: 'https://api.chatpro.com.br/transcricoes',
+        CHATPRO_INSTANCE_TOKEN: 'token-fake',
+        CHATPRO_INSTANCE_ID: 'chatpro-1234567890',
+        CHATPRO_USER_ID: 'user-fake',
+        CHATPRO_WEBHOOK_SECRET: 'segredo-de-webhook-fake',
         PANEL_TOKEN: 'token-longo-o-suficiente',
       })
     );

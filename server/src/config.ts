@@ -23,6 +23,13 @@ const envSchema = z.object({
       'GOOGLE_PUBSUB_TOPIC deve ter o formato projects/{projeto}/topics/{topico}.'
     )
     .optional(),
+  // Callback do OAuth que a EXTENSÃO usa (conta Google de cada atendente).
+  // Precisa estar cadastrado como "Authorized redirect URI" no mesmo OAuth
+  // Client do GCP. Diferente do GOOGLE_REDIRECT_URI, que é do fluxo antigo.
+  GOOGLE_REDIRECT_URI_EXTENSAO: z
+    .string()
+    .url('GOOGLE_REDIRECT_URI_EXTENSAO deve ser uma URL.')
+    .default('http://localhost:3333/oauth/google/callback'),
   PUBSUB_VERIFICATION_AUDIENCE: z.string().optional(),
   PUBSUB_SERVICE_ACCOUNT: z
     .string()
@@ -57,6 +64,9 @@ const envSchema = z.object({
   RECALL_API_KEY: z.string().optional(),
   RECALL_REGION: z.enum(RECALL_REGIONS).default('us-west-2'),
   RECALL_WEBHOOK_SECRET: z.string().optional(),
+  // Sobrescreve a base derivada da região. Existe pra teste de ponta a ponta
+  // contra um stub — em produção fica vazia e a região manda.
+  RECALL_BASE_URL: z.string().url('RECALL_BASE_URL deve ser uma URL válida.').optional(),
   RECALL_BOT_NAME: z.string().min(1).default('chatPro (gravando)'),
   ALLOW_INSECURE_RECALL: z.string().optional(),
   PUBLIC_BASE_URL: z
@@ -64,8 +74,33 @@ const envSchema = z.object({
     .url('PUBLIC_BASE_URL deve ser uma URL https pública (ex.: https://seu-tunel.ngrok.app).')
     .optional(),
   // ─── chatPro (entrega final da transcrição) ───
-  CHATPRO_API_URL: z.string().url('CHATPRO_API_URL deve ser uma URL válida.').optional(),
-  CHATPRO_API_KEY: z.string().optional(),
+  // Base da API de Chat do chatPro. Só muda em ambiente de teste deles.
+  CHATPRO_BASE_URL: z
+    .string()
+    .url('CHATPRO_BASE_URL deve ser uma URL válida.')
+    .default('https://sparks.chatpro.com.br'),
+  // Header `instance-token`. Gerado em app.chatpro.com.br → Configurações →
+  // Desenvolvedor. Sem ele não dá pra postar a transcrição na conversa.
+  CHATPRO_INSTANCE_TOKEN: z.string().optional(),
+  // Código da instância, formato `chatpro-xxxxxxxxxx`. Vai no corpo de toda
+  // chamada — e também chega sozinho no webhook (message_data.instance_id).
+  CHATPRO_INSTANCE_ID: z.string().optional(),
+  // Usuário a quem o comentário fica vinculado (a transcrição aparece como
+  // dele). Descubra com o endpoint get_all_users_by_instance.
+  CHATPRO_USER_ID: z.string().optional(),
+  // Segredo no CAMINHO do webhook: /webhooks/chatpro/{segredo}. O chatPro não
+  // assina os webhooks dele, então é isto que impede um terceiro de disparar
+  // bots (cobrados por hora) na nossa conta.
+  CHATPRO_WEBHOOK_SECRET: z
+    .string()
+    .min(16, 'CHATPRO_WEBHOOK_SECRET deve ter ao menos 16 caracteres.')
+    .optional(),
+  // Ao ver um link do Meet numa conversa, já mandar o bot? É o que torna o
+  // fluxo automático (sem botão). 'false' deixa só o disparo manual.
+  CHATPRO_AUTO_START_BOT: z.string().optional(),
+  // 'true' aceita link mandado PELO CLIENTE. Padrão desligado: o gatilho é
+  // texto de mensagem, e num WhatsApp de atendimento qualquer estranho escreve.
+  CHATPRO_ACEITAR_LINK_DO_CLIENTE: z.string().optional(),
   AUTO_SEND_CHATPRO: z.string().optional(),
   // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
   // localhost). Vira obrigatório na prática assim que o servidor é exposto.
@@ -79,6 +114,7 @@ export interface Config {
   googleClientId: string;
   googleClientSecret: string;
   googleRedirectUri: string;
+  googleRedirectUriExtensao: string;
   googlePubsubTopic: string | undefined;
   pubsubVerificationAudience: string | undefined;
   pubsubServiceAccount: string | undefined;
@@ -98,11 +134,17 @@ export interface Config {
   recallApiKey: string | undefined;
   recallRegion: RecallRegion;
   recallWebhookSecret: string | undefined;
+  recallBaseUrl: string | undefined;
   recallBotName: string;
   allowInsecureRecall: boolean;
   publicBaseUrl: string | undefined;
-  chatproApiUrl: string | undefined;
-  chatproApiKey: string | undefined;
+  chatproBaseUrl: string;
+  chatproInstanceToken: string | undefined;
+  chatproInstanceId: string | undefined;
+  chatproUserId: string | undefined;
+  chatproWebhookSecret: string | undefined;
+  chatproAutoStartBot: boolean;
+  chatproAceitarLinkDoCliente: boolean;
   autoSendChatpro: boolean;
   panelToken: string | undefined;
 }
@@ -114,6 +156,18 @@ export class ConfigError extends Error {}
  * Nada aqui impede o servidor de subir — é só aviso de boot (modo dev).
  * NUNCA inclui valor de chave/segredo, só o nome da variável.
  */
+/**
+ * Quais das três variáveis do chatPro Chat estão faltando. Postar o comentário
+ * exige as três juntas — só o token não basta.
+ */
+export function faltamNoChatpro(config: Config): string[] {
+  const faltam: string[] = [];
+  if (!config.chatproInstanceToken) faltam.push('CHATPRO_INSTANCE_TOKEN');
+  if (!config.chatproInstanceId) faltam.push('CHATPRO_INSTANCE_ID');
+  if (!config.chatproUserId) faltam.push('CHATPRO_USER_ID');
+  return faltam;
+}
+
 export function recallConfigWarnings(config: Config): string[] {
   const avisos: string[] = [];
   if (!config.recallApiKey) {
@@ -129,8 +183,18 @@ export function recallConfigWarnings(config: Config): string[] {
   if (!config.publicBaseUrl) {
     avisos.push('PUBLIC_BASE_URL vazia — sem HTTPS público o Recall.ai não entrega webhook.');
   }
-  if (!config.chatproApiUrl) {
-    avisos.push('CHATPRO_API_URL vazia — entrega ao chatPro fica como skipped-no-url.');
+  const faltam = faltamNoChatpro(config);
+  if (faltam.length > 0) {
+    avisos.push(
+      `chatPro incompleto (${faltam.join(', ')}) — a transcrição fica salva ` +
+        'e marcada como skipped-no-url, sem se perder.'
+    );
+  }
+  if (!config.chatproWebhookSecret) {
+    avisos.push(
+      'CHATPRO_WEBHOOK_SECRET vazio — o disparo automático do bot pelo link do ' +
+        'Meet na conversa fica desligado (/webhooks/chatpro responde 404).'
+    );
   }
   if (!config.panelToken) {
     // Grave quando somado ao túnel: o Recall só precisa de /webhooks/recall,
@@ -172,6 +236,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     googleClientId: e.GOOGLE_CLIENT_ID,
     googleClientSecret: e.GOOGLE_CLIENT_SECRET,
     googleRedirectUri: e.GOOGLE_REDIRECT_URI,
+    googleRedirectUriExtensao: e.GOOGLE_REDIRECT_URI_EXTENSAO,
     googlePubsubTopic: e.GOOGLE_PUBSUB_TOPIC,
     pubsubVerificationAudience: e.PUBSUB_VERIFICATION_AUDIENCE,
     pubsubServiceAccount: e.PUBSUB_SERVICE_ACCOUNT,
@@ -191,11 +256,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     recallApiKey: e.RECALL_API_KEY,
     recallRegion: e.RECALL_REGION,
     recallWebhookSecret: e.RECALL_WEBHOOK_SECRET,
+    recallBaseUrl: e.RECALL_BASE_URL,
     recallBotName: e.RECALL_BOT_NAME,
     allowInsecureRecall: e.ALLOW_INSECURE_RECALL === 'true',
     publicBaseUrl: e.PUBLIC_BASE_URL,
-    chatproApiUrl: e.CHATPRO_API_URL,
-    chatproApiKey: e.CHATPRO_API_KEY,
+    chatproBaseUrl: e.CHATPRO_BASE_URL,
+    chatproInstanceToken: e.CHATPRO_INSTANCE_TOKEN,
+    chatproInstanceId: e.CHATPRO_INSTANCE_ID,
+    chatproUserId: e.CHATPRO_USER_ID,
+    chatproWebhookSecret: e.CHATPRO_WEBHOOK_SECRET,
+    chatproAutoStartBot: e.CHATPRO_AUTO_START_BOT !== 'false',
+    chatproAceitarLinkDoCliente: e.CHATPRO_ACEITAR_LINK_DO_CLIENTE === 'true',
     autoSendChatpro: e.AUTO_SEND_CHATPRO === 'true',
     panelToken: e.PANEL_TOKEN,
   };

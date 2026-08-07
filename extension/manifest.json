@@ -1,29 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "chatPro Meet Transcripts",
-  "version": "0.1.0",
-  "description": "Vincula a conversa ativa do chatPro com a reunião do Google Meet para juntar a transcrição automaticamente.",
-  "permissions": ["tabs", "storage", "alarms", "offscreen", "tabCapture"],
-  "host_permissions": [
-    "https://app.chatpro.com.br/*",
-    "https://meet.google.com/*",
-    "http://localhost:3333/*"
-  ],
+  "name": "chatPro Reuniões",
+  "version": "2.0.0",
+  "description": "Botão de reunião no chatPro: cria o link do Meet, envia pro cliente e grava a chamada.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["https://app.chatpro.com.br/*", "http://localhost:3333/*"],
   "content_scripts": [
     {
       "matches": ["https://app.chatpro.com.br/*"],
-      "js": ["content/chatpro.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://meet.google.com/*"],
-      "js": ["content/meet-tap.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": ["https://meet.google.com/*"],
-      "js": ["content/meet.js", "content/captions.js"],
+      "js": ["content/botao-reuniao.js"],
       "run_at": "document_idle"
     }
   ],
@@ -32,7 +17,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "chatPro Meet Transcripts",
+    "default_title": "chatPro Reuniões",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

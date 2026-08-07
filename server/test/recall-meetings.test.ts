@@ -58,7 +58,14 @@ async function montarApp(options: {
   const { fetchImpl, chamadas } = fetchGravador(options.respostas ?? []);
   const recall =
     options.comApiKey === false ? undefined : new RecallClient({ apiKey: API_KEY, fetchImpl });
-  const chatpro = new ChatproClient({ apiUrl: undefined, apiKey: undefined });
+  // chatPro não configurado de propósito: as rotas testadas aqui não dependem
+  // dele, e a entrega manual deve devolver 'skipped-no-url'.
+  const chatpro = new ChatproClient({
+    baseUrl: undefined,
+    instanceToken: undefined,
+    instanceId: undefined,
+    userId: undefined,
+  });
 
   const app = express();
   app.use(express.json());

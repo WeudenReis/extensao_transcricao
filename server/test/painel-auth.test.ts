@@ -73,12 +73,18 @@ describe('leitura do token', () => {
 });
 
 describe('caminhos livres', () => {
-  it('webhooks e ingestão da extensão nunca exigem token', () => {
-    // Exigir token aqui quebraria a entrega do Recall e a extensão distribuída.
+  it('só webhooks e health ficam livres', () => {
+    // Webhook tem assinatura própria (Svix/OIDC); exigir token quebraria a
+    // entrega do Recall.
     expect(ehCaminhoLivre('/webhooks/recall')).toBe(true);
+    expect(ehCaminhoLivre('/webhooks/chatpro/abc')).toBe(true);
     expect(ehCaminhoLivre('/webhooks/pubsub')).toBe(true);
-    expect(ehCaminhoLivre('/api/capture/start')).toBe(true);
     expect(ehCaminhoLivre('/api/health')).toBe(true);
+  });
+
+  it('/api/capture/* NÃO é livre — aberto no túnel, dava pra forjar transcrição', () => {
+    expect(ehCaminhoLivre('/api/capture/start')).toBe(false);
+    expect(ehCaminhoLivre('/api/capture/chunk')).toBe(false);
   });
 
   it('painel e leitura de reunião NÃO são livres', () => {
@@ -138,11 +144,11 @@ describe('middleware com PANEL_TOKEN configurado', () => {
     expect(res.status).toBe(200);
   });
 
-  it('a ingestão da extensão continua passando sem token', async () => {
+  it('a ingestão de captura agora exige token', async () => {
     const base = await montarApp(TOKEN);
     const res = await fetch(`${base}/api/capture/start`, { method: 'POST' });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
   it('responde HTML pro navegador e JSON pra chamada de API', async () => {

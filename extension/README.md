@@ -1,56 +1,58 @@
-# chatPro Meet Transcripts
+# chatPro Reuniões — extensão
 
-Extensão Chrome (Manifest V3) que vincula a conversa ativa do chatPro com a
-reunião do Google Meet e envia o vínculo para o backend local — que depois
-junta a transcrição do Meet e manda para a Voreo.
+Põe um botão **Entrar na reunião** na barra de atendimento do chatPro. Um
+clique faz tudo:
 
-Distribuição local, fora das lojas: instala-se via "Carregar sem compactação".
+1. cria o link do Meet na **sua** agenda do Google
+2. envia o link pro cliente na conversa
+3. coloca o bot de gravação na sala
+4. abre a reunião numa aba nova
 
-## Instalação em 5 passos
+Quando a chamada acaba, a transcrição volta sozinha como **comentário** naquela
+mesma conversa.
 
-1. Abra o Chrome e acesse `chrome://extensions`.
-2. Ative o **Modo do desenvolvedor** (canto superior direito).
-3. Clique em **Carregar sem compactação**.
-4. Escolha esta pasta (`extension/` — a que contém o `manifest.json`).
-5. Pronto! O ícone verde da chatPro aparece na barra. Fixe-o clicando no
-   alfinete para acompanhar o status.
+## Instalar
 
-## Como usar
+1. Baixe/extraia esta pasta
+2. `chrome://extensions` → ative o **Modo do desenvolvedor**
+3. **Carregar sem compactação** → escolha a pasta `extension/`
 
-- Abra uma conversa no chatPro (`app.chatpro.com.br`) — a extensão captura o
-  session id sozinha (badge ✓ verde no ícone).
-- Entre na reunião do Google Meet. Se o vínculo automático estiver ativo
-  (padrão), a extensão vincula sessão ↔ reunião e envia ao backend.
-- No popup você acompanha a sessão ativa, a reunião detectada e o status do
-  último vínculo (Enviado ✓ / Pendente). Vínculos pendentes são reenviados
-  automaticamente a cada minuto.
-- O botão **Vincular agora** cria o vínculo manualmente quando precisar.
-- Em **Configurar backend** você troca o endereço do backend local
-  (padrão: `http://localhost:3333`).
+## Configurar (uma vez por pessoa)
 
-## Como atualizar
+Abra a extensão pelo ícone:
 
-1. Substitua os arquivos desta pasta pela versão nova (ou faça `git pull`).
-2. Em `chrome://extensions`, clique no botão **Atualizar** (ícone de seta
-   circular) no card da extensão — ou no botão global "Atualizar".
-3. Se algo parecer estranho, remova a extensão e repita a instalação.
+1. **Servidor** — endereço do backend e a chave do painel (`PANEL_TOKEN`)
+2. **Salvar**
+3. **Conectar conta Google** — abre o consent; ao voltar, aparece
+   "Conectado: seu@email"
 
-## Fontes (opcional)
+A conta Google é sua e serve pra criar o link. Funciona com **conta pessoal
+@gmail** — não precisa de Workspace.
 
-O popup usa **Paytone One** (títulos) e **Space Grotesk** (textos), a
-identidade da chatPro. Como a CSP de extensões não permite Google Fonts via
-CDN, os arquivos precisam ser locais. Sem eles, o popup funciona normalmente
-com a fonte do sistema.
+> O que fica guardado no seu navegador é só o endereço do servidor, a chave do
+> painel e um identificador da instalação. O acesso à sua conta Google fica
+> cifrado no servidor, nunca na extensão.
 
-Para ativar: siga o passo a passo em `popup/fonts/README.txt`.
+## Usar
 
-## Empacotamento (opcional)
+Abra uma conversa no chatPro. O botão aparece na barra de cima, ao lado de
+"transferir". Clique quando quiser levar o atendimento pra uma chamada.
 
-Para gerar um .zip de distribuição:
+## Como o botão se adapta ao tema
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1
+O chatPro não expõe classes estáveis, então o botão **clona** um dos botões que
+já estão na barra e troca só o ícone e o texto. Assim ele herda fonte,
+espaçamento, hover e as cores dos temas claro e escuro — e continua certo se o
+chatPro mudar o CSS.
+
+Se algum dia o botão sumir ou ficar torto, é sinal de que o layout deles mudou:
+o seletor está em `content/botao-reuniao.js`, na constante `VIZINHOS`.
+
+## Arquivos
+
 ```
-
-O pacote sai em `dist/chatpro-meet-transcripts-v{versão}.zip`.
-Os ícones podem ser regenerados com `scripts\make-icons.ps1`.
+manifest.json                 MV3, roda só em app.chatpro.com.br
+content/botao-reuniao.js      acha a barra, clona o botão, injeta
+background/service-worker.js  ponte com o backend (estado em chrome.storage)
+popup/                        conta Google + endereço do servidor
+```

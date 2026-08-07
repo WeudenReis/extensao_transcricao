@@ -5,7 +5,8 @@ import type { Db, MeetingRow } from '../db.js';
 import { RecallApiError, type RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
 import { normalizeMeetingCode } from '../google/meet.js';
-import { entregarAoChatpro, lerTranscriptSalvo } from '../pipeline/recallQueue.js';
+import { entregarAoChatproComTrava, lerTranscriptSalvo } from '../pipeline/recallQueue.js';
+import { criarReuniao } from '../recall/criarReuniao.js';
 import { createLogger } from '../log.js';
 
 /**
@@ -112,13 +113,6 @@ function assincrono<P extends Record<string, string>>(
 /** Rotas com `:id` na URL — evita `string | undefined` em req.params.id. */
 type ParamsId = { id: string };
 
-/**
- * Por quanto tempo uma reunião em andamento "segura" o código do Meet contra
- * um segundo bot. 12 h cobre qualquer reunião real com folga, e evita que uma
- * linha travada em 'created' bloqueie a mesma sala no dia seguinte.
- */
-export const JANELA_DEDUP_MS = 12 * 60 * 60 * 1000;
-
 export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
   const { db, recall, chatpro, botName } = deps;
   const router = Router();
@@ -142,96 +136,31 @@ export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
         });
         return;
       }
-      if (!recall) {
-        log.warn('POST /api/meetings recusado: RECALL_API_KEY não configurada.');
-        res.status(503).json(SEM_API_KEY);
+
+      // Dedup, pré-gravação e metadata vivem no serviço: o webhook do chatPro
+      // cria reunião pelo MESMO caminho, e as garantias precisam valer nos dois.
+      const r = await criarReuniao(
+        { db, recall, botName },
+        {
+          meetingUrl: parsed.data.meetingUrl,
+          sessionId: parsed.data.sessionId ?? null,
+          origem: 'api',
+        }
+      );
+
+      if (!r.ok) {
+        res.status(r.status).json({
+          error:
+            r.status === 503 ? 'Recall.ai não configurado.' : 'Falha ao criar o bot no Recall.ai.',
+          detail: r.erro,
+          ...(r.hint ? { hint: r.hint } : {}),
+          ...(r.meeting ? { meeting: resumirReuniao(r.meeting) } : {}),
+        });
         return;
       }
-
-      const { meetingUrl } = parsed.data;
-      const sessionId = parsed.data.sessionId ?? null;
-      const meetingCode = normalizeMeetingCode(meetingUrl) || null;
-
-      // Já tem bot nesta chamada? Devolve o que existe em vez de mandar outro.
-      // Este endpoint é feito pra ser chamado por máquina (o chatPro), então
-      // repetição é ESPERADA: retry, timeout, duplo clique do atendente. Cada
-      // bot a mais é um robô a mais aparecendo pro cliente e uma hora a mais
-      // cobrada. Chamar duas vezes tem que dar o mesmo resultado que uma.
-      if (meetingCode) {
-        const desde = new Date(Date.now() - JANELA_DEDUP_MS).toISOString();
-        const emAndamento = db.findActiveMeetingByCode(meetingCode, desde);
-        if (emAndamento) {
-          // Aproveita pra amarrar a sessão, se ela só veio agora.
-          if (sessionId && !emAndamento.session_id) {
-            db.setMeetingSessionId(emAndamento.id, sessionId);
-          }
-          const atual = db.getMeeting(emAndamento.id) ?? emAndamento;
-          log.info(
-            `POST /api/meetings repetido pra ${meetingCode} — devolvendo a reunião ` +
-              `${atual.id} (${atual.status}) sem criar outro bot.`
-          );
-          res.status(200).json({ meeting: resumirReuniao(atual), jaExistia: true });
-          return;
-        }
-      }
-
-      // A reunião é gravada ANTES de chamar o Recall, e o id dela viaja em
-      // metadata.meeting_id. Motivo: se o createBot estourar o timeout de 20 s
-      // DEPOIS que o Recall já criou o bot, o bot entra na reunião do cliente e
-      // grava — e sem esta linha no banco não haveria nada pra casar com os
-      // webhooks dele. Assim, o primeiro webhook reencontra a reunião pelo
-      // metadata e amarra o bot_id.
-      const meetingId = randomUUID();
-      let meeting = db.createMeeting({
-        id: meetingId,
-        botId: null,
-        sessionId,
-        meetingUrl,
-        meetingCode,
-        botName,
-        status: 'created',
-      });
-
-      try {
-        const bot = await recall.createBot({
-          meetingUrl,
-          botName,
-          meetingId,
-          sessionId: sessionId ?? undefined,
-        });
-        db.setMeetingBotId(meetingId, bot.id);
-        meeting = db.getMeeting(meetingId) ?? meeting;
-        log.info(
-          `reunião ${meetingId} criada: bot ${bot.id}, meet ${meetingCode ?? '?'}, ` +
-            `sessão ${sessionId ?? '(sem vínculo)'}.`
-        );
-        res.status(201).json({ meeting: resumirReuniao(meeting) });
-      } catch (err) {
-        // A reunião fica registrada como 'failed'. Se o bot existir mesmo assim
-        // (timeout com o bot já criado), o webhook a reabre pelo metadata.
-        db.updateMeetingStatus(meetingId, 'failed', 'falha ao criar o bot no Recall.ai');
-        if (err instanceof RecallApiError) {
-          log.error(`falha ao criar bot no Recall (HTTP ${err.status})`, err);
-          res.status(502).json({
-            error: 'Falha ao criar o bot no Recall.ai.',
-            detail: err.message,
-            ...(err.timedOut
-              ? {
-                  hint:
-                    'O Recall demorou demais pra responder. O bot PODE ter entrado na reunião ' +
-                    'mesmo assim — confira a lista antes de tentar de novo, pra não colocar dois.',
-                }
-              : {}),
-            ...(err.status === 401 || err.status === 403
-              ? {
-                  hint: 'RECALL_API_KEY inválida ou de outra região — confira RECALL_REGION.',
-                }
-              : {}),
-          });
-          return;
-        }
-        throw err;
-      }
+      res
+        .status(r.criada ? 201 : 200)
+        .json({ meeting: resumirReuniao(r.meeting), ...(r.criada ? {} : { jaExistia: true }) });
     })
   );
 
@@ -306,7 +235,7 @@ export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
         });
         return;
       }
-      const resultado = await entregarAoChatpro(db, chatpro, meeting);
+      const resultado = await entregarAoChatproComTrava(db, chatpro, meeting);
       log.info(`envio manual ao chatPro da reunião ${meeting.id}: ${resultado.status}`);
       // 'skipped-no-url' não é erro: é o modo dev, sem CHATPRO_API_URL.
       res.status(resultado.status === 'failed' ? 502 : 200).json(resultado);
