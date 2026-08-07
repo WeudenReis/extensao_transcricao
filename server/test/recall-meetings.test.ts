@@ -179,6 +179,56 @@ describe('POST /api/meetings', () => {
     expect(db.listMeetings()).toHaveLength(0);
   });
 
+  it('chamada repetida NÃO põe um segundo bot na mesma reunião', async () => {
+    // O chatPro chama isto por máquina: retry, timeout e duplo clique são
+    // esperados. Dois bots = dois robôs visíveis pro cliente e hora dobrada.
+    const { baseUrl, db, chamadas } = await montarApp({
+      respostas: [jsonResponse({ id: BOT_ID })],
+    });
+
+    const primeira = await criar(baseUrl, { meetingUrl: MEETING_URL });
+    expect(primeira.status).toBe(201);
+
+    const segunda = await criar(baseUrl, { meetingUrl: MEETING_URL });
+    expect(segunda.status).toBe(200);
+    const corpo = (await segunda.json()) as { meeting: { id: string }; jaExistia: boolean };
+    expect(corpo.jaExistia).toBe(true);
+
+    // Uma única chamada ao Recall, uma única reunião.
+    expect(chamadas).toHaveLength(1);
+    expect(db.listMeetings()).toHaveLength(1);
+    expect(corpo.meeting.id).toBe(db.listMeetings()[0]?.id);
+  });
+
+  it('a repetição aproveita pra amarrar a sessão do chatPro que chegou depois', async () => {
+    const { baseUrl, db } = await montarApp({ respostas: [jsonResponse({ id: BOT_ID })] });
+
+    await criar(baseUrl, { meetingUrl: MEETING_URL }); // sem sessão ainda
+    expect(db.getMeetingByBotId(BOT_ID)?.session_id).toBeNull();
+
+    await criar(baseUrl, { meetingUrl: MEETING_URL, sessionId: SESSION_ID });
+
+    expect(db.getMeetingByBotId(BOT_ID)?.session_id).toBe(SESSION_ID);
+    expect(db.listMeetings()).toHaveLength(1);
+  });
+
+  it('reunião já encerrada não bloqueia um bot novo na mesma sala', async () => {
+    const { baseUrl, db, chamadas } = await montarApp({
+      respostas: [jsonResponse({ id: BOT_ID }), jsonResponse({ id: 'bot-2' })],
+    });
+
+    await criar(baseUrl, { meetingUrl: MEETING_URL });
+    const primeira = db.listMeetings()[0];
+    db.updateMeetingStatus(primeira?.id ?? '', 'done');
+
+    // Mesma sala amanhã (ou nova chamada depois de encerrar): tem que valer.
+    const nova = await criar(baseUrl, { meetingUrl: MEETING_URL });
+
+    expect(nova.status).toBe(201);
+    expect(chamadas).toHaveLength(2);
+    expect(db.listMeetings()).toHaveLength(2);
+  });
+
   it('responde 502 quando o Recall recusa (RecallApiError) e deixa a reunião como failed', async () => {
     const { baseUrl, db } = await montarApp({
       respostas: [new Response('Invalid token.', { status: 401 })],

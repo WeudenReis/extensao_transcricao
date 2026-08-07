@@ -112,6 +112,13 @@ function assincrono<P extends Record<string, string>>(
 /** Rotas com `:id` na URL — evita `string | undefined` em req.params.id. */
 type ParamsId = { id: string };
 
+/**
+ * Por quanto tempo uma reunião em andamento "segura" o código do Meet contra
+ * um segundo bot. 12 h cobre qualquer reunião real com folga, e evita que uma
+ * linha travada em 'created' bloqueie a mesma sala no dia seguinte.
+ */
+export const JANELA_DEDUP_MS = 12 * 60 * 60 * 1000;
+
 export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
   const { db, recall, chatpro, botName } = deps;
   const router = Router();
@@ -144,6 +151,29 @@ export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
       const { meetingUrl } = parsed.data;
       const sessionId = parsed.data.sessionId ?? null;
       const meetingCode = normalizeMeetingCode(meetingUrl) || null;
+
+      // Já tem bot nesta chamada? Devolve o que existe em vez de mandar outro.
+      // Este endpoint é feito pra ser chamado por máquina (o chatPro), então
+      // repetição é ESPERADA: retry, timeout, duplo clique do atendente. Cada
+      // bot a mais é um robô a mais aparecendo pro cliente e uma hora a mais
+      // cobrada. Chamar duas vezes tem que dar o mesmo resultado que uma.
+      if (meetingCode) {
+        const desde = new Date(Date.now() - JANELA_DEDUP_MS).toISOString();
+        const emAndamento = db.findActiveMeetingByCode(meetingCode, desde);
+        if (emAndamento) {
+          // Aproveita pra amarrar a sessão, se ela só veio agora.
+          if (sessionId && !emAndamento.session_id) {
+            db.setMeetingSessionId(emAndamento.id, sessionId);
+          }
+          const atual = db.getMeeting(emAndamento.id) ?? emAndamento;
+          log.info(
+            `POST /api/meetings repetido pra ${meetingCode} — devolvendo a reunião ` +
+              `${atual.id} (${atual.status}) sem criar outro bot.`
+          );
+          res.status(200).json({ meeting: resumirReuniao(atual), jaExistia: true });
+          return;
+        }
+      }
 
       // A reunião é gravada ANTES de chamar o Recall, e o id dela viaja em
       // metadata.meeting_id. Motivo: se o createBot estourar o timeout de 20 s

@@ -881,6 +881,30 @@ export class Db {
       .get(botId);
   }
 
+  /**
+   * Reunião ainda EM ANDAMENTO com o mesmo código de Meet.
+   *
+   * Serve pra não colocar dois bots na mesma chamada: o chatPro pode repetir a
+   * chamada (retry, timeout, duplo clique do atendente) e cada bot a mais é um
+   * robô visível pro cliente e uma hora cobrada a mais.
+   *
+   * Só conta o que ainda está vivo — 'ended'/'done'/'failed' ficam de fora,
+   * senão uma reunião de ontem impediria a de hoje. A janela de tempo é a
+   * segunda rede: uma linha travada em 'created' não bloqueia pra sempre.
+   */
+  findActiveMeetingByCode(meetingCode: string, desdeIso: string): MeetingRow | undefined {
+    return this.db
+      .prepare<[string, string], MeetingRow>(
+        `SELECT * FROM meetings
+          WHERE meeting_code = ?
+            AND status IN ('created', 'joining', 'waiting_room', 'recording')
+            AND created_at >= ?
+          ORDER BY created_at DESC
+          LIMIT 1`
+      )
+      .get(meetingCode, desdeIso);
+  }
+
   listMeetings(limit = 50): MeetingRow[] {
     return this.db
       .prepare<[number], MeetingRow>('SELECT * FROM meetings ORDER BY created_at DESC LIMIT ?')

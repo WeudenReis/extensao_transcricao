@@ -24,29 +24,50 @@ inteiro antes de commitar).
 
 ---
 
-## 🔴 2. Definir o `PANEL_TOKEN` (antes de abrir o túnel)
+## ✅ 2. `PANEL_TOKEN` — já configurei
 
-Isto apareceu numa revisão de segurança depois que o resto já estava pronto, e
-é o achado mais sério: **o Recall só precisa alcançar `/webhooks/recall`, mas o
-túnel publica o servidor inteiro.** Sem tranca, quem descobrisse a URL do túnel
-listaria as reuniões, baixaria a transcrição de todas (com nome e e-mail dos
-participantes) e ainda criaria bots na sua conta, que são cobrados por hora.
+Gerei um token e coloquei no seu `server/.env`, na variável `PANEL_TOKEN`. Ele
+começa com `chatpro-recall-` pra você reconhecer de relance.
 
-Já implementei a tranca. Falta você gerar o valor:
+Pra ver o valor:
 
 ```
-openssl rand -hex 24
+findstr PANEL_TOKEN server\.env
 ```
 
+Abra o painel assim, uma vez só (depois ele guarda num cookie de 7 dias):
+
 ```
-PANEL_TOKEN=o-valor-gerado
+http://localhost:3333/?token=COLE_O_TOKEN_AQUI
 ```
 
-Depois abra o painel uma vez com `http://localhost:3333/?token=SEU_TOKEN` — ele
-guarda num cookie e não pede de novo.
+Testei com o servidor rodando: sem token dá **401**, com token dá **200**, e o
+webhook do Recall continua entrando sem token (como tem que ser).
 
-`/webhooks/*` e `/api/capture/*` continuam livres de propósito: o webhook se
+> O valor **não** está escrito em nenhum arquivo versionado — só no `.env`, que
+> o Git ignora. Seu `.env` anterior está salvo em
+> `server/.env.backup-antes-recall` (também fora do Git).
+
+<details>
+<summary>Por que isso importa (e como gerar outro)</summary>
+
+O Recall só precisa alcançar `/webhooks/recall`, mas o túnel publica o servidor
+inteiro. Sem tranca, quem descobrisse a URL do túnel listaria as reuniões,
+baixaria a transcrição de todas (com nome e e-mail dos participantes) e ainda
+criaria bots na sua conta, que são cobrados por hora.
+
+Pra gerar outro token a qualquer momento:
+
+```
+node -e "console.log('chatpro-recall-'+require('crypto').randomBytes(12).toString('hex'))"
+```
+
+Troque no `.env` e reinicie o servidor. O prefixo é só pra você reconhecer; a
+segurança está na parte aleatória.
+
+`/webhooks/*` e `/api/capture/*` ficam livres de propósito: o webhook se
 autentica pela assinatura do Recall, e a extensão só escreve.
+</details>
 
 ## 🔴 3. Criar o segredo de webhook
 
@@ -119,21 +140,29 @@ justamente pra isso.
 Enquanto `CHATPRO_API_URL` estiver vazia, nada se perde: a transcrição fica
 salva e marcada como `skipped-no-url`, e você envia pelo botão do painel.
 
-## 🟡 7. Decidir: quem chama o bot?
+## 🟡 7. Ligar o gatilho no chatPro
 
-Hoje o bot entra quando alguém faz `POST /api/meetings` (ou clica no painel).
-Falta ligar isso no gatilho real do chatPro — quando o atendente abre a reunião.
+Você me liberou a decidir, então fui pelo caminho que recomendei: **o chatPro
+chama o nosso endpoint** quando o atendente abre a reunião. É o único que não
+volta a depender de algo rodando na máquina de cada pessoa — que era justamente
+o problema que te fez pedir o Recall.
 
-São dois caminhos, e a escolha é sua:
+Deixei o endpoint pronto pra ser chamado por máquina, e escrevi o contrato
+inteiro em **[docs/INTEGRACAO-CHATPRO.md](docs/INTEGRACAO-CHATPRO.md)** — é o
+documento pra entregar pra quem for mexer no chatPro.
 
-- **O chatPro chama o nosso endpoint** quando cria a reunião. Mais limpo, mas
-  depende de mexer no chatPro.
-- **Um script/extensão mínima** detecta o Meet aberto e chama. Não mexe no
-  chatPro, mas volta a depender de algo rodando na máquina de cada um — que é
-  exatamente o problema que te fez pedir o Recall.
+O que fiz pra isso funcionar sem dor:
 
-Eu recomendo o primeiro. Se for por ali, me diga e eu faço o endpoint do lado
-do chatPro também.
+- **Chamar duas vezes dá o mesmo resultado que uma.** Retry, timeout e duplo
+  clique acontecem; agora, se já existe bot naquela sala, devolvemos o que
+  existe (`200` + `jaExistia: true`) em vez de mandar um segundo robô pra
+  reunião do cliente e cobrar outra hora.
+- **O `sessionId` pode chegar depois.** Se a segunda chamada trouxer a sessão
+  que a primeira não tinha, ela é amarrada sem criar nada novo.
+- **Reunião encerrada não bloqueia** uma nova na mesma sala.
+
+Falta só o lado de lá: fazer o chatPro chamar. Se quiser, eu escrevo esse
+trecho também — só preciso de acesso ao código do chatPro.
 
 ## 🟡 8. Bot autenticado (tira a sala de espera)
 
