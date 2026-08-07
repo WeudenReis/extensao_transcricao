@@ -55,10 +55,22 @@ async function chamar(caminho, opcoes = {}) {
   const base = String(cfg.backendUrl || '').replace(/\/+$/, '');
   if (!base) throw new Error('Endereço do servidor não configurado na extensão.');
 
-  const resposta = await fetch(`${base}${caminho}`, {
-    ...opcoes,
-    headers: comToken(cfg, opcoes.headers),
-  });
+  let resposta;
+  try {
+    resposta = await fetch(`${base}${caminho}`, {
+      ...opcoes,
+      headers: comToken(cfg, opcoes.headers),
+    });
+  } catch (err) {
+    // `fetch` só estoura assim quando NÃO houve resposta: servidor parado,
+    // endereço errado, porta ocupada. O "Failed to fetch" do Chrome não diz
+    // nada disso — troca por algo acionável, com o endereço que tentamos.
+    throw new Error(
+      `Não consegui alcançar o servidor em ${base}. ` +
+        'Confira se ele está rodando (autostart) e se o endereço no popup está certo. ' +
+        `(${String(err?.message || err)})`
+    );
+  }
 
   const texto = await resposta.text();
   let corpo = null;

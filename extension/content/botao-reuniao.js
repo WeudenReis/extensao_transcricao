@@ -284,8 +284,23 @@
       );
       window.open(meetUrl, '_blank', 'noopener');
     } catch (err) {
-      log('erro', err);
-      avisar('A extensão não conseguiu falar com o servidor.', 'erro');
+      log('erro ao falar com o service worker:', err);
+      const detalhe = String(err?.message || err || '');
+
+      // Causa nº 1 na prática, e a mensagem genérica escondia ela: quando a
+      // extensão é recarregada, as abas que já estavam abertas continuam com o
+      // content script ANTIGO, cujo chrome.runtime não existe mais. Não é
+      // problema de servidor — é só a aba estar velha.
+      if (/context invalidated|Extension context/i.test(detalhe)) {
+        avisar('A extensão foi atualizada. Recarregue esta página (F5) e clique de novo.', 'erro');
+      } else if (/Receiving end does not exist|Could not establish connection/i.test(detalhe)) {
+        avisar(
+          'A extensão não respondeu. Abra chrome://extensions e recarregue "chatPro Reuniões".',
+          'erro'
+        );
+      } else {
+        avisar(`Não deu pra falar com o servidor: ${detalhe || 'erro desconhecido'}`, 'erro');
+      }
     } finally {
       ocupado(botao, false);
     }
