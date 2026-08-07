@@ -82,27 +82,55 @@
       : el;
   }
 
-  const SVG_CAMERA =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" ' +
-    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-    'stroke-linejoin="round" aria-hidden="true">' +
-    '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>';
+  /** Tamanho usado quando não dá pra medir o ícone vizinho. */
+  const TAMANHO_PADRAO = 20;
+
+  function svgCamera(tamanho) {
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${tamanho}" height="${tamanho}" ` +
+      'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>'
+    );
+  }
+
+  /**
+   * Mede o ícone vizinho pra câmera sair do mesmo tamanho. Chutar um valor fixo
+   * deixava a câmera menor que os outros ícones da barra.
+   */
+  function medirIcone(icone) {
+    const r = icone.getBoundingClientRect();
+    if (r.width >= 10 && r.width <= 40) return Math.round(r.width);
+    const attr = Number.parseFloat(icone.getAttribute('width') || '');
+    if (Number.isFinite(attr) && attr >= 10 && attr <= 40) return Math.round(attr);
+    const css = Number.parseFloat(getComputedStyle(icone).width);
+    if (Number.isFinite(css) && css >= 10 && css <= 40) return Math.round(css);
+    return TAMANHO_PADRAO;
+  }
 
   /** Troca o conteúdo do clone: ícone do chatPro sai, câmera entra. */
-  function ajustarClone(clone) {
+  function ajustarClone(clone, moldeOriginal) {
     clone.id = ID;
     clone.setAttribute('data-cpm', '1');
     clone.setAttribute('title', 'Cria o link, envia pro cliente e grava a reunião');
 
-    // Substitui o ícone mantendo o lugar dele no layout.
+    // Substitui o ícone mantendo lugar E tamanho. Mede no ORIGINAL, que está
+    // na tela: o clone ainda não foi inserido, então não tem dimensão.
     const icone = clone.querySelector('svg, img, i');
+    const iconeOriginal = moldeOriginal ? moldeOriginal.querySelector('svg, img, i') : null;
     if (icone) {
+      const tamanho = medirIcone(iconeOriginal || icone);
       const molde = document.createElement('span');
-      molde.innerHTML = SVG_CAMERA;
+      molde.innerHTML = svgCamera(tamanho);
       const novo = molde.firstElementChild;
-      // Herda tamanho e classes do ícone original pra não desalinhar.
+      // Herda as classes do ícone original pra não desalinhar com o rótulo.
       if (icone.getAttribute('class')) novo.setAttribute('class', icone.getAttribute('class'));
+      // Reforça no style: se a classe do chatPro dimensiona por CSS, o atributo
+      // width do SVG sozinho seria ignorado.
+      novo.style.width = `${tamanho}px`;
+      novo.style.height = `${tamanho}px`;
       icone.replaceWith(novo);
+      log(`ícone ajustado para ${tamanho}px (medido no vizinho)`);
     }
 
     // Troca o texto no nó que realmente o contém.
@@ -122,7 +150,9 @@
 
     if (!icone && !clone.querySelector('svg')) {
       const span = document.createElement('span');
-      span.innerHTML = SVG_CAMERA;
+      span.innerHTML = svgCamera(
+        iconeOriginal ? medirIcone(iconeOriginal) : TAMANHO_PADRAO
+      );
       span.style.marginRight = '6px';
       span.style.display = 'inline-flex';
       clone.prepend(span);
@@ -139,7 +169,8 @@
     b.id = ID;
     b.type = 'button';
     b.setAttribute('data-cpm', '1');
-    b.innerHTML = `${SVG_CAMERA}<span style="margin-left:6px">${ROTULO}</span>`;
+    const tam = referencia ? medirIcone(referencia) : TAMANHO_PADRAO;
+    b.innerHTML = `${svgCamera(tam)}<span style="margin-left:6px">${ROTULO}</span>`;
     const cor = referencia ? getComputedStyle(referencia).color : '';
     b.style.cssText = [
       'display:inline-flex',
@@ -302,7 +333,7 @@
 
     let botao;
     try {
-      botao = ajustarClone(molde.cloneNode(true));
+      botao = ajustarClone(molde.cloneNode(true), molde);
     } catch (err) {
       log('clone falhou, usando fallback', err);
       botao = botaoDoZero(moldeRotulo);
