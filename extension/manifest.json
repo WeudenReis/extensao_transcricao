@@ -1,14 +1,24 @@
 {
   "manifest_version": 3,
   "name": "chatPro Reuniões",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Botão de reunião no chatPro: cria o link do Meet, envia pro cliente e grava a chamada.",
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["https://app.chatpro.com.br/*", "http://localhost:3333/*"],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://app.chatpro.com.br/*",
+    "http://localhost:3333/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://app.chatpro.com.br/*"],
-      "js": ["content/botao-reuniao.js"],
+      "matches": [
+        "https://app.chatpro.com.br/*"
+      ],
+      "js": [
+        "content/botao-reuniao.js"
+      ],
       "run_at": "document_idle"
     }
   ],

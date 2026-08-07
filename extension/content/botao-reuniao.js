@@ -27,10 +27,15 @@
   const INTERVALO_MS = 1500;
 
   let ultimaSessao = null;
+  let avisouSemBarra = false;
 
   // ─── Utilidades ────────────────────────────────────────────────────────────
 
-  const log = (...a) => console.debug('[chatPro reunião]', ...a);
+  const log = (...a) => console.log('%c[chatPro reunião]', 'color:#25D066;font-weight:700', ...a);
+
+  // Anúncio no carregamento: se esta linha não aparece no console, o Chrome
+  // está com OUTRA cópia da extensão carregada — foi o que já aconteceu aqui.
+  log(`v${chrome.runtime.getManifest().version} carregada`);
 
   function sessaoAtual() {
     const m = /\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
@@ -273,7 +278,20 @@
     }
 
     const vizinhos = acharVizinhos();
-    if (vizinhos.size === 0) return;
+    if (vizinhos.size === 0) {
+      // Avisa UMA vez: se o chatPro mudar os rótulos da barra, é aqui que
+      // some — e sem log isso viraria "o botão não aparece" sem pista nenhuma.
+      if (!avisouSemBarra) {
+        avisouSemBarra = true;
+        log(
+          'não achei a barra do atendimento (procurei por: ' +
+            VIZINHOS.join(', ') +
+            '). Abra uma conversa; se já estiver aberta, os rótulos podem ter mudado.'
+        );
+      }
+      return;
+    }
+    avisouSemBarra = false;
 
     // Molde: prefere "transferir" (o primeiro da barra); senão, qualquer um.
     const rotuloMolde = VIZINHOS.find((v) => vizinhos.has(v));
@@ -300,7 +318,7 @@
     // longe do "finalizar", que é destrutivo.
     barra.insertBefore(botao, molde);
     ultimaSessao = sessao;
-    log('botão injetado');
+    log('botão injetado na barra ✓');
   }
 
   // O chatPro é SPA: troca de conversa não recarrega a página, e o React pode
