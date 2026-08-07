@@ -19,7 +19,35 @@ RECALL_REGION=us-west-2
 > reuniões — não pode ir para o Git nem para o pacote de distribuição
 > (o `.gitignore` já bloqueia o `.env`).
 
-## 2. Deixar o backend acessível por HTTPS
+## 2. Trancar o painel (faça ANTES de abrir o túnel)
+
+O Recall só precisa alcançar `/webhooks/recall`, mas o túnel publica o
+**servidor inteiro** — inclusive as telas que mostram a transcrição das
+reuniões. Sem tranca, quem descobrir a URL do túnel lê tudo e ainda cria bots
+na sua conta, que são cobrados por hora.
+
+Gere um token e coloque no `.env`:
+
+```
+openssl rand -hex 24
+```
+
+```
+PANEL_TOKEN=o-valor-gerado
+```
+
+Depois abra o painel uma vez com o token na URL:
+
+```
+http://localhost:3333/?token=SEU_TOKEN
+```
+
+Ele guarda num cookie e você não precisa repetir.
+
+> `/webhooks/*` e `/api/capture/*` continuam livres de propósito: o webhook se
+> autentica pela assinatura do Recall, e a extensão só escreve.
+
+## 3. Deixar o backend acessível por HTTPS
 
 O Recall.ai precisa alcançar o seu servidor para entregar os webhooks. Em
 desenvolvimento, use um túnel:
@@ -36,7 +64,7 @@ PUBLIC_BASE_URL=https://algo.trycloudflare.com
 
 > A URL do túnel muda a cada reinício. Em produção, use um domínio fixo.
 
-## 3. Criar o segredo de webhook (obrigatório)
+## 4. Criar o segredo de webhook (obrigatório)
 
 Sem isso o Recall **não envia** os headers de assinatura, e o nosso endpoint
 recusa tudo com 403 (proteção contra alguém injetar transcrição falsa).
@@ -48,7 +76,7 @@ recusa tudo com 403 (proteção contra alguém injetar transcrição falsa).
    RECALL_WEBHOOK_SECRET=whsec_...
    ```
 
-## 4. Cadastrar o endpoint e assinar os eventos
+## 5. Cadastrar o endpoint e assinar os eventos
 
 No mesmo painel, adicione o endpoint:
 
@@ -70,13 +98,14 @@ E **marque estes eventos** (é preciso assinar um a um):
 - `transcript.done` ← é este que dispara a entrega
 - `transcript.failed`
 
-## 5. Testar
+## 6. Testar
 
 Com o backend rodando:
 
 ```
 curl -X POST http://localhost:3333/api/meetings ^
   -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer SEU_PANEL_TOKEN" ^
   -d "{\"meetingUrl\":\"https://meet.google.com/abc-defg-hij\"}"
 ```
 
@@ -86,9 +115,9 @@ O bot deve aparecer na reunião em segundos.
 anônimo). Isso é esperado. Para evitar, é preciso configurar um **bot
 autenticado** com uma conta Google dedicada — fica para depois.
 
-Acompanhe em `http://localhost:3333` (aba de reuniões).
+Acompanhe em `http://localhost:3333/?token=SEU_PANEL_TOKEN` (aba de reuniões).
 
-## 6. Entrega ao chatPro
+## 7. Entrega ao chatPro
 
 Quando você tiver o contrato da API do chatPro:
 

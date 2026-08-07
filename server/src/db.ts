@@ -932,6 +932,15 @@ export class Db {
     this.db.prepare('UPDATE meetings SET chatpro_status = ? WHERE id = ?').run(chatproStatus, id);
   }
 
+  /**
+   * Amarra o bot à reunião. A linha nasce com bot_id NULL (gravada antes de
+   * chamar o Recall), e o id chega ou pela resposta do createBot ou pelo
+   * primeiro webhook, quando aquela resposta se perdeu no timeout.
+   */
+  setMeetingBotId(id: string, botId: string): void {
+    this.db.prepare('UPDATE meetings SET bot_id = ? WHERE id = ?').run(botId, id);
+  }
+
   /** O vínculo com o chatPro pode chegar depois da criação do bot. */
   setMeetingSessionId(id: string, sessionId: string): void {
     this.db.prepare('UPDATE meetings SET session_id = ? WHERE id = ?').run(sessionId, id);

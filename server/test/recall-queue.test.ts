@@ -178,6 +178,124 @@ describe('worker da fila do Recall', () => {
     expect(db.getMeeting(MEETING_ID)?.status).toBe('failed');
   });
 
+  it('evento atrasado NÃO derruba uma reunião que já tem transcrição salva', async () => {
+    criarReuniao();
+    const worker = makeWorker();
+    respostas = [
+      jsonResponse({
+        id: BOT_ID,
+        recordings: [{ media_shortcuts: { transcript: { data: { download_url: DOWNLOAD_URL } } } }],
+      }),
+      jsonResponse(TRANSCRIPT_BRUTO),
+    ];
+    enfileirar(worker, 'transcript.done', 'msg_done');
+    await worker.processOnce();
+    expect(db.getMeeting(MEETING_ID)?.status).toBe('done');
+
+    // O Svix reentrega por 24 h: um bot.call_ended que ficou preso na fila
+    // chega DEPOIS da transcrição pronta. Sem guarda, a reunião regrediria.
+    const atrasado = enfileirar(worker, 'bot.call_ended', 'msg_atrasado');
+    await worker.processOnce();
+
+    expect(db.getMeeting(MEETING_ID)?.status).toBe('done');
+    expect(db.getRecallEvent(atrasado)?.status).toBe('done');
+  });
+
+  it('transcript.failed atrasado não apaga uma transcrição já entregue', async () => {
+    criarReuniao();
+    const worker = makeWorker();
+    respostas = [
+      jsonResponse({
+        id: BOT_ID,
+        recordings: [{ media_shortcuts: { transcript: { data: { download_url: DOWNLOAD_URL } } } }],
+      }),
+      jsonResponse(TRANSCRIPT_BRUTO),
+    ];
+    enfileirar(worker, 'transcript.done', 'msg_done');
+    await worker.processOnce();
+
+    enfileirar(worker, 'transcript.failed', 'msg_failed_atrasado');
+    await worker.processOnce();
+
+    // Sem a guarda, o painel diria "a reunião falhou, não há transcrição" —
+    // com a transcrição intacta no banco.
+    const meeting = db.getMeeting(MEETING_ID);
+    expect(meeting?.status).toBe('done');
+    expect(meeting?.error).toBeNull();
+    expect(lerTranscriptSalvo(meeting?.transcript_json ?? null)?.falas).toHaveLength(2);
+  });
+
+  it('transcript vazio retenta em vez de virar sucesso em branco', async () => {
+    criarReuniao();
+    const worker = makeWorker({ autoSendChatpro: true, chatproUrl: 'https://chatpro.exemplo/api' });
+    respostas = [
+      jsonResponse({
+        id: BOT_ID,
+        recordings: [{ media_shortcuts: { transcript: { data: { download_url: DOWNLOAD_URL } } } }],
+      }),
+      jsonResponse([]), // arquivo ainda sendo escrito do lado do Recall
+    ];
+    const id = enfileirar(worker, 'transcript.done', 'msg_vazio');
+    await worker.processOnce();
+
+    // Nada entregue ao chatPro, e o evento continua na fila pra tentar de novo.
+    expect(db.getRecallEvent(id)?.status).toBe('pending');
+    expect(db.getMeeting(MEETING_ID)?.chatpro_status).not.toBe('sent');
+    expect(urlsChamadas).toHaveLength(2);
+
+    // Na tentativa seguinte o conteúdo já está lá.
+    avancar(computeRecallBackoffMs(1) + 1000);
+    respostas = [
+      jsonResponse({
+        id: BOT_ID,
+        recordings: [{ media_shortcuts: { transcript: { data: { download_url: DOWNLOAD_URL } } } }],
+      }),
+      jsonResponse(TRANSCRIPT_BRUTO),
+      jsonResponse({ ok: true }),
+    ];
+    await worker.processOnce();
+
+    expect(db.getRecallEvent(id)?.status).toBe('done');
+    expect(lerTranscriptSalvo(db.getMeeting(MEETING_ID)?.transcript_json ?? null)?.falas).toHaveLength(2);
+    expect(db.getMeeting(MEETING_ID)?.chatpro_status).toBe('sent');
+  });
+
+  it('reencontra a reunião pelo metadata quando o createBot perdeu a resposta', async () => {
+    // Cenário real: o POST /api/meetings gravou a reunião, chamou o Recall, e o
+    // timeout estourou DEPOIS de o bot ter sido criado. A reunião existe, mas
+    // sem bot_id — e o webhook só sabe o bot_id.
+    db.createMeeting({
+      id: MEETING_ID,
+      botId: null,
+      sessionId: null,
+      meetingUrl: MEETING_URL,
+      meetingCode: 'abc-defg-hij',
+      botName: 'chatPro (gravando)',
+      status: 'failed',
+      createdAt: clock.toISOString(),
+    });
+    const worker = makeWorker();
+    worker.enqueueFromWebhook({
+      event: 'bot.in_call_recording',
+      botId: BOT_ID,
+      payloadJson: JSON.stringify({
+        event: 'bot.in_call_recording',
+        data: {
+          data: {},
+          bot: { id: BOT_ID, metadata: { meeting_id: MEETING_ID, session_id: SESSION_ID } },
+        },
+      }),
+      webhookId: 'msg_reencontro',
+    });
+
+    await worker.processOnce();
+
+    const meeting = db.getMeeting(MEETING_ID);
+    expect(meeting?.bot_id).toBe(BOT_ID); // amarrado pelo metadata
+    expect(meeting?.session_id).toBe(SESSION_ID);
+    expect(meeting?.status).toBe('recording'); // o bot estava gravando de verdade
+  });
+
   it('evento informativo (transcript.processing) encerra sem mexer no status', async () => {
     criarReuniao();
     db.updateMeetingStatus(MEETING_ID, 'recording');

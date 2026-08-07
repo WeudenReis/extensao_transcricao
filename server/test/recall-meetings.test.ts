@@ -152,8 +152,11 @@ describe('POST /api/meetings', () => {
 
     const res = await criar(baseUrl, { meetingUrl: MEETING_URL });
     expect(res.status).toBe(201);
-    expect(chamadas[0]?.body).not.toHaveProperty('metadata');
-    expect(db.getMeetingByBotId(BOT_ID)?.session_id).toBeNull();
+    const meeting = db.getMeetingByBotId(BOT_ID);
+    expect(meeting?.session_id).toBeNull();
+    // Sem sessão do chatPro, mas o meeting_id vai sempre — é o que reencontra
+    // a reunião caso a resposta do createBot se perca.
+    expect(chamadas[0]?.body).toHaveProperty('metadata', { meeting_id: meeting?.id });
   });
 
   it('responde 400 e não chama o Recall quando a URL não é do Meet', async () => {
@@ -176,7 +179,7 @@ describe('POST /api/meetings', () => {
     expect(db.listMeetings()).toHaveLength(0);
   });
 
-  it('responde 502 quando o Recall recusa (RecallApiError) e não grava reunião órfã', async () => {
+  it('responde 502 quando o Recall recusa (RecallApiError) e deixa a reunião como failed', async () => {
     const { baseUrl, db } = await montarApp({
       respostas: [new Response('Invalid token.', { status: 401 })],
     });
@@ -187,7 +190,14 @@ describe('POST /api/meetings', () => {
     expect(corpo.detail).toContain('401');
     expect(corpo.detail).not.toContain(API_KEY);
     expect(corpo.hint).toContain('RECALL_API_KEY');
-    expect(db.listMeetings()).toHaveLength(0);
+
+    // A linha FICA gravada, marcada como failed. Ela é o ponto de reencontro
+    // caso o Recall tenha criado o bot mesmo assim (timeout) — sem ela, os
+    // webhooks daquele bot não teriam a que se ligar e a reunião se perderia.
+    const reunioes = db.listMeetings();
+    expect(reunioes).toHaveLength(1);
+    expect(reunioes[0]?.status).toBe('failed');
+    expect(reunioes[0]?.bot_id).toBeNull();
   });
 });
 
@@ -288,16 +298,15 @@ describe('leitura, saída e entrega manual', () => {
     expect(db.getMeeting('reuniao-4')?.chatpro_status).toBe('skipped-no-url');
   });
 
-  it('aplica CORS em /api/meetings (a extensão chama de outra origem)', async () => {
+  it('NÃO libera CORS em /api/meetings — transcrição não pode ser lida de outra origem', async () => {
     const { baseUrl } = await montarApp({ respostas: [] });
     const res = await fetch(`${baseUrl}/api/meetings`, {
-      method: 'OPTIONS',
-      headers: {
-        Origin: 'chrome-extension://abcdef',
-        'Access-Control-Request-Method': 'POST',
-      },
+      headers: { Origin: 'https://site-qualquer.exemplo' },
     });
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+
+    // Sem Allow-Origin, o navegador bloqueia a LEITURA da resposta. Sem isso,
+    // qualquer site aberto no navegador do atendente faria fetch pra
+    // localhost:3333 e baixaria a transcrição das reuniões dos clientes.
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
 });

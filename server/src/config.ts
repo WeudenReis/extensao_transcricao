@@ -67,6 +67,12 @@ const envSchema = z.object({
   CHATPRO_API_URL: z.string().url('CHATPRO_API_URL deve ser uma URL válida.').optional(),
   CHATPRO_API_KEY: z.string().optional(),
   AUTO_SEND_CHATPRO: z.string().optional(),
+  // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
+  // localhost). Vira obrigatório na prática assim que o servidor é exposto.
+  PANEL_TOKEN: z
+    .string()
+    .min(16, 'PANEL_TOKEN deve ter ao menos 16 caracteres pra não ser adivinhável.')
+    .optional(),
 });
 
 export interface Config {
@@ -98,6 +104,7 @@ export interface Config {
   chatproApiUrl: string | undefined;
   chatproApiKey: string | undefined;
   autoSendChatpro: boolean;
+  panelToken: string | undefined;
 }
 
 export class ConfigError extends Error {}
@@ -124,6 +131,17 @@ export function recallConfigWarnings(config: Config): string[] {
   }
   if (!config.chatproApiUrl) {
     avisos.push('CHATPRO_API_URL vazia — entrega ao chatPro fica como skipped-no-url.');
+  }
+  if (!config.panelToken) {
+    // Grave quando somado ao túnel: o Recall só precisa de /webhooks/recall,
+    // mas o túnel publica o app inteiro, painel e transcrições junto.
+    avisos.push(
+      config.publicBaseUrl
+        ? 'PANEL_TOKEN vazio COM servidor exposto em PUBLIC_BASE_URL — qualquer um que ' +
+          'descobrir a URL lê as transcrições e cria bots cobrados. Configure já.'
+        : 'PANEL_TOKEN vazio — painel e API abertos a quem alcançar esta porta. ' +
+          'Obrigatório antes de expor o servidor por túnel.'
+    );
   }
   return avisos;
 }
@@ -179,5 +197,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chatproApiUrl: e.CHATPRO_API_URL,
     chatproApiKey: e.CHATPRO_API_KEY,
     autoSendChatpro: e.AUTO_SEND_CHATPRO === 'true',
+    panelToken: e.PANEL_TOKEN,
   };
 }

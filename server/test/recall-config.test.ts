@@ -52,7 +52,8 @@ describe('configuração do Recall.ai', () => {
 
     expect(avisos.join(' ')).toContain('RECALL_API_KEY');
     expect(avisos.join(' ')).toContain('403');
-    expect(avisos).toHaveLength(4);
+    expect(avisos.join(' ')).toContain('PANEL_TOKEN');
+    expect(avisos).toHaveLength(5);
 
     const completo = recallConfigWarnings(
       loadConfig({
@@ -60,9 +61,16 @@ describe('configuração do Recall.ai', () => {
         RECALL_WEBHOOK_SECRET: 'whsec_fake',
         PUBLIC_BASE_URL: 'https://tunel.exemplo.app',
         CHATPRO_API_URL: 'https://api.chatpro.com.br/transcricoes',
+        PANEL_TOKEN: 'token-longo-o-suficiente',
       })
     );
     expect(completo).toEqual([]);
+
+    // Servidor exposto sem tranca é o caso grave: o aviso tem que dizer isso.
+    const exposto = recallConfigWarnings(
+      loadConfig({ PUBLIC_BASE_URL: 'https://tunel.exemplo.app' })
+    );
+    expect(exposto.join(' ')).toContain('lê as transcrições');
 
     // Em modo inseguro o aviso muda de tom, mas continua sem citar o segredo.
     const inseguro = recallConfigWarnings(loadConfig({ ALLOW_INSECURE_RECALL: 'true' }));

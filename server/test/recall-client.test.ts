@@ -87,13 +87,30 @@ describe('RecallClient — criação do bot', () => {
     });
   });
 
-  it('sem sessionId, não manda metadata (o vínculo pode chegar depois)', async () => {
+  it('sem sessionId, ainda manda meeting_id (o vínculo do chatPro chega depois)', async () => {
     const { fetchImpl, chamadas } = fetchGravador([jsonResponse({ id: BOT_ID })]);
     const client = new RecallClient({ apiKey: API_KEY, fetchImpl });
 
-    await client.createBot({ meetingUrl: MEETING_URL, botName: 'chatPro (gravando)' });
+    await client.createBot({
+      meetingUrl: MEETING_URL,
+      botName: 'chatPro (gravando)',
+      meetingId: 'reuniao-xyz',
+    });
 
-    expect(chamadas[0]?.body).not.toHaveProperty('metadata');
+    // meeting_id é obrigatório: é ele que reencontra a reunião se a resposta
+    // desta chamada se perder no timeout e o bot existir mesmo assim.
+    expect(chamadas[0]?.body).toHaveProperty('metadata', { meeting_id: 'reuniao-xyz' });
+  });
+
+  it('rejeita resposta sem id do bot em vez de gravar bot_id nulo', async () => {
+    // O Recall devolvendo uma lista paginada, um envelope de erro com 200, ou
+    // qualquer coisa fora do contrato: sem id não há como casar webhook nenhum.
+    const { fetchImpl } = fetchGravador([jsonResponse({ count: 0, results: [] })]);
+    const client = new RecallClient({ apiKey: API_KEY, fetchImpl });
+
+    await expect(
+      client.createBot({ meetingUrl: MEETING_URL, botName: 'bot', meetingId: 'r1' })
+    ).rejects.toThrow(/sem o id do bot/i);
   });
 
   it('respeita a região configurada na base da URL', async () => {

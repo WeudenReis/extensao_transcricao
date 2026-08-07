@@ -74,10 +74,22 @@ export function extrairBotId(payload: unknown): string | undefined {
   return texto(bot?.id);
 }
 
+function metadataDoBot(payload: unknown): Record<string, unknown> | undefined {
+  return objeto(objeto(objeto(objeto(payload)?.data)?.bot)?.metadata);
+}
+
 /** `data.bot.metadata.session_id` — o vínculo com a conversa do chatPro. */
 export function extrairSessionId(payload: unknown): string | undefined {
-  const metadata = objeto(objeto(objeto(objeto(payload)?.data)?.bot)?.metadata);
-  return texto(metadata?.session_id);
+  return texto(metadataDoBot(payload)?.session_id);
+}
+
+/**
+ * `data.bot.metadata.meeting_id` — a nossa própria linha em `meetings`.
+ * É o plano B quando o bot_id não casa: acontece quando o createBot estourou o
+ * timeout mas o Recall criou o bot mesmo assim.
+ */
+export function extrairMeetingId(payload: unknown): string | undefined {
+  return texto(metadataDoBot(payload)?.meeting_id);
 }
 
 /** `data.data.sub_code` — o porquê de um bot.fatal / transcript.failed. */
@@ -118,6 +130,17 @@ export function lerTranscriptSalvo(transcriptJson: string | null): TranscriptSal
 }
 
 /**
+ * Tem transcrição de VERDADE? Um transcript salvo mas sem nenhuma fala não
+ * conta: significa que o download veio vazio, e isso pode ser só o arquivo
+ * ainda não populado do lado do Recall. Tratar vazio como pronto congelaria a
+ * reunião nesse estado pra sempre.
+ */
+export function temTranscript(meeting: MeetingRow): boolean {
+  const salvo = lerTranscriptSalvo(meeting.transcript_json);
+  return (salvo?.falas.length ?? 0) > 0;
+}
+
+/**
  * Entrega a transcrição já salva ao chatPro e carimba o `chatpro_status`.
  * Usada tanto pelo envio automático (AUTO_SEND_CHATPRO) quanto pelo botão
  * do painel — o resultado precisa ser idêntico nos dois caminhos.
@@ -129,7 +152,11 @@ export async function entregarAoChatpro(
 ): Promise<ResultadoEntrega> {
   const salvo = lerTranscriptSalvo(meeting.transcript_json);
   if (!salvo) {
-    return { ok: false, status: 'failed', motivo: 'reunião ainda sem transcrição salva' };
+    return {
+      ok: false,
+      status: 'failed',
+      motivo: 'reunião ainda sem transcrição salva',
+    };
   }
   const resultado = await chatpro.enviar({
     sessionId: meeting.session_id,
@@ -193,7 +220,10 @@ export class RecallQueueWorker {
    * Chamado pelo webhook DEPOIS de conferir a assinatura: grava na fila.
    * Lança em erro de banco — aí o endpoint responde 5xx e o Recall reentrega.
    */
-  enqueueFromWebhook(entrada: WebhookEnfileiravel): { id: number; created: boolean } {
+  enqueueFromWebhook(entrada: WebhookEnfileiravel): {
+    id: number;
+    created: boolean;
+  } {
     const agoraIso = this.now().toISOString();
     const resultado = this.db.enqueueRecallEvent({
       webhookId: entrada.webhookId,
@@ -255,7 +285,7 @@ export class RecallQueueWorker {
       }
 
       const botId = row.bot_id ?? extrairBotId(payload) ?? null;
-      const meeting = botId ? this.db.getMeetingByBotId(botId) : undefined;
+      const meeting = this.acharReuniao(botId, payload);
 
       // O vínculo com o chatPro pode chegar depois da criação do bot.
       if (meeting) this.preencherSessionId(meeting, payload);
@@ -305,6 +335,21 @@ export class RecallQueueWorker {
     status: MeetingStatus,
     payload: unknown
   ): void {
+    // Webhook pode chegar FORA DE ORDEM: o Svix reentrega por 24 h, então um
+    // bot.call_ended atrasado (ou um transcript.failed de uma tentativa
+    // anterior) pode aparecer DEPOIS que a transcrição já foi salva e entregue.
+    // Sem esta guarda, a reunião pronta voltaria pra 'ended' — ou pior, pra
+    // 'failed', e o painel diria ao operador que não há transcrição, com a
+    // transcrição intacta no banco.
+    if (temTranscript(meeting) && status !== 'done') {
+      this.db.markRecallEventDone(row.id);
+      log.info(
+        `evento #${row.id} (${row.event}) chegou atrasado — reunião ${meeting.id} já está ` +
+          `concluída com transcrição, status preservado.`
+      );
+      return;
+    }
+
     let motivo: string | null = null;
     if (status === 'failed') {
       const subCode = extrairSubCode(payload);
@@ -327,7 +372,9 @@ export class RecallQueueWorker {
     // webhook-id (aí o UNIQUE do webhook_id não deduplica). Sem esta guarda,
     // baixaríamos de novo e a transcrição chegaria DUPLICADA na conversa do
     // chatPro — exatamente o tipo de duplicidade que já apareceu neste projeto.
-    if (meeting.transcript_json) {
+    // Repare que a guarda exige transcrição NÃO VAZIA: um `{falas:[]}` salvo
+    // numa tentativa anterior não pode bloquear a tentativa boa.
+    if (temTranscript(meeting)) {
       log.info(
         `reunião ${meeting.id} já tem transcrição salva — evento #${row.id} não rebaixa nada.`
       );
@@ -354,6 +401,24 @@ export class RecallQueueWorker {
 
     const bruto = await this.recall.downloadTranscript(url);
     const normalizado = normalizarTranscript(bruto);
+
+    // Download vazio: quase sempre é o arquivo ainda sendo escrito do lado do
+    // Recall — o webhook chega antes de o conteúdo estar lá. Salvar isso como
+    // sucesso entregaria uma transcrição em branco ao chatPro e marcaria a
+    // reunião como pronta, sem volta. Então retenta com backoff; só depois de
+    // esgotar as tentativas aceitamos que a reunião foi mesmo vazia (o bot pode
+    // ter ficado preso na sala de espera e não ter gravado nada).
+    if (normalizado.falas.length === 0 && row.attempts + 1 < RECALL_MAX_ATTEMPTS) {
+      this.fail(row, 'transcript baixado veio vazio — pode não estar pronto ainda');
+      return;
+    }
+    if (normalizado.falas.length === 0) {
+      log.warn(
+        `reunião ${meeting.id}: transcript continuou vazio depois de ` +
+          `${RECALL_MAX_ATTEMPTS} tentativas — ninguém falou, ou o bot não foi admitido.`
+      );
+    }
+
     this.db.setMeetingTranscript({
       id: meeting.id,
       transcriptJson: JSON.stringify({
@@ -386,8 +451,37 @@ export class RecallQueueWorker {
     if (!atual) return;
     const resultado = await entregarAoChatpro(this.db, this.chatpro, atual);
     if (!resultado.ok && resultado.status === 'failed') {
-      log.warn(`entrega automática ao chatPro falhou (reunião ${meetingId}) — reenvie pelo painel.`);
+      log.warn(
+        `entrega automática ao chatPro falhou (reunião ${meetingId}) — reenvie pelo painel.`
+      );
     }
+  }
+
+  /**
+   * Acha a reunião do webhook. Primeiro pelo bot_id; se não achar, pelo
+   * `metadata.meeting_id` que nós mesmos mandamos ao criar o bot — e aí amarra
+   * o bot_id, que é o caso do createBot que estourou o timeout com o bot já
+   * criado do lado do Recall.
+   */
+  private acharReuniao(botId: string | null, payload: unknown): MeetingRow | undefined {
+    if (botId) {
+      const porBot = this.db.getMeetingByBotId(botId);
+      if (porBot) return porBot;
+    }
+    const meetingId = extrairMeetingId(payload);
+    if (!meetingId) return undefined;
+    const porMetadata = this.db.getMeeting(meetingId);
+    if (!porMetadata) return undefined;
+
+    if (botId && porMetadata.bot_id !== botId) {
+      this.db.setMeetingBotId(meetingId, botId);
+      log.info(
+        `reunião ${meetingId} reencontrada pelo metadata e amarrada ao bot ${botId} ` +
+          `(a resposta do createBot tinha se perdido).`
+      );
+      return this.db.getMeeting(meetingId) ?? porMetadata;
+    }
+    return porMetadata;
   }
 
   /** Preenche session_id quando o webhook trouxe o vínculo e a reunião não tem. */
@@ -396,7 +490,9 @@ export class RecallQueueWorker {
     const sessionId = extrairSessionId(payload);
     if (!sessionId) return;
     this.db.setMeetingSessionId(meeting.id, sessionId);
-    log.info(`reunião ${meeting.id} vinculada à sessão ${sessionId} (veio no metadata do webhook).`);
+    log.info(
+      `reunião ${meeting.id} vinculada à sessão ${sessionId} (veio no metadata do webhook).`
+    );
   }
 
   /**

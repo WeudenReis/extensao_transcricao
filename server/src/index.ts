@@ -16,6 +16,7 @@ import { createCaptureRouter } from './routes/capture.js';
 import { createReviewRouter } from './routes/review.js';
 import { createMeetingsRouter } from './routes/meetings.js';
 import { createRecallHookRouter } from './routes/recallHook.js';
+import { criarPainelAuth } from './routes/painelAuth.js';
 import { RecallClient } from './recall/client.js';
 import { ChatproClient } from './chatpro/client.js';
 import { RecallQueueWorker } from './pipeline/recallQueue.js';
@@ -120,6 +121,10 @@ function main(): void {
       allowInsecure: config.allowInsecureRecall,
     })
   );
+  // Tranca do painel. Vem DEPOIS do webhook (que se autentica por assinatura
+  // própria) e ANTES de tudo que lê dado: expor o servidor pro Recall entregar
+  // webhook publica o app inteiro junto, e as transcrições estão nele.
+  app.use(criarPainelAuth(config.panelToken));
   // express.json() só parseia application/json; a rota de chunk usa
   // application/octet-stream com raw() próprio, então o json() global a ignora
   // (não consome o stream) e o raw() da rota lê os bytes normalmente.
