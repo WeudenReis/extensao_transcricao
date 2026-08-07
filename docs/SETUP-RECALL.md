@@ -3,21 +3,31 @@
 > O código já está pronto. Aqui estão os passos que dependem de conta/painel.
 > Região do nosso workspace: **us-west-2** (pay-as-you-go).
 
-## 1. Chave de API ✅ (validada)
+## 1. Chave de API
 
-A chave que você me passou foi testada contra a API real: criou um bot
-(HTTP 201) e o removeu (HTTP 200). Ela vai no `server/.env`:
+Painel da **nossa região** (us-west-2):
 
 ```
-RECALL_API_KEY=cole-aqui-a-chave-do-dashboard
+https://us-west-2.recall.ai/dashboard/developers/api-keys
+```
+
+⚠️ A chave é **por região**. Uma chave de `us-east-1` não funciona em
+`us-west-2` — o erro vem como 401, que parece "chave errada".
+
+No `server/.env`:
+
+```
+RECALL_API_KEY=cole-aqui
 RECALL_REGION=us-west-2
 ```
 
-> ⚠️ **Rotacione essa chave.** Ela foi colada no chat, então precisa ser
-> considerada exposta. No dashboard do Recall: gere uma nova, coloque no `.env`
-> e revogue a antiga. A chave dá acesso a gravar e ler transcrições de
-> reuniões — não pode ir para o Git nem para o pacote de distribuição
-> (o `.gitignore` já bloqueia o `.env`).
+**Rotação:** as chaves do Recall **não expiram**. Pra trocar, você cria a nova,
+põe no `.env`, reinicia, e só então **desabilita a antiga** no painel — nessa
+ordem, senão o serviço cai no intervalo.
+
+A documentação deles recomenda criar a conta com um e-mail de serviço
+(ex.: `engenharia@empresa.com`) em vez de pessoal, pra chave não morrer quando
+alguém sair da empresa.
 
 ## 2. Trancar o painel (faça ANTES de abrir o túnel)
 

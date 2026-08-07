@@ -58,7 +58,7 @@ console.log('\n\x1b[1mORDEM SUGERIDA\x1b[0m\n');
 const passos = [
   [temChatpro, 'chatPro', 'já configurei com o token que você mandou'],
   [temGoogle, 'Google', 'crie um OAuth Client "Web application" no Google Cloud e preencha GOOGLE_CLIENT_ID/SECRET'],
-  [temRecall, 'Recall', 'rotacione a chave no dashboard e preencha RECALL_API_KEY'],
+  [temRecall, 'Recall', 'pegue em https://us-west-2.recall.ai/dashboard/developers/api-keys e preencha RECALL_API_KEY'],
   [temHookRecall && temTunel, 'Webhooks', 'suba um túnel (cloudflared) e crie o signing secret no dashboard do Recall'],
 ];
 for (const [pronto, nome, oQueFazer] of passos) {
@@ -138,7 +138,8 @@ if (sessao && flag('mensagem') && temChatpro) {
 if (flag('recall')) {
   console.log('\n\x1b[1mTESTE 4 — criar e remover um bot no Recall\x1b[0m\n');
   if (!temRecall) {
-    console.log('  ' + nao('RECALL_API_KEY vazia — preencha no .env primeiro'));
+    console.log('  ' + nao('RECALL_API_KEY vazia'));
+    console.log('    Pegue em: https://us-west-2.recall.ai/dashboard/developers/api-keys');
   } else {
     const regiao = V('RECALL_REGION') || 'us-west-2';
     const base = `https://${regiao}.recall.ai/api/v1`;
