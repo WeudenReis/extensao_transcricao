@@ -12,16 +12,35 @@ const PADRAO = {
   deviceId: '',
 };
 
+/**
+ * O deviceId é o que amarra a conta Google conectada — perdê-lo obriga a pessoa
+ * a reconectar, sem entender por quê.
+ *
+ * Por isso ele mora em `storage.sync`, não em `local`: **remover e carregar a
+ * extensão de novo APAGA o storage local**, e a conexão com o Google iria junto.
+ * O sync sobrevive à reinstalação (fica no perfil do Chrome) e ainda cobre a
+ * mesma pessoa em dois computadores com um vínculo só.
+ *
+ * Sem login no Chrome o sync não sincroniza, mas continua persistindo local —
+ * então não há caso em que isto seja pior que `local`.
+ */
+async function lerDeviceId() {
+  const doSync = await chrome.storage.sync.get('deviceId').catch(() => ({}));
+  if (doSync.deviceId) return doSync.deviceId;
+
+  // Migração: quem já instalou antes tem o id no local. Promove pro sync em vez
+  // de gerar outro, senão a conta Google já conectada seria abandonada.
+  const doLocal = await chrome.storage.local.get('deviceId');
+  const id = doLocal.deviceId || crypto.randomUUID();
+  await chrome.storage.sync.set({ deviceId: id }).catch(() => {});
+  await chrome.storage.local.set({ deviceId: id });
+  return id;
+}
+
 async function config() {
   const guardado = await chrome.storage.local.get(Object.keys(PADRAO));
   const cfg = { ...PADRAO, ...guardado };
-
-  // O deviceId identifica ESTA instalação e é o que amarra a conta Google
-  // conectada. Nasce na primeira vez e nunca muda.
-  if (!cfg.deviceId) {
-    cfg.deviceId = crypto.randomUUID();
-    await chrome.storage.local.set({ deviceId: cfg.deviceId });
-  }
+  cfg.deviceId = await lerDeviceId();
   return cfg;
 }
 
