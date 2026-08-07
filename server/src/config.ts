@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { RECALL_REGIONS, type RecallRegion } from './recall/types.js';
+import { PROVIDERS, type ChatproProvider } from './chatpro/client.js';
 
 /**
  * Carrega e valida as variáveis de ambiente com zod.
@@ -88,6 +89,8 @@ const envSchema = z.object({
   // Usuário a quem o comentário fica vinculado (a transcrição aparece como
   // dele). Descubra com o endpoint get_all_users_by_instance.
   CHATPRO_USER_ID: z.string().optional(),
+  // Canal das conversas. Obrigatório no sendMessage do chatPro.
+  CHATPRO_PROVIDER: z.enum(PROVIDERS).default('whatsapp'),
   // Segredo no CAMINHO do webhook: /webhooks/chatpro/{segredo}. O chatPro não
   // assina os webhooks dele, então é isto que impede um terceiro de disparar
   // bots (cobrados por hora) na nossa conta.
@@ -142,6 +145,7 @@ export interface Config {
   chatproInstanceToken: string | undefined;
   chatproInstanceId: string | undefined;
   chatproUserId: string | undefined;
+  chatproProvider: ChatproProvider;
   chatproWebhookSecret: string | undefined;
   chatproAutoStartBot: boolean;
   chatproAceitarLinkDoCliente: boolean;
@@ -264,6 +268,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chatproInstanceToken: e.CHATPRO_INSTANCE_TOKEN,
     chatproInstanceId: e.CHATPRO_INSTANCE_ID,
     chatproUserId: e.CHATPRO_USER_ID,
+    chatproProvider: e.CHATPRO_PROVIDER,
     chatproWebhookSecret: e.CHATPRO_WEBHOOK_SECRET,
     chatproAutoStartBot: e.CHATPRO_AUTO_START_BOT !== 'false',
     chatproAceitarLinkDoCliente: e.CHATPRO_ACEITAR_LINK_DO_CLIENTE === 'true',

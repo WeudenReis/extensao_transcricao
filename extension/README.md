@@ -1,6 +1,6 @@
 # chatPro Reuniões — extensão
 
-Põe um botão **Entrar na reunião** na barra de atendimento do chatPro. Um
+Põe um botão **reunião** na barra de atendimento do chatPro. Um
 clique faz tudo:
 
 1. cria o link do Meet na **sua** agenda do Google

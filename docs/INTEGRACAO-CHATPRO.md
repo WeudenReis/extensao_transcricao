@@ -10,7 +10,7 @@
 ## Dois jeitos de começar uma reunião
 
 **1. O botão da extensão (principal).** O atendente clica em
-**Entrar na reunião** na barra do chatPro:
+**reunião** na barra do chatPro:
 
 ```
   Clique

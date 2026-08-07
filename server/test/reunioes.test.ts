@@ -179,7 +179,9 @@ describe('POST /api/reunioes/iniciar', () => {
 
     // A mensagem levou o link, na sessão certa.
     const envio = app.chamadas.find((c) => c.url.includes('/messages/sendMessage'));
-    expect(envio?.body).toMatchObject({ sessionId: SESSION });
+    // provider é OBRIGATÓRIO no contrato do chatPro — sem ele a chamada é
+    // recusada, e o cliente nunca receberia o link.
+    expect(envio?.body).toMatchObject({ sessionId: SESSION, provider: 'whatsapp' });
     expect(String((envio?.body as { message: string }).message)).toContain(MEET_URL);
 
     // E o bot foi criado com a sessão no metadata.

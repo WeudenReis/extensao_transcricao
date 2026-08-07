@@ -9,7 +9,7 @@
 > · Setup do Recall: [docs/SETUP-RECALL.md](docs/SETUP-RECALL.md)
 > · Arquitetura: [ARQUITETURA-RECALL.md](ARQUITETURA-RECALL.md)
 
-## O botão "Entrar na reunião" está pronto
+## O botão de reunião está pronto
 
 Está na barra do chatPro, ao lado de "transferir". Um clique faz tudo:
 
@@ -29,12 +29,11 @@ graça, e continua certo se vocês mudarem o CSS. Obrigado pelo `chatpro-alert`:
 foi ele que me mostrou que heurística é o caminho ali.
 
 **O que falta você fazer:** conectar sua conta Google pelo popup da extensão
-(item 6 abaixo) e preencher as três variáveis do chatPro (item 8).
+(item 6 abaixo). As credenciais do chatPro já estão configuradas (item 7).
 
-> Um detalhe de estilo: os vizinhos são "transferir", "etiquetas", "agendar",
-> "finalizar" — tudo minúsculo e em uma palavra. "Entrar na reunião" fica bem
-> mais largo. Se quiser que encaixe melhor, trocar pra **"reunião"** é uma linha
-> (`ROTULO` em `extension/content/botao-reuniao.js`). Deixei como você pediu.
+> O rótulo ficou **"reunião"**, como você pediu — encaixa com os vizinhos
+> ("transferir", "etiquetas", "agendar", "finalizar"), todos minúsculos e de uma
+> palavra só.
 
 ## E o gatilho automático, pra quem preferir colar o link
 
@@ -55,7 +54,7 @@ Atendente manda o link do Meet na conversa (como já faz)
 Testei o caminho inteiro contra o servidor rodando: **7/7**. O comentário caiu
 na conversa certa, com as falas separadas por pessoa.
 
-Falta você cadastrar a URL do webhook no chatPro — está no item 9.
+Falta você cadastrar a URL do webhook no chatPro — está no item 8.
 
 ---
 
@@ -179,56 +178,40 @@ cifrado no servidor, nunca no navegador.
 
 ---
 
-## 🟡 7. O contrato do `sendMessage` (uma dúvida honesta)
+## ✅ 7. `sendMessage` — contrato confirmado e configurado
 
-Você me passou `https://sparks.chatpro.com.br/messages/sendMessage`, e é isso que
-estou usando. O que **não** consegui confirmar na documentação pública é o
-formato do corpo — a doc só descreve o `send_message` do *outro* produto (o de
-instâncias, em `v5.chatpro.com.br`).
+Você me mandou a página da doc e ela resolveu a dúvida — e mostrou um erro meu:
+**`provider` é obrigatório** e eu não estava mandando. Do jeito que estava, toda
+mensagem teria voltado 400 e o cliente nunca receberia o link. Corrigido.
 
-Então segui a convenção dos endpoints `sparks/messages/*` que estão
-documentados (`addComments` e `getAll`), que é consistente:
+Contrato em uso agora (`POST sparks.chatpro.com.br/messages/sendMessage`):
 
-```json
-{ "instanceId": "chatpro-...", "sessionId": "uuid", "message": "texto", "userId": "uuid" }
+| campo | |
+|---|---|
+| `sessionId` | obrigatório |
+| `instanceId` | obrigatório |
+| `message` | obrigatório |
+| `provider` | **obrigatório** — `whatsapp` (configurável em `CHATPRO_PROVIDER`) |
+| `userId` | opcional — mandamos quando temos |
+
+Já preenchi no seu `.env` com o que você passou:
+
+```
+CHATPRO_INSTANCE_ID=chatpro-fz5qbe2haz
+CHATPRO_INSTANCE_TOKEN=(o token do chat que você mandou)
+CHATPRO_USER_ID=5awdAxsbrnYBuvi5KEzQWSTLh0r1
+CHATPRO_PROVIDER=whatsapp
+AUTO_SEND_CHATPRO=true
 ```
 
-Se o chatPro esperar outra coisa (por exemplo `number` em vez de `sessionId`), a
-mudança é em **um método só**: `enviarMensagem` em
-[server/src/chatpro/client.ts](server/src/chatpro/client.ts). É a primeira coisa
-a testar contra a API real.
+O `CHATPRO_USER_ID` eu descobri chamando `/users/getAllInstanceUsers` com o seu
+token — é o **💬 Suporte chatPro® - Weuden**. É a conta a que o comentário da
+transcrição fica vinculado; se preferir outra, troque no `.env`.
 
-## 🟡 8. O contrato da API do chatPro
+De quebra isso **validou o token**: a chamada voltou 201 com os 57 usuários da
+instância.
 
-Essa é a informação que me falta e que eu não consigo descobrir sozinho: **qual
-endpoint do chatPro recebe a transcrição, e em que formato.**
-
-Hoje eu mando este JSON:
-
-```json
-{
-  "sessionId": "uuid da conversa do chatPro",
-  "meetingUrl": "https://meet.google.com/abc-defg-hij",
-  "meetingCode": "abc-defg-hij",
-  "startedAt": "2026-08-06T13:00:00.000Z",
-  "endedAt": "2026-08-06T13:34:00.000Z",
-  "durationSeconds": 2040,
-  "participants": [{ "nome": "Maria", "isHost": true, "email": "maria@..." }],
-  "transcript": [
-    { "speaker": "Maria", "text": "bom dia.", "startMs": 1000, "endMs": 1600, "isHost": true }
-  ],
-  "source": "recall-ai"
-}
-```
-
-Quando você me passar o formato real, o ajuste é em **um arquivo só**
-([server/src/chatpro/client.ts](server/src/chatpro/client.ts)) — foi feito
-justamente pra isso.
-
-Enquanto `CHATPRO_API_URL` estiver vazia, nada se perde: a transcrição fica
-salva e marcada como `skipped-no-url`, e você envia pelo botão do painel.
-
-## 🟡 9. Ligar o gatilho no chatPro
+## 🟡 8. Ligar o gatilho no chatPro
 
 Você me liberou a decidir, então fui pelo caminho que recomendei: **o chatPro
 chama o nosso endpoint** quando o atendente abre a reunião. É o único que não
@@ -252,7 +235,7 @@ O que fiz pra isso funcionar sem dor:
 Falta só o lado de lá: fazer o chatPro chamar. Se quiser, eu escrevo esse
 trecho também — só preciso de acesso ao código do chatPro.
 
-## 🟡 10. Bot autenticado (tira a sala de espera)
+## 🟡 9. Bot autenticado (tira a sala de espera)
 
 Hoje o bot entra como convidado anônimo, então **alguém precisa admitir ele**.
 Se ninguém admitir, não grava — e isso é manipulável, que é justo o que você
@@ -264,7 +247,7 @@ não fiz.
 
 ---
 
-## ⚪ 11. Coisas menores que ficaram
+## ⚪ 10. Coisas menores que ficaram
 
 - **Custo:** o Recall cobra por hora de gravação. Confira o preço no painel
   antes de rodar em volume — cada bot em reunião conta. Não coloquei nenhum

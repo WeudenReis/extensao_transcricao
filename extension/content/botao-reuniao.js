@@ -1,5 +1,5 @@
 /**
- * Botão "Entrar na reunião" na barra do chatPro.
+ * Botão "reunião" na barra do chatPro.
  *
  * O DOM do chatPro não tem classe nem data-attribute estável (as classes são
  * geradas). Então a estratégia é outra, e é a que garante o visual nos DOIS
@@ -21,7 +21,7 @@
   'use strict';
 
   const ID = 'cpm-botao-reuniao';
-  const ROTULO = 'Entrar na reunião';
+  const ROTULO = 'reunião';
   /** Texto dos botões vizinhos — usados como âncora e como molde. */
   const VIZINHOS = ['transferir', 'etiquetas', 'agendar', 'finalizar'];
   const INTERVALO_MS = 1500;

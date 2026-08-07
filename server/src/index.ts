@@ -113,6 +113,7 @@ function main(): void {
     instanceToken: config.chatproInstanceToken,
     instanceId: config.chatproInstanceId,
     userId: config.chatproUserId,
+    provider: config.chatproProvider,
   });
   // Conta Google de cada atendente (a extensão conecta a dela). É com ela que
   // o link do Meet é criado — funciona em conta pessoal @gmail.

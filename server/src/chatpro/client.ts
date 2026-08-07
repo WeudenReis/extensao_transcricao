@@ -73,6 +73,10 @@ export type ResultadoEntrega =
       partesEnviadas?: number;
     };
 
+/** Canais que o chatPro aceita em sendMessage. */
+export const PROVIDERS = ['whatsapp', 'facebook', 'instagram', 'cloud'] as const;
+export type ChatproProvider = (typeof PROVIDERS)[number];
+
 /** Base oficial da API de Chat do chatPro. */
 export const CHATPRO_BASE_PADRAO = 'https://sparks.chatpro.com.br';
 
@@ -81,6 +85,8 @@ export interface ChatproClientOptions {
   instanceToken: string | undefined;
   instanceId: string | undefined;
   userId: string | undefined;
+  /** Canal padrão das conversas. Praticamente sempre 'whatsapp'. */
+  provider?: ChatproProvider;
   fetchImpl?: typeof fetch;
 }
 
@@ -191,6 +197,7 @@ export class ChatproClient {
   private readonly instanceToken: string | undefined;
   private readonly instanceId: string | undefined;
   private readonly userId: string | undefined;
+  private readonly provider: ChatproProvider;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: ChatproClientOptions) {
@@ -198,6 +205,7 @@ export class ChatproClient {
     this.instanceToken = options.instanceToken;
     this.instanceId = options.instanceId;
     this.userId = options.userId;
+    this.provider = options.provider ?? 'whatsapp';
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -266,23 +274,24 @@ export class ChatproClient {
 
   /**
    * Manda uma mensagem PRO CLIENTE na conversa (diferente do comentário, que é
-   * interno). É o que leva o link do Meet quando o atendente clica em
-   * "Entrar na reunião".
+   * interno). É o que leva o link do Meet quando o atendente clica no botão.
    *
-   * ⚠️ Este é o único ponto do código cujo formato de corpo eu não consegui
-   * confirmar na documentação pública do chatPro — ela documenta o
-   * `send_message` do OUTRO produto (v5, instâncias). O corpo aqui segue a
-   * convenção dos demais endpoints `sparks/messages/*`, que é consistente:
-   * camelCase com instanceId + sessionId. Se o chatPro pedir outra coisa,
-   * muda só aqui.
+   * Contrato (confirmado na doc do chatPro Chat):
+   *   obrigatórios: sessionId, instanceId, message, provider
+   *   opcionais:    quotedMessageId, userId
+   *
+   * `provider` é o canal da conversa — whatsapp | facebook | instagram | cloud.
+   * Sem ele a chamada é recusada.
    */
   async enviarMensagem(entrada: {
     sessionId: string;
     message: string;
     instanceId?: string | null;
+    /** Canal da conversa. Cai em CHATPRO_PROVIDER quando não informado. */
+    provider?: ChatproProvider | null;
   }): Promise<{ ok: true } | { ok: false; motivo: string }> {
-    if (!this.estaConfigurado()) {
-      return { ok: false, motivo: 'chatPro não configurado (token/instância/usuário).' };
+    if (!this.instanceToken) {
+      return { ok: false, motivo: 'CHATPRO_INSTANCE_TOKEN não configurado.' };
     }
     const instanceId = entrada.instanceId ?? this.instanceId;
     if (!instanceId) return { ok: false, motivo: 'sem instanceId do chatPro' };
@@ -292,7 +301,9 @@ export class ChatproClient {
         instanceId,
         sessionId: entrada.sessionId,
         message: entrada.message,
-        userId: this.userId ?? '',
+        provider: entrada.provider ?? this.provider,
+        // Opcional no contrato: só mandamos quando temos.
+        ...(this.userId ? { userId: this.userId } : {}),
       });
       log.info(`mensagem enviada ao cliente na sessão ${entrada.sessionId}.`);
       return { ok: true };
