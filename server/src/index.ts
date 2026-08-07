@@ -1,6 +1,6 @@
 import express from 'express';
 import { dirname, join, resolve } from 'node:path';
-import { loadConfig, ConfigError } from './config.js';
+import { loadConfig, ConfigError, recallConfigWarnings } from './config.js';
 import { Db } from './db.js';
 import { GoogleAuth, createOAuthRouter } from './google/auth.js';
 import { MeetClient } from './google/meet.js';
@@ -14,6 +14,11 @@ import { createApiRouter } from './routes/api.js';
 import { createPubSubRouter } from './routes/pubsub.js';
 import { createCaptureRouter } from './routes/capture.js';
 import { createReviewRouter } from './routes/review.js';
+import { createMeetingsRouter } from './routes/meetings.js';
+import { createRecallHookRouter } from './routes/recallHook.js';
+import { RecallClient } from './recall/client.js';
+import { ChatproClient } from './chatpro/client.js';
+import { RecallQueueWorker } from './pipeline/recallQueue.js';
 import { startCapturePurgeJob } from './pipeline/purge.js';
 import { createLogger, errorMessage } from './log.js';
 
@@ -88,7 +93,33 @@ function main(): void {
     voreoApiKey: config.voreoApiKey,
   });
 
+  // Recall.ai: bot server-side que entra na reunião, grava e transcreve.
+  // Sem RECALL_API_KEY o caminho fica desligado (as rotas respondem 503).
+  const recall = config.recallApiKey
+    ? new RecallClient({ apiKey: config.recallApiKey, region: config.recallRegion })
+    : undefined;
+  const chatpro = new ChatproClient({
+    apiUrl: config.chatproApiUrl,
+    apiKey: config.chatproApiKey,
+  });
+  const recallQueue = new RecallQueueWorker({
+    db,
+    recall,
+    chatpro,
+    autoSendChatpro: config.autoSendChatpro,
+  });
+
   const app = express();
+  // ATENÇÃO À ORDEM: o webhook do Recall precisa do corpo CRU pra conferir a
+  // assinatura Svix, então entra ANTES do express.json() global (ele traz o
+  // próprio express.raw()). Trocar essa ordem quebra a verificação em silêncio.
+  app.use(
+    createRecallHookRouter({
+      worker: recallQueue,
+      secret: config.recallWebhookSecret,
+      allowInsecure: config.allowInsecureRecall,
+    })
+  );
   // express.json() só parseia application/json; a rota de chunk usa
   // application/octet-stream com raw() próprio, então o json() global a ignora
   // (não consome o stream) e o raw() da rota lê os bytes normalmente.
@@ -97,6 +128,7 @@ function main(): void {
   app.use(createReviewRouter({ db, captureDir, pipeline: audioPipeline }));
   app.use(createOAuthRouter(auth));
   app.use(createApiRouter({ db, meet, auth, voreo, eventQueue }));
+  app.use(createMeetingsRouter({ db, recall, chatpro, botName: config.recallBotName }));
   app.use(
     createPubSubRouter({
       eventQueue,
@@ -129,6 +161,11 @@ function main(): void {
     if (!stt) {
       log.warn('STT não configurado — capturas gravam áudio mas não transcrevem. Configure STT_API_KEY.');
     }
+    const urlWebhookRecall = `${config.publicBaseUrl ?? `http://localhost:${config.port}`}/webhooks/recall`;
+    log.info(`Webhook Recall.ai: POST ${urlWebhookRecall}`);
+    // O que falta pro caminho Recall funcionar de ponta a ponta (nunca o valor
+    // das chaves — só o nome da variável).
+    for (const aviso of recallConfigWarnings(config)) log.warn(aviso);
   });
 
   // Tarefas de startup
@@ -136,6 +173,8 @@ function main(): void {
   eventQueue.startWorker();
   eventQueue.poke(); // retoma eventos pendentes que sobraram de antes do restart
   audioPipeline.resumePending(); // retoma capturas 'pending'/'transcribing' interrompidas
+  recallQueue.startWorker();
+  recallQueue.resumePending(); // webhooks do Recall que ficaram pendentes
 
   // Pré-carrega o modelo de STT em segundo plano (não bloqueia o boot).
   if (stt?.warmup) {
@@ -169,6 +208,7 @@ function main(): void {
     stopPurge();
     voreo.stopWorker();
     eventQueue.stopWorker();
+    recallQueue.stopWorker();
     server.close(() => {
       db.close();
       process.exit(0);

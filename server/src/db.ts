@@ -114,6 +114,52 @@ export interface EventQueueRow {
   last_error: string | null;
 }
 
+// ─── Recall.ai ───────────────────────────────────────────────────────────────
+
+/** Ciclo de vida da reunião gravada pelo bot do Recall. */
+export type MeetingStatus =
+  | 'created'
+  | 'joining'
+  | 'waiting_room'
+  | 'recording'
+  | 'ended'
+  | 'done'
+  | 'failed';
+
+export type ChatproStatus = 'pending' | 'sent' | 'failed' | 'skipped-no-url';
+
+export interface MeetingRow {
+  id: string;
+  bot_id: string | null;
+  session_id: string | null;
+  meeting_url: string;
+  meeting_code: string | null;
+  status: string;
+  bot_name: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  transcript_json: string | null;
+  duration_seconds: number | null;
+  chatpro_status: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export type RecallEventStatus = 'pending' | 'done' | 'dead';
+
+export interface RecallEventRow {
+  id: number;
+  webhook_id: string | null;
+  event: string;
+  bot_id: string | null;
+  payload_json: string;
+  status: string;
+  attempts: number;
+  next_attempt_at: string | null;
+  created_at: string;
+  last_error: string | null;
+}
+
 // ─── Db ──────────────────────────────────────────────────────────────────────
 
 export class Db {
@@ -234,6 +280,43 @@ export class Db {
       CREATE INDEX IF NOT EXISTS idx_captures_status ON captures (status);
       CREATE INDEX IF NOT EXISTS idx_hb_capture ON capture_heartbeats (capture_id, at);
       CREATE INDEX IF NOT EXISTS idx_cc_capture ON capture_captions (capture_id, seq);
+
+      -- ─── Recall.ai (tabelas novas, isoladas do que já existe) ───
+      CREATE TABLE IF NOT EXISTS meetings (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT UNIQUE,
+        session_id TEXT,
+        meeting_url TEXT NOT NULL,
+        meeting_code TEXT,
+        status TEXT NOT NULL,
+        bot_name TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        transcript_json TEXT,
+        duration_seconds INTEGER,
+        chatpro_status TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS recall_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        webhook_id TEXT UNIQUE,
+        event TEXT NOT NULL,
+        bot_id TEXT,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        created_at TEXT NOT NULL,
+        last_error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings (status);
+      CREATE INDEX IF NOT EXISTS idx_meetings_session ON meetings (session_id);
+      CREATE INDEX IF NOT EXISTS idx_meetings_created ON meetings (created_at);
+      CREATE INDEX IF NOT EXISTS idx_recall_events_status_next ON recall_events (status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_recall_events_bot ON recall_events (bot_id);
     `);
   }
 
@@ -752,6 +835,218 @@ export class Db {
         'SELECT * FROM capture_heartbeats WHERE capture_id = ? ORDER BY at ASC'
       )
       .all(captureId);
+  }
+
+  // ─── meetings (reuniões gravadas pelo bot do Recall.ai) ───────────────────
+
+  createMeeting(input: {
+    id: string;
+    botId: string | null;
+    sessionId: string | null;
+    meetingUrl: string;
+    meetingCode: string | null;
+    botName: string | null;
+    status?: MeetingStatus;
+    createdAt?: string;
+  }): MeetingRow {
+    this.db
+      .prepare(
+        `INSERT INTO meetings
+           (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name, chatpro_status, created_at)
+         VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName, 'pending', @createdAt)`
+      )
+      .run({
+        id: input.id,
+        botId: input.botId,
+        sessionId: input.sessionId,
+        meetingUrl: input.meetingUrl,
+        meetingCode: input.meetingCode,
+        status: input.status ?? 'created',
+        botName: input.botName,
+        createdAt: input.createdAt ?? new Date().toISOString(),
+      });
+    const row = this.getMeeting(input.id);
+    if (!row) throw new Error('Falha inesperada ao gravar a reunião.');
+    return row;
+  }
+
+  getMeeting(id: string): MeetingRow | undefined {
+    return this.db.prepare<[string], MeetingRow>('SELECT * FROM meetings WHERE id = ?').get(id);
+  }
+
+  /** O webhook só conhece o bot_id — é por aqui que ele acha a reunião. */
+  getMeetingByBotId(botId: string): MeetingRow | undefined {
+    return this.db
+      .prepare<[string], MeetingRow>('SELECT * FROM meetings WHERE bot_id = ?')
+      .get(botId);
+  }
+
+  listMeetings(limit = 50): MeetingRow[] {
+    return this.db
+      .prepare<[number], MeetingRow>('SELECT * FROM meetings ORDER BY created_at DESC LIMIT ?')
+      .all(limit);
+  }
+
+  /**
+   * Muda o status e, de quebra, carimba os marcos temporais:
+   * `started_at` na primeira vez que grava (COALESCE preserva o original) e
+   * `ended_at` ao chegar num estado terminal. Idempotente — webhook reentregue
+   * não reescreve o horário.
+   */
+  updateMeetingStatus(id: string, status: MeetingStatus, error: string | null = null): void {
+    const terminal = status === 'ended' || status === 'done' || status === 'failed';
+    this.db
+      .prepare(
+        `UPDATE meetings
+         SET status = @status,
+             error = @error,
+             started_at = CASE WHEN @isRecording = 1 THEN COALESCE(started_at, @now) ELSE started_at END,
+             ended_at   = CASE WHEN @isTerminal  = 1 THEN COALESCE(ended_at, @now)   ELSE ended_at   END
+         WHERE id = @id`
+      )
+      .run({
+        id,
+        status,
+        error,
+        isRecording: status === 'recording' ? 1 : 0,
+        isTerminal: terminal ? 1 : 0,
+        now: new Date().toISOString(),
+      });
+  }
+
+  /** Transcript normalizado (JSON) + duração. Não mexe no status. */
+  setMeetingTranscript(input: {
+    id: string;
+    transcriptJson: string;
+    durationSeconds: number | null;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE meetings SET transcript_json = @transcriptJson, duration_seconds = @durationSeconds
+         WHERE id = @id`
+      )
+      .run(input);
+  }
+
+  setMeetingChatproStatus(id: string, chatproStatus: ChatproStatus): void {
+    this.db.prepare('UPDATE meetings SET chatpro_status = ? WHERE id = ?').run(chatproStatus, id);
+  }
+
+  /** O vínculo com o chatPro pode chegar depois da criação do bot. */
+  setMeetingSessionId(id: string, sessionId: string): void {
+    this.db.prepare('UPDATE meetings SET session_id = ? WHERE id = ?').run(sessionId, id);
+  }
+
+  countMeetings(): Record<string, number> {
+    const rows = this.db
+      .prepare<[], { status: string; n: number }>(
+        'SELECT status, COUNT(*) AS n FROM meetings GROUP BY status'
+      )
+      .all();
+    const out: Record<string, number> = {};
+    for (const row of rows) out[row.status] = row.n;
+    return out;
+  }
+
+  // ─── recall_events (fila durável dos webhooks do Recall) ──────────────────
+
+  /**
+   * Enfileira um webhook. O Recall retenta por 24 h, então reentrega é
+   * ESPERADA: o `webhook_id` (header `webhook-id` do Svix) é UNIQUE e a
+   * segunda chegada devolve `{ created: false }` sem gerar trabalho novo.
+   * Sem webhook_id (modo inseguro de dev), cada chamada vira um item.
+   */
+  enqueueRecallEvent(input: {
+    webhookId: string | null;
+    event: string;
+    botId: string | null;
+    payloadJson: string;
+    nextAttemptAt: string;
+    createdAt: string;
+  }): { id: number; created: boolean } {
+    const result = this.db
+      .prepare(
+        `INSERT INTO recall_events
+           (webhook_id, event, bot_id, payload_json, status, attempts, next_attempt_at, created_at)
+         VALUES (@webhookId, @event, @botId, @payloadJson, 'pending', 0, @nextAttemptAt, @createdAt)
+         ON CONFLICT (webhook_id) DO NOTHING`
+      )
+      .run(input);
+
+    if (result.changes > 0) return { id: Number(result.lastInsertRowid), created: true };
+
+    const existing = input.webhookId
+      ? this.db
+          .prepare<[string], { id: number }>('SELECT id FROM recall_events WHERE webhook_id = ?')
+          .get(input.webhookId)
+      : undefined;
+    if (!existing) throw new Error('Falha inesperada ao enfileirar evento do Recall.');
+    return { id: existing.id, created: false };
+  }
+
+  dueRecallEvents(nowIso: string, limit: number): RecallEventRow[] {
+    return this.db
+      .prepare<[string, number], RecallEventRow>(
+        `SELECT * FROM recall_events
+         WHERE status = 'pending'
+           AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC
+         LIMIT ?`
+      )
+      .all(nowIso, limit);
+  }
+
+  markRecallEventDone(id: number): void {
+    this.db
+      .prepare(
+        `UPDATE recall_events SET status = 'done', next_attempt_at = NULL, last_error = NULL WHERE id = ?`
+      )
+      .run(id);
+  }
+
+  markRecallEventDead(id: number, lastError: string, attempts?: number): void {
+    this.db
+      .prepare(
+        `UPDATE recall_events
+         SET status = 'dead', next_attempt_at = NULL, last_error = ?, attempts = COALESCE(?, attempts)
+         WHERE id = ?`
+      )
+      .run(lastError, attempts ?? null, id);
+  }
+
+  /** Falha transitória: segue pending, com backoff. */
+  recordRecallEventFailure(
+    id: number,
+    attempts: number,
+    nextAttemptAt: string,
+    lastError: string
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE recall_events SET status = 'pending', attempts = ?, next_attempt_at = ?, last_error = ?
+         WHERE id = ?`
+      )
+      .run(attempts, nextAttemptAt, lastError, id);
+  }
+
+  getRecallEvent(id: number): RecallEventRow | undefined {
+    return this.db
+      .prepare<[number], RecallEventRow>('SELECT * FROM recall_events WHERE id = ?')
+      .get(id);
+  }
+
+  countRecallEvents(): { pending: number; done: number; dead: number } {
+    const rows = this.db
+      .prepare<[], { status: string; n: number }>(
+        'SELECT status, COUNT(*) AS n FROM recall_events GROUP BY status'
+      )
+      .all();
+    const byStatus = new Map(rows.map((row) => [row.status, row.n]));
+    return {
+      pending: byStatus.get('pending') ?? 0,
+      done: byStatus.get('done') ?? 0,
+      dead: byStatus.get('dead') ?? 0,
+    };
   }
 
   close(): void {

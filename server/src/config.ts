@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { RECALL_REGIONS, type RecallRegion } from './recall/types.js';
 
 /**
  * Carrega e valida as variáveis de ambiente com zod.
@@ -50,6 +51,22 @@ const envSchema = z.object({
   // Enviar automaticamente pra Voreo ao terminar a transcrição?
   // Padrão FALSE: o atendente/admin revisa primeiro e envia pelo botão.
   AUTO_SEND_VOREO: z.string().optional(),
+  // ─── Recall.ai (bot que entra na reunião, grava e transcreve) ───
+  // Todas opcionais: sem elas o servidor sobe normalmente e o caminho Recall
+  // fica desligado (ver recallConfigWarnings abaixo).
+  RECALL_API_KEY: z.string().optional(),
+  RECALL_REGION: z.enum(RECALL_REGIONS).default('us-west-2'),
+  RECALL_WEBHOOK_SECRET: z.string().optional(),
+  RECALL_BOT_NAME: z.string().min(1).default('chatPro (gravando)'),
+  ALLOW_INSECURE_RECALL: z.string().optional(),
+  PUBLIC_BASE_URL: z
+    .string()
+    .url('PUBLIC_BASE_URL deve ser uma URL https pública (ex.: https://seu-tunel.ngrok.app).')
+    .optional(),
+  // ─── chatPro (entrega final da transcrição) ───
+  CHATPRO_API_URL: z.string().url('CHATPRO_API_URL deve ser uma URL válida.').optional(),
+  CHATPRO_API_KEY: z.string().optional(),
+  AUTO_SEND_CHATPRO: z.string().optional(),
 });
 
 export interface Config {
@@ -72,9 +89,44 @@ export interface Config {
   sttBaseUrl: string | undefined;
   captureRetentionDays: number;
   autoSendVoreo: boolean;
+  recallApiKey: string | undefined;
+  recallRegion: RecallRegion;
+  recallWebhookSecret: string | undefined;
+  recallBotName: string;
+  allowInsecureRecall: boolean;
+  publicBaseUrl: string | undefined;
+  chatproApiUrl: string | undefined;
+  chatproApiKey: string | undefined;
+  autoSendChatpro: boolean;
 }
 
 export class ConfigError extends Error {}
+
+/**
+ * O que falta pro caminho Recall.ai funcionar de ponta a ponta.
+ * Nada aqui impede o servidor de subir — é só aviso de boot (modo dev).
+ * NUNCA inclui valor de chave/segredo, só o nome da variável.
+ */
+export function recallConfigWarnings(config: Config): string[] {
+  const avisos: string[] = [];
+  if (!config.recallApiKey) {
+    avisos.push('RECALL_API_KEY vazia — não é possível criar bots no Recall.ai.');
+  }
+  if (!config.recallWebhookSecret) {
+    avisos.push(
+      config.allowInsecureRecall
+        ? 'RECALL_WEBHOOK_SECRET vazio e ALLOW_INSECURE_RECALL=true — webhooks aceitos SEM assinatura (só dev).'
+        : 'RECALL_WEBHOOK_SECRET vazio — /webhooks/recall vai responder 403 (crie o segredo no dashboard).'
+    );
+  }
+  if (!config.publicBaseUrl) {
+    avisos.push('PUBLIC_BASE_URL vazia — sem HTTPS público o Recall.ai não entrega webhook.');
+  }
+  if (!config.chatproApiUrl) {
+    avisos.push('CHATPRO_API_URL vazia — entrega ao chatPro fica como skipped-no-url.');
+  }
+  return avisos;
+}
 
 /** Remove strings vazias — `VAR=` no .env deve contar como "não definida". */
 function cleanEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -118,5 +170,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sttBaseUrl: e.STT_BASE_URL,
     captureRetentionDays: e.CAPTURE_RETENTION_DAYS,
     autoSendVoreo: e.AUTO_SEND_VOREO === 'true',
+    recallApiKey: e.RECALL_API_KEY,
+    recallRegion: e.RECALL_REGION,
+    recallWebhookSecret: e.RECALL_WEBHOOK_SECRET,
+    recallBotName: e.RECALL_BOT_NAME,
+    allowInsecureRecall: e.ALLOW_INSECURE_RECALL === 'true',
+    publicBaseUrl: e.PUBLIC_BASE_URL,
+    chatproApiUrl: e.CHATPRO_API_URL,
+    chatproApiKey: e.CHATPRO_API_KEY,
+    autoSendChatpro: e.AUTO_SEND_CHATPRO === 'true',
   };
 }
