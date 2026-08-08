@@ -89,21 +89,57 @@ export async function criarReuniao(
 
   const meetingCode = normalizeMeetingCode(entrada.meetingUrl) || null;
 
-  // Já tem bot vivo nessa sala? Devolve o que existe. Este endpoint é chamado
-  // por máquina (o chatPro), então repetição é esperada — e cada bot a mais é
-  // um robô a mais aparecendo pro cliente e outra hora cobrada.
+  // Já tem bot vivo nessa sala? Este endpoint é chamado por máquina (o chatPro),
+  // então repetição é esperada — e cada bot a mais é um robô a mais aparecendo
+  // pro cliente e outra hora cobrada.
+  //
+  // MAS: "mesma sala" só é o mesmo atendimento se for a MESMA sessão. Sala
+  // reaproveitada (link pessoal, evento recorrente, reagendamento) pode servir
+  // dois clientes no mesmo dia. Tratar isso como duplicata seria o pior dos
+  // erros possíveis aqui: o bot da conversa A gravaria a reunião do cliente B,
+  // e a transcrição de B iria parar no atendimento de A.
   if (meetingCode) {
     const desde = new Date(agora - JANELA_DEDUP_MS).toISOString();
     const semBotDesde = new Date(agora - JANELA_SEM_BOT_MS).toISOString();
     const viva = db.findActiveMeetingByCode(meetingCode, desde, semBotDesde);
+
     if (viva) {
-      enriquecer(db, viva, entrada);
-      const atual = db.getMeeting(viva.id) ?? viva;
-      log.info(
-        `pedido repetido pra ${meetingCode} (${entrada.origem}) — reunião ${atual.id} ` +
-          `já está ${atual.status}, sem criar outro bot.`
+      const mesmaConversa =
+        // Sem sessão dos dois lados, ou sessões iguais: é a mesma coisa.
+        !entrada.sessionId || !viva.session_id || entrada.sessionId === viva.session_id;
+
+      if (mesmaConversa) {
+        enriquecer(db, viva, entrada);
+        const atual = db.getMeeting(viva.id) ?? viva;
+        log.info(
+          `pedido repetido pra ${meetingCode} (${entrada.origem}) — reunião ${atual.id} ` +
+            `já está ${atual.status}, sem criar outro bot.`
+        );
+        return { ok: true, criada: false, meeting: atual };
+      }
+
+      // Sala repetida, conversa DIFERENTE. Tira o bot antigo antes de pôr o
+      // novo: dois bots na mesma sala gravariam a mesma coisa e cada
+      // transcrição iria pra uma conversa, misturando os dois clientes.
+      log.warn(
+        `sala ${meetingCode} reaproveitada: já havia a reunião ${viva.id} ` +
+          `(sessão ${viva.session_id}) e chegou pedido da sessão ${entrada.sessionId}. ` +
+          `Encerrando o bot anterior antes de criar o novo.`
       );
-      return { ok: true, criada: false, meeting: atual };
+      if (viva.bot_id) {
+        try {
+          await recall.leaveCall(viva.bot_id);
+        } catch (err) {
+          // Não impede o novo: o bot antigo pode já ter saído sozinho
+          // (everyone_left_timeout) e aí o leave_call devolve erro.
+          log.warn(`não deu pra tirar o bot ${viva.bot_id}: ${String(err)}`);
+        }
+      }
+      db.updateMeetingStatus(
+        viva.id,
+        'ended',
+        'sala reaproveitada por outra conversa — bot encerrado'
+      );
     }
   }
 

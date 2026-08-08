@@ -209,6 +209,19 @@ describe('POST /api/reunioes/iniciar', () => {
     expect(corpo.precisaConectar).toBe(true);
   });
 
+  it('manda automatic_leave pro bot não ficar preso na sala', async () => {
+    const app = await montarApp();
+    await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE });
+
+    const bot = app.chamadas.find((c) => c.url.includes('/bot'));
+    const corpo = bot?.body as { automatic_leave?: Record<string, number> };
+    // Sem isto, um bot esquecido cobra por hora e pode atravessar pra próxima
+    // reunião da mesma sala — gravando o cliente errado.
+    expect(corpo.automatic_leave?.everyone_left_timeout).toBe(2);
+    expect(corpo.automatic_leave?.waiting_room_timeout).toBe(300);
+    expect(corpo.automatic_leave?.in_call_recording_timeout).toBe(14400);
+  });
+
   it('sem conta Google conectada, avisa pra conectar em vez de falhar seco', async () => {
     const app = await montarApp({ contaConectada: false });
 

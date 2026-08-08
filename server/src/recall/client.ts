@@ -84,6 +84,25 @@ export class RecallClient {
     const body: Record<string, unknown> = {
       meeting_url: input.meetingUrl,
       bot_name: input.botName,
+      /**
+       * Quando o bot vai embora sozinho. Deixar no padrão é arriscado por dois
+       * motivos: bot esquecido numa sala CUSTA POR HORA, e bot que fica depois
+       * do fim pode acabar gravando a reunião seguinte na mesma sala — que
+       * seria a conversa de outro cliente indo parar no atendimento errado.
+       */
+      automatic_leave: {
+        // Sai 2 s depois que todo mundo saiu. É o padrão do Recall e é o que
+        // impede o bot de atravessar pra próxima reunião da mesma sala.
+        everyone_left_timeout: 2,
+        // Ninguém admitiu em 5 min? Não vão admitir. O padrão é 20 min, e são
+        // 20 min de bot parado sendo cobrado.
+        waiting_room_timeout: 300,
+        // Entrou mas ninguém apareceu.
+        noone_joined_timeout: 300,
+        // Teto duro: reunião nenhuma passa disso, e uma sala que ficou aberta
+        // por engano não vira uma fatura de dias.
+        in_call_recording_timeout: 4 * 60 * 60,
+      },
       recording_config: {
         transcript: { provider: { recallai_streaming: {} } },
       },

@@ -219,6 +219,34 @@ describe('POST /api/meetings', () => {
     expect(db.listMeetings()).toHaveLength(1);
   });
 
+  it('MESMA sala com OUTRA conversa cria bot novo e tira o antigo', async () => {
+    // O risco: link pessoal ou sala recorrente usada pra dois clientes no
+    // mesmo dia. Tratar como duplicata faria o bot da conversa A gravar a
+    // reunião do cliente B — e a transcrição de B cairia no atendimento de A.
+    const OUTRA_SESSAO = '11111111-2222-3333-4444-555555555555';
+    const { baseUrl, db, chamadas } = await montarApp({
+      respostas: [
+        jsonResponse({ id: BOT_ID }),      // bot da conversa A
+        jsonResponse({ ok: true }),         // leave_call do bot A
+        jsonResponse({ id: 'bot-2' }),      // bot da conversa B
+      ],
+    });
+
+    await criar(baseUrl, { meetingUrl: MEETING_URL, sessionId: SESSION_ID });
+    const res = await criar(baseUrl, { meetingUrl: MEETING_URL, sessionId: OUTRA_SESSAO });
+
+    // Não é duplicata: é reunião nova.
+    expect(res.status).toBe(201);
+
+    // O bot antigo foi retirado da sala antes do novo entrar.
+    expect(chamadas.some((c) => c.url.includes(`/bot/${BOT_ID}/leave_call`))).toBe(true);
+
+    // E cada conversa tem a SUA reunião.
+    const reunioes = db.listMeetings();
+    expect(reunioes).toHaveLength(2);
+    expect(reunioes.map((r) => r.session_id).sort()).toEqual([SESSION_ID, OUTRA_SESSAO].sort());
+  });
+
   it('reunião já encerrada não bloqueia um bot novo na mesma sala', async () => {
     const { baseUrl, db, chamadas } = await montarApp({
       respostas: [jsonResponse({ id: BOT_ID }), jsonResponse({ id: 'bot-2' })],

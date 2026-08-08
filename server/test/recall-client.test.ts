@@ -79,7 +79,9 @@ describe('RecallClient — criação do bot', () => {
     expect(chamada?.method).toBe('POST');
     expect(chamada?.headers.authorization).toBe(`Token ${API_KEY}`);
     expect(chamada?.headers['content-type']).toBe('application/json');
-    expect(chamada?.body).toEqual({
+    // toMatchObject e não toEqual: `automatic_leave` tem teste próprio, e
+    // exigir igualdade exata aqui quebra a cada campo novo no corpo do bot.
+    expect(chamada?.body).toMatchObject({
       meeting_url: MEETING_URL,
       bot_name: 'chatPro (gravando)',
       recording_config: { transcript: { provider: { recallai_streaming: {} } } },
