@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, rmSync } from 'node:fs';
-import ffmpegStatic from 'ffmpeg-static';
 import { createLogger } from '../log.js';
 
 /**
@@ -8,14 +7,37 @@ import { createLogger } from '../log.js';
  * usando o ffmpeg baixado pelo pacote ffmpeg-static (sem instalação manual).
  *
  * O Whisper (transformers.js) espera exatamente Float32Array a 16 kHz mono.
+ *
+ * `ffmpeg-static` é carregado sob demanda porque hoje ele é OPCIONAL: pesa
+ * ~80 MB e só serve ao caminho antigo de captura de áudio (STT_PROVIDER=local).
+ * Com o Recall a transcrição já vem pronta, então a imagem de deploy não
+ * precisa carregar isso. Import estático faria o servidor nem subir sem o
+ * pacote instalado.
  */
 
 const log = createLogger('stt/decode');
 
-const ffmpegPath: string | null = ffmpegStatic as unknown as string | null;
+let ffmpegPathCache: string | null | undefined;
+
+async function acharFfmpeg(): Promise<string | null> {
+  if (ffmpegPathCache !== undefined) return ffmpegPathCache;
+  try {
+    const mod = (await import('ffmpeg-static')) as unknown as { default?: string };
+    ffmpegPathCache = (mod.default ?? (mod as unknown as string)) || null;
+  } catch {
+    ffmpegPathCache = null;
+  }
+  return ffmpegPathCache;
+}
 
 export async function decodeToPcm16kMono(filePath: string): Promise<Float32Array> {
-  if (!ffmpegPath) throw new Error('ffmpeg-static não disponível.');
+  const ffmpegPath = await acharFfmpeg();
+  if (!ffmpegPath) {
+    throw new Error(
+      'ffmpeg-static não está instalado. Ele é opcional: só o caminho antigo de ' +
+        'captura de áudio (STT_PROVIDER=local) precisa dele. Rode `npm install ffmpeg-static`.'
+    );
+  }
 
   return new Promise<Float32Array>((resolve, reject) => {
     // Só corta ronco fora da faixa da voz. NADA de loudnorm/normalização aqui:
