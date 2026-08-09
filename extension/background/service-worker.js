@@ -95,15 +95,23 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
             sessionId: msg.sessionId,
             deviceId: cfg.deviceId,
             contato: msg.contato ?? null,
+            // Só vai quando o atendente marcou hora; sem isso é reunião agora.
+            ...(msg.quando ? { quando: msg.quando } : {}),
           }),
         });
         if (r.ok) {
           responder({ ok: true, dados: r.corpo });
           return;
         }
+        // A recusa do zod vem em `issues`, e é ela que diz o que corrigir
+        // ("esse horário já passou"). Sem isto o atendente via só
+        // "Corpo inválido." e não tinha o que fazer com a informação.
+        const issues = Array.isArray(r.corpo?.issues)
+          ? r.corpo.issues.map((i) => i?.message).filter(Boolean).join(' ')
+          : '';
         responder({
           ok: false,
-          erro: r.corpo?.detail || r.corpo?.error || `Servidor respondeu ${r.status}.`,
+          erro: r.corpo?.detail || issues || r.corpo?.error || `Servidor respondeu ${r.status}.`,
           precisaConectar: Boolean(r.corpo?.precisaConectar),
         });
         return;

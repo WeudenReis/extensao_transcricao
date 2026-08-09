@@ -137,7 +137,13 @@ export type MeetingStatus =
   | 'done'
   | 'failed';
 
-export type ChatproStatus = 'pending' | 'sent' | 'failed' | 'skipped-no-url';
+export type ChatproStatus =
+  | 'pending'
+  | 'sent'
+  | 'failed'
+  | 'skipped-no-url'
+  /** Reunião sem gravação: avisamos na conversa em vez de entregar transcrição. */
+  | 'aviso-enviado';
 
 export interface MeetingRow {
   id: string;
@@ -150,6 +156,8 @@ export interface MeetingRow {
   started_at: string | null;
   ended_at: string | null;
   transcript_json: string | null;
+  /** Só o texto das falas, sem o JSON em volta — é o que o índice FTS5 lê. */
+  transcript_texto: string | null;
   duration_seconds: number | null;
   chatpro_status: string | null;
   /** Instância do chatPro dona da conversa — vem no webhook, cai no .env. */
@@ -173,6 +181,71 @@ export interface RecallEventRow {
   next_attempt_at: string | null;
   created_at: string;
   last_error: string | null;
+}
+
+// ─── Busca nas transcrições ──────────────────────────────────────────────────
+
+/** Uma reunião que casou com o termo procurado. */
+export interface ResultadoBusca {
+  meetingId: string;
+  sessionId: string | null;
+  meetingCode: string | null;
+  /** Início da reunião; cai no horário de criação quando ela nem começou. */
+  quando: string;
+  /** Contexto ao redor do termo, com o casamento entre colchetes. */
+  trecho: string;
+}
+
+/** Quanto contexto o snippet() devolve em volta do termo. */
+const PALAVRAS_NO_TRECHO = 16;
+
+/**
+ * Transforma o que o atendente digitou numa expressão MATCH segura.
+ *
+ * Só sobrevivem letras, números e `_`; cada pedaço vira uma FRASE entre aspas.
+ * Isso é o que impede `"`, `*`, `AND`, `NEAR(` e companhia de chegarem no
+ * parser do FTS5 como operador e estourarem erro de sintaxe — entre aspas eles
+ * são texto comum. Vários pedaços = AND implícito (todos precisam aparecer).
+ * Termo sem nenhum pedaço aproveitável devolve string vazia.
+ */
+function montarConsultaFts(termo: string): string {
+  const pedacos = termo.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  return pedacos.map((pedaco) => `"${pedaco}"`).join(' ');
+}
+
+/**
+ * Achata o `transcript_json` no texto corrido das falas — é isso, e só isso,
+ * que vai pro índice. Nome de quem falou e marcação de tempo ficam de fora pra
+ * não poluir o trecho devolvido na busca.
+ *
+ * Aceita os dois formatos que já existem no banco: `{ falas: [...] }` (Recall)
+ * e o array cru de falas (gravações antigas). JSON estragado vira texto vazio:
+ * uma linha ilegível não pode derrubar quem só está gravando a reunião.
+ */
+function textoDasFalas(transcriptJson: string | null): string {
+  if (!transcriptJson) return '';
+  let bruto: unknown;
+  try {
+    bruto = JSON.parse(transcriptJson);
+  } catch {
+    return '';
+  }
+  const textos: string[] = [];
+  for (const fala of falasDe(bruto)) {
+    if (typeof fala !== 'object' || fala === null) continue;
+    const texto = (fala as { text?: unknown }).text;
+    if (typeof texto === 'string' && texto.trim() !== '') textos.push(texto.trim());
+  }
+  return textos.join(' ');
+}
+
+function falasDe(bruto: unknown): unknown[] {
+  if (Array.isArray(bruto)) return bruto;
+  if (typeof bruto === 'object' && bruto !== null) {
+    const falas = (bruto as { falas?: unknown }).falas;
+    if (Array.isArray(falas)) return falas;
+  }
+  return [];
 }
 
 // ─── Db ──────────────────────────────────────────────────────────────────────
@@ -352,6 +425,80 @@ export class Db {
     // já existe, então quem já tinha a tabela precisa do ALTER.
     this.garantirColuna('meetings', 'chatpro_instance_id', 'TEXT');
     this.garantirColuna('meetings', 'chatpro_parts_sent', 'INTEGER NOT NULL DEFAULT 0');
+    this.garantirColuna('meetings', 'transcript_texto', 'TEXT');
+    this.garantirIndiceDeBusca();
+  }
+
+  /**
+   * Índice de texto (FTS5) sobre as falas das reuniões.
+   *
+   * É um índice EXTERNAL CONTENT: quem guarda o texto continua sendo a coluna
+   * `meetings.transcript_texto`, o índice guarda só os termos. Quem mantém os
+   * dois em dia são TRIGGERS no banco — de propósito. Reindexar do lado do
+   * TypeScript dependeria de todo caminho de escrita lembrar de chamar a
+   * reindexação; com trigger, qualquer UPDATE que toque a coluna já atualiza o
+   * índice, venha de onde vier (inclusive de um `sqlite3` na mão).
+   */
+  private garantirIndiceDeBusca(): void {
+    // Preenche o texto plano de quem já tinha transcrição gravada. Roda ANTES
+    // de criar a tabela virtual porque é dela que o 'rebuild' lá embaixo lê.
+    const pendentes = this.db
+      .prepare<[], { id: string; transcript_json: string }>(
+        `SELECT id, transcript_json FROM meetings
+          WHERE transcript_json IS NOT NULL AND transcript_texto IS NULL`
+      )
+      .all();
+    if (pendentes.length > 0) {
+      const gravar = this.db.prepare('UPDATE meetings SET transcript_texto = ? WHERE id = ?');
+      const emLote = this.db.transaction((linhas: typeof pendentes) => {
+        for (const linha of linhas) gravar.run(textoDasFalas(linha.transcript_json), linha.id);
+      });
+      emLote(pendentes);
+      log.info(`busca: ${pendentes.length} transcrição(ões) já gravadas preparadas pro índice.`);
+    }
+
+    const jaExistia =
+      this.db
+        .prepare<[], { name: string }>(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meetings_fts'`
+        )
+        .get() !== undefined;
+
+    // remove_diacritics 2: "orçamento" tem que aparecer numa busca por
+    // "orcamento" e vice-versa — ninguém digita acento em campo de busca.
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts USING fts5(
+        transcript_texto,
+        content = 'meetings',
+        content_rowid = 'rowid',
+        tokenize = "unicode61 remove_diacritics 2"
+      );
+
+      CREATE TRIGGER IF NOT EXISTS meetings_fts_ai AFTER INSERT ON meetings BEGIN
+        INSERT INTO meetings_fts (rowid, transcript_texto)
+        VALUES (new.rowid, new.transcript_texto);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS meetings_fts_ad AFTER DELETE ON meetings BEGIN
+        INSERT INTO meetings_fts (meetings_fts, rowid, transcript_texto)
+        VALUES ('delete', old.rowid, old.transcript_texto);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS meetings_fts_au
+      AFTER UPDATE OF transcript_texto ON meetings BEGIN
+        INSERT INTO meetings_fts (meetings_fts, rowid, transcript_texto)
+        VALUES ('delete', old.rowid, old.transcript_texto);
+        INSERT INTO meetings_fts (rowid, transcript_texto)
+        VALUES (new.rowid, new.transcript_texto);
+      END;
+    `);
+
+    // Só na criação: banco antigo (ou índice apagado na mão) entra populado.
+    // Depois disso os triggers dão conta, e um rebuild a cada boot seria varrer
+    // a tabela inteira à toa.
+    if (!jaExistia) {
+      this.db.exec(`INSERT INTO meetings_fts (meetings_fts) VALUES ('rebuild')`);
+    }
   }
 
   /** ALTER TABLE idempotente — não faz nada se a coluna já existe. */
@@ -1055,11 +1202,14 @@ export class Db {
         // existe mais, e o começo da transcrição nunca chegaria na conversa.
         `UPDATE meetings
             SET transcript_json = @transcriptJson,
+                transcript_texto = @transcriptTexto,
                 duration_seconds = @durationSeconds,
                 chatpro_parts_sent = 0
           WHERE id = @id`
       )
-      .run(input);
+      // O texto plano sai do mesmo UPDATE do JSON: os dois nunca divergem, e o
+      // trigger do FTS5 vê a mudança na mesma transação.
+      .run({ ...input, transcriptTexto: textoDasFalas(input.transcriptJson) });
   }
 
   /**
@@ -1110,6 +1260,37 @@ export class Db {
     const out: Record<string, number> = {};
     for (const row of rows) out[row.status] = row.n;
     return out;
+  }
+
+  // ─── busca nas transcrições ───────────────────────────────────────────────
+
+  /**
+   * Procura um termo dentro das falas das reuniões já transcritas.
+   *
+   * Devolve UMA linha por reunião (o índice guarda a conversa inteira numa
+   * linha só), ordenada por relevância — bm25 é negativo, então quanto menor,
+   * melhor o casamento. O `trecho` vem do `snippet()` do próprio FTS5, com o
+   * termo entre colchetes e algumas palavras de contexto em volta.
+   *
+   * Nada do que sai daqui pode ir pro log: é conteúdo de conversa de cliente.
+   */
+  buscarNasTranscricoes(termo: string, limite: number): ResultadoBusca[] {
+    const consulta = montarConsultaFts(termo);
+    if (consulta === '' || !Number.isFinite(limite) || limite < 1) return [];
+    return this.db
+      .prepare<[string, number], ResultadoBusca>(
+        `SELECT m.id AS meetingId,
+                m.session_id AS sessionId,
+                m.meeting_code AS meetingCode,
+                COALESCE(m.started_at, m.created_at) AS quando,
+                snippet(meetings_fts, 0, '[', ']', '…', ${PALAVRAS_NO_TRECHO}) AS trecho
+           FROM meetings_fts
+           JOIN meetings m ON m.rowid = meetings_fts.rowid
+          WHERE meetings_fts MATCH ?
+          ORDER BY bm25(meetings_fts)
+          LIMIT ?`
+      )
+      .all(consulta, Math.floor(limite));
   }
 
   // ─── recall_events (fila durável dos webhooks do Recall) ──────────────────

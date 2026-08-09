@@ -294,6 +294,8 @@ describe('entrega', () => {
     const r = await cliente(fetchImpl).enviar(payload());
 
     expect(r.status).toBe('failed');
+    // Estreita a união antes de ler `motivo` — ele só existe no ramo de falha.
+    if (r.ok) throw new Error('esperava falha');
     expect(r.motivo).toContain('401');
     expect(r.motivo).not.toContain(TOKEN);
   });

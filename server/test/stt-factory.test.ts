@@ -1,30 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { createSttProvider } from '../src/stt/index.js';
-import type { Config } from '../src/config.js';
+import { loadConfig, type Config } from '../src/config.js';
 
+/**
+ * Monta um Config real via loadConfig em vez de escrever o objeto à mão.
+ * O objeto manual ficava desatualizado a cada campo novo — e o tsc nem via,
+ * porque a pasta test/ estava fora do type-check.
+ */
 function baseConfig(overrides: Partial<Config>): Config {
-  return {
-    googleClientId: 'x',
-    googleClientSecret: 'x',
-    googleRedirectUri: 'http://localhost:3333/oauth/callback',
-    googlePubsubTopic: undefined,
-    pubsubVerificationAudience: undefined,
-    pubsubServiceAccount: undefined,
-    allowInsecurePubsub: false,
-    voreoWebhookUrl: undefined,
-    voreoApiKey: undefined,
-    port: 3333,
-    databasePath: ':memory:',
-    tokenEncryptionKey: undefined,
-    sttProvider: 'deepgram',
-    sttApiKey: undefined,
-    sttModel: undefined,
-    sttLanguage: 'pt-BR',
-    sttBaseUrl: undefined,
-    captureRetentionDays: 7,
-    autoSendVoreo: false,
-    ...overrides,
-  };
+  return { ...loadConfig({}), ...overrides };
 }
 
 describe('factory de provedor de STT', () => {

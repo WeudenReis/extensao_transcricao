@@ -5,8 +5,13 @@ import { Db } from '../src/db.js';
 import { RecallClient } from '../src/recall/client.js';
 import { ChatproClient } from '../src/chatpro/client.js';
 import { ContasGoogle, ContaGoogleExpirada } from '../src/google/contas.js';
-import { createReunioesRouter } from '../src/routes/reunioes.js';
-import { extrairMeetUrl, criarLinkDoMeet } from '../src/google/meetLink.js';
+import { createReunioesRouter, formatarQuando } from '../src/routes/reunioes.js';
+import {
+  extrairMeetUrl,
+  criarLinkDoMeet,
+  type CriarMeetOptions,
+} from '../src/google/meetLink.js';
+import { criarReuniao } from '../src/recall/criarReuniao.js';
 import { jsonResponse } from './helpers.js';
 
 /**
@@ -15,8 +20,15 @@ import { jsonResponse } from './helpers.js';
  */
 
 const SESSION = '78562bd7-3d56-47ae-9d4f-25dd80e6b024';
+const OUTRA_SESSION = 'f1a2b3c4-d5e6-47ae-9d4f-25dd80e6b024';
 const DEVICE = 'device-de-teste-1234';
 const MEET_URL = 'https://meet.google.com/abc-defg-hij';
+const MINUTO = 60_000;
+
+/** ISO de daqui a N minutos — as reuniões marcadas são sempre no futuro. */
+function daquiA(minutos: number): string {
+  return new Date(Date.now() + minutos * MINUTO).toISOString();
+}
 
 const servidores: Server[] = [];
 afterEach(() => {
@@ -27,6 +39,8 @@ interface App {
   baseUrl: string;
   db: Db;
   chamadas: { url: string; body: unknown }[];
+  /** O que a rota pediu ao Google — é aqui que o horário marcado aparece. */
+  linkOpcoes: CriarMeetOptions[];
 }
 
 async function montarApp(
@@ -39,6 +53,7 @@ async function montarApp(
 ): Promise<App> {
   const db = new Db(':memory:');
   const chamadas: { url: string; body: unknown }[] = [];
+  const linkOpcoes: CriarMeetOptions[] = [];
 
   const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const u = String(url);
@@ -84,10 +99,12 @@ async function montarApp(
       chatpro,
       recall: new RecallClient({ apiKey: 'k', fetchImpl }),
       botName: 'chatPro (gravando)',
-      criarLink: options.linkFalha
-        ? () => Promise.reject(options.linkFalha)
-        : () =>
-            Promise.resolve({ meetUrl: MEET_URL, eventId: 'evt-1', meetingCode: 'abc-defg-hij' }),
+      criarLink: (opcoes: CriarMeetOptions) => {
+        linkOpcoes.push(opcoes);
+        return options.linkFalha
+          ? Promise.reject(options.linkFalha)
+          : Promise.resolve({ meetUrl: MEET_URL, eventId: 'evt-1', meetingCode: 'abc-defg-hij' });
+      },
     })
   );
 
@@ -97,7 +114,22 @@ async function montarApp(
   servidores.push(server);
   const addr = server.address();
   const porta = typeof addr === 'object' && addr ? addr.port : 0;
-  return { baseUrl: `http://127.0.0.1:${porta}`, db, chamadas };
+  return { baseUrl: `http://127.0.0.1:${porta}`, db, chamadas, linkOpcoes };
+}
+
+/** Recall de mentira: guarda o corpo de cada createBot pra inspeção. */
+function montarRecall(): { recall: RecallClient; bots: Record<string, unknown>[] } {
+  const bots: Record<string, unknown>[] = [];
+  let n = 0;
+  const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    if (String(url).endsWith('/bot')) {
+      bots.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      n += 1;
+      return Promise.resolve(jsonResponse({ id: `bot-${n}` }));
+    }
+    return Promise.resolve(jsonResponse({ ok: true }));
+  }) as typeof fetch;
+  return { recall: new RecallClient({ apiKey: 'k', fetchImpl }), bots };
 }
 
 function iniciar(base: string, corpo: unknown): Promise<Response> {
@@ -149,6 +181,67 @@ describe('criação do link via Calendar', () => {
     expect(capturado!.body.conferenceData).toMatchObject({
       createRequest: { conferenceSolutionKey: { type: 'hangoutsMeet' } },
     });
+  });
+
+  it('sem `inicio`, o evento continua nascendo agora', async () => {
+    const agora = new Date('2026-08-21T17:00:00.000Z');
+    let corpo: Record<string, { dateTime: string }> = {};
+    const fetchImpl = ((_u: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      corpo = JSON.parse(String(init?.body)) as Record<string, { dateTime: string }>;
+      return Promise.resolve(jsonResponse({ id: 'evt-1', hangoutLink: MEET_URL }));
+    }) as typeof fetch;
+
+    await criarLinkDoMeet({ accessToken: 'tok', titulo: 'Teste', fetchImpl, agora: () => agora });
+
+    expect(corpo.start?.dateTime).toBe(agora.toISOString());
+    // Uma hora de duração nominal, como sempre.
+    expect(corpo.end?.dateTime).toBe('2026-08-21T18:00:00.000Z');
+  });
+
+  it('com `inicio` e `duracaoMinutos`, o evento cai no horário marcado', async () => {
+    const agora = new Date('2026-08-21T17:00:00.000Z');
+    const inicio = new Date('2026-08-24T14:30:00.000Z');
+    let corpo: Record<string, unknown> = {};
+    const fetchImpl = ((_u: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      corpo = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ id: 'evt-1', hangoutLink: MEET_URL }));
+    }) as typeof fetch;
+
+    await criarLinkDoMeet({
+      accessToken: 'tok',
+      titulo: 'Teste',
+      inicio,
+      duracaoMinutos: 30,
+      fetchImpl,
+      agora: () => agora,
+    });
+
+    expect((corpo.start as { dateTime: string }).dateTime).toBe(inicio.toISOString());
+    expect((corpo.end as { dateTime: string }).dateTime).toBe('2026-08-24T15:00:00.000Z');
+    // Compromisso futuro sem lembrete é reunião perdida.
+    expect(corpo.reminders).toMatchObject({
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: 10 }],
+    });
+  });
+
+  it('duração fora de faixa cai no padrão em vez de gerar evento absurdo', async () => {
+    const agora = new Date('2026-08-21T17:00:00.000Z');
+    const corpos: Record<string, { dateTime: string }>[] = [];
+    const fetchImpl = ((_u: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      corpos.push(JSON.parse(String(init?.body)) as Record<string, { dateTime: string }>);
+      return Promise.resolve(jsonResponse({ id: 'evt-1', hangoutLink: MEET_URL }));
+    }) as typeof fetch;
+    const base = { accessToken: 'tok', titulo: 'Teste', fetchImpl, agora: () => agora };
+
+    await criarLinkDoMeet({ ...base, duracaoMinutos: 0 });
+    await criarLinkDoMeet({ ...base, duracaoMinutos: Number.NaN });
+    await criarLinkDoMeet({ ...base, duracaoMinutos: 60 * 24 * 30 });
+
+    expect(corpos[0]?.end?.dateTime).toBe('2026-08-21T18:00:00.000Z');
+    expect(corpos[1]?.end?.dateTime).toBe('2026-08-21T18:00:00.000Z');
+    // Teto de 12 h: evento de um mês na agenda de quem clicou seria ruído.
+    expect(corpos[2]?.end?.dateTime).toBe('2026-08-22T05:00:00.000Z');
   });
 
   it('erro do Google vira MeetLinkError com o status', async () => {
@@ -279,6 +372,243 @@ describe('POST /api/reunioes/iniciar', () => {
     expect((envio?.body as { message: string }).message).toBe(
       `Te espero aqui: ${MEET_URL} — até já!`
     );
+  });
+});
+
+describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
+  it('marca o evento na hora combinada, avisa o cliente e agenda o bot', async () => {
+    const app = await montarApp();
+    const quando = daquiA(3 * 24 * 60);
+
+    const res = await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE, quando });
+
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as { agendadaPara: string; quandoTexto: string };
+    expect(corpo.agendadaPara).toBe(quando);
+
+    // 1. O evento do Google nasce no horário marcado, não em cima do clique.
+    expect(app.linkOpcoes[0]?.inicio?.toISOString()).toBe(quando);
+
+    // 2. O cliente recebe a data, não só o link — senão entra numa sala vazia.
+    const envio = app.chamadas.find((c) => c.url.includes('/messages/sendMessage'));
+    const texto = (envio?.body as { message: string }).message;
+    expect(texto).toContain('Reunião marcada para');
+    expect(texto).toContain(corpo.quandoTexto);
+    expect(texto).toContain(MEET_URL);
+
+    // 3. O bot fica agendado no Recall, em ISO 8601.
+    const bot = app.chamadas.find((c) => c.url.endsWith('/bot'));
+    expect((bot?.body as { join_at?: string }).join_at).toBe(quando);
+  });
+
+  it('faltando menos de 10 min, vai sem join_at — o bot entra na hora', async () => {
+    // O Recall pede antecedência pro bot agendado. Adiar a entrada em 4 min só
+    // criaria uma janela com a reunião rolando e o bot fora dela.
+    const app = await montarApp();
+
+    await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE, quando: daquiA(4) });
+
+    const bot = app.chamadas.find((c) => c.url.endsWith('/bot'));
+    expect((bot?.body as { join_at?: string }).join_at).toBeUndefined();
+  });
+
+  it('recusa horário no passado com motivo legível', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: daquiA(-5),
+    });
+
+    expect(res.status).toBe(400);
+    const corpo = (await res.json()) as { issues: { message: string }[] };
+    expect(corpo.issues[0]?.message).toContain('já passou');
+    // Nada de link criado nem mensagem enviada pro cliente.
+    expect(app.chamadas).toHaveLength(0);
+    expect(app.linkOpcoes).toHaveLength(0);
+  });
+
+  it('recusa além de 90 dias', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: daquiA(91 * 24 * 60),
+    });
+
+    expect(res.status).toBe(400);
+    const corpo = (await res.json()) as { issues: { message: string }[] };
+    expect(corpo.issues[0]?.message).toContain('90 dias');
+  });
+
+  it('recusa data sem fuso — "14:00" de quem? viraria 11 h pro cliente', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: '2026-08-21T14:00',
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('mensagem personalizada também recebe {quando}', async () => {
+    const app = await montarApp();
+    const quando = daquiA(2 * 24 * 60);
+
+    await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando,
+      mensagem: 'Fechado para {quando}. Link: {link}',
+    });
+
+    const envio = app.chamadas.find((c) => c.url.includes('/messages/sendMessage'));
+    expect((envio?.body as { message: string }).message).toBe(
+      `Fechado para ${formatarQuando(new Date(quando))}. Link: ${MEET_URL}`
+    );
+  });
+});
+
+describe('como a data aparece pro cliente', () => {
+  const agora = new Date('2026-08-21T17:00:00.000Z'); // sexta, 14 h em São Paulo
+
+  it('hoje e amanhã aparecem por nome', () => {
+    expect(formatarQuando(new Date('2026-08-21T20:30:00.000Z'), agora)).toBe('hoje às 17h30');
+    expect(formatarQuando(new Date('2026-08-22T12:00:00.000Z'), agora)).toBe('amanhã às 9h');
+  });
+
+  it('data distante leva dia da semana e dia/mês — "quinta" sozinho é qualquer quinta', () => {
+    expect(formatarQuando(new Date('2026-08-27T17:00:00.000Z'), agora)).toBe(
+      'quinta, 27/08, às 14h'
+    );
+    expect(formatarQuando(new Date('2026-09-05T13:15:00.000Z'), agora)).toBe(
+      'sábado, 05/09, às 10h15'
+    );
+  });
+
+  it('usa o fuso de São Paulo, não UTC', () => {
+    // 02:30Z de sábado ainda é sexta, 23h30, pra quem está no Brasil.
+    expect(formatarQuando(new Date('2026-08-22T02:30:00.000Z'), agora)).toBe('hoje às 23h30');
+  });
+});
+
+describe('dedup com reunião marcada', () => {
+  const deps = (db: Db, recall: RecallClient) => ({ db, recall, botName: 'chatPro (gravando)' });
+  const pedido = (joinAt: Date | null, sessionId: string = SESSION) => ({
+    meetingUrl: MEET_URL,
+    sessionId,
+    origem: 'api' as const,
+    joinAt,
+  });
+
+  it('mesma sala, horários diferentes: são duas reuniões, cada uma com seu bot', async () => {
+    const db = new Db(':memory:');
+    const { recall, bots } = montarRecall();
+    const cedo = new Date(Date.now() + 2 * 60 * MINUTO);
+    const tarde = new Date(Date.now() + 4 * 60 * MINUTO);
+
+    const primeira = await criarReuniao(deps(db, recall), pedido(cedo));
+    const segunda = await criarReuniao(deps(db, recall), pedido(tarde));
+
+    expect(primeira.ok && primeira.criada).toBe(true);
+    expect(segunda.ok && segunda.criada).toBe(true);
+    expect(bots).toHaveLength(2);
+    expect(bots[0]?.join_at).toBe(cedo.toISOString());
+    expect(bots[1]?.join_at).toBe(tarde.toISOString());
+
+    // E a primeira segue de pé: ela tem hora marcada e ainda vai acontecer.
+    const antiga = db.getMeeting((primeira as { meeting: { id: string } }).meeting.id);
+    expect(antiga?.status).toBe('created');
+  });
+
+  it('duplo clique no MESMO horário continua criando um bot só', async () => {
+    const db = new Db(':memory:');
+    const { recall, bots } = montarRecall();
+    const quando = new Date(Date.now() + 2 * 60 * MINUTO);
+
+    await criarReuniao(deps(db, recall), pedido(quando));
+    const repetido = await criarReuniao(deps(db, recall), pedido(new Date(quando.getTime() + 1000)));
+
+    expect(repetido.ok && repetido.criada).toBe(false);
+    expect(bots).toHaveLength(1);
+  });
+
+  it('o eco do link no webhook do chatPro não põe bot na sala antes da hora', async () => {
+    // A rota manda o link pro cliente; o chatPro devolve esse envio como
+    // `sent_message` e o webhook chega aqui como um pedido pra AGORA. Criar bot
+    // nesse eco seria um robô numa sala vazia, cobrado por hora.
+    const db = new Db(':memory:');
+    const { recall, bots } = montarRecall();
+
+    await criarReuniao(deps(db, recall), pedido(new Date(Date.now() + 3 * 60 * MINUTO)));
+    const eco = await criarReuniao(deps(db, recall), {
+      ...pedido(null),
+      origem: 'chatpro-webhook' as const,
+    });
+
+    expect(eco.ok && eco.criada).toBe(false);
+    expect(bots).toHaveLength(1);
+  });
+
+  it('outra conversa marcando outro horário não derruba o bot da primeira', async () => {
+    const db = new Db(':memory:');
+    const { recall, bots } = montarRecall();
+
+    const primeira = await criarReuniao(
+      deps(db, recall),
+      pedido(new Date(Date.now() + 2 * 60 * MINUTO))
+    );
+    await criarReuniao(
+      deps(db, recall),
+      pedido(new Date(Date.now() + 5 * 60 * MINUTO), OUTRA_SESSION)
+    );
+
+    expect(bots).toHaveLength(2);
+    // Sem leave_call: o bot da outra conversa tem hora própria e continua.
+    const antiga = db.getMeeting((primeira as { meeting: { id: string } }).meeting.id);
+    expect(antiga?.status).toBe('created');
+  });
+
+  it('mesma sala, MESMO horário, conversa diferente: o bot anterior sai', async () => {
+    // Comportamento de sempre — dois bots na mesma call misturariam a
+    // transcrição de dois clientes.
+    const db = new Db(':memory:');
+    const { recall, bots } = montarRecall();
+    const quando = new Date(Date.now() + 2 * 60 * MINUTO);
+
+    const primeira = await criarReuniao(deps(db, recall), pedido(quando));
+    await criarReuniao(deps(db, recall), pedido(quando, OUTRA_SESSION));
+
+    expect(bots).toHaveLength(2);
+    const antiga = db.getMeeting((primeira as { meeting: { id: string } }).meeting.id);
+    expect(antiga?.status).toBe('ended');
+  });
+
+  it('o horário marcado sobrevive ao timeout do Recall', async () => {
+    // Se a nota se perdesse, o retry acharia que é outro horário e poria um
+    // segundo bot na mesma sala.
+    const db = new Db(':memory:');
+    const quando = new Date(Date.now() + 2 * 60 * MINUTO);
+    let tentativas = 0;
+    const fetchImpl = ((_u: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      tentativas += 1;
+      // Nunca responde: quem termina a chamada é o timeout do próprio cliente.
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('abortado')));
+      });
+    }) as typeof fetch;
+    const recall = new RecallClient({ apiKey: 'k', fetchImpl, timeoutMs: 5 });
+
+    const primeira = await criarReuniao(deps(db, recall), pedido(quando));
+    expect(primeira.ok).toBe(false);
+
+    const retry = await criarReuniao(deps(db, recall), pedido(quando));
+    expect(retry.ok && retry.criada).toBe(false);
+    expect(tentativas).toBe(1);
   });
 });
 

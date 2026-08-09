@@ -1,0 +1,18 @@
+{
+  // Checagem de TIPOS dos testes. O tsconfig.json principal existe pra COMPILAR
+  // e por isso tem `rootDir: src` — o que deixa a pasta test/ inteira fora do
+  // `tsc --noEmit`. Como o vitest só transpila (não tipa), testes podiam
+  // asserir contra assinaturas que já morreram no src e ninguém via.
+  //
+  // Foi ponto cego real: uma revisão achou 10 erros de tipo em 5 arquivos de
+  // teste, todos ancorados em contratos antigos. Neste projeto, contrato
+  // desalinhado já causou 400 em massa duas vezes.
+  //
+  // Rode junto com o build:  npm run typecheck
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src", "test"]
+}

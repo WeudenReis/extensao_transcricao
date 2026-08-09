@@ -69,6 +69,7 @@ describe('RecallClient — criação do bot', () => {
     const bot = await client.createBot({
       meetingUrl: MEETING_URL,
       botName: 'chatPro (gravando)',
+      meetingId: 'reuniao-teste',
       sessionId: SESSION_ID,
     });
 
@@ -119,7 +120,7 @@ describe('RecallClient — criação do bot', () => {
     const { fetchImpl, chamadas } = fetchGravador([jsonResponse({ id: BOT_ID })]);
     const client = new RecallClient({ apiKey: API_KEY, region: 'eu-central-1', fetchImpl });
 
-    await client.createBot({ meetingUrl: MEETING_URL, botName: 'bot' });
+    await client.createBot({ meetingUrl: MEETING_URL, botName: 'bot', meetingId: 'r1' });
 
     expect(chamadas[0]?.url).toBe('https://eu-central-1.recall.ai/api/v1/bot');
   });
@@ -212,7 +213,7 @@ describe('RecallClient — erros', () => {
     const client = new RecallClient({ apiKey: API_KEY, fetchImpl });
 
     const err = await client
-      .createBot({ meetingUrl: MEETING_URL, botName: 'bot' })
+      .createBot({ meetingUrl: MEETING_URL, botName: 'bot', meetingId: 'r1' })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(RecallApiError);

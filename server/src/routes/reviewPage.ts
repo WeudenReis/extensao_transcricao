@@ -8,6 +8,12 @@
  *   - "Reuniões (bot)"      → /api/meetings (bot do Recall.ai) — aba padrão
  *   - "Capturas (extensão)" → /api/captures (fluxo antigo, intacto)
  *
+ * A aba de reuniões abre com a faixa de supervisão (indicadores dos últimos 7
+ * dias, gráfico por dia e busca nas transcrições). Ela consome
+ * /api/meetings/resumo-supervisao e /api/meetings/busca; se qualquer uma das
+ * duas falhar ou nem existir, a faixa mostra um aviso discreto e o resto da
+ * tela continua funcionando.
+ *
  * ATENÇÃO: o arquivo inteiro é um template literal. NUNCA usar interpolação
  * (cifrão + chaves) dentro do HTML/JS embutido — o TypeScript interpola e
  * quebra o build. Use concatenação de strings. Barras invertidas precisam ser
@@ -21,36 +27,70 @@ export function reviewPageHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>chatPro — Revisão de transcrições</title>
 <style>
+  /*
+   * Tema escuro é o padrão da identidade chatPro; o claro entra por
+   * prefers-color-scheme. Toda cor mora num token justamente pra existir
+   * um único lugar onde os dois temas são decididos.
+   */
   :root {
     --verde: #25D066; --verde-hover: #1BAD53; --neon: #24FF72;
     --bg: #1d2125; --surface: #22272b; --card: #2c333a;
     --cinza1: #D1D1D5; --cinza2: #E6E5E8; --texto: #F1F0F2;
     --vermelho: #ff6b6b; --azul: #62C6FF; --ambar: #ffc400;
+
+    /* Variantes legíveis como TEXTO (as de cima são de preenchimento). */
+    --verde-txt: #25D066; --vermelho-txt: #ff6b6b;
+    --azul-txt: #62C6FF; --ambar-txt: #ffc400;
+
+    --borda-forte: #000; --borda-suave: #1a1e22; --fundo-tenue: #1a1e22;
+    --borda-campo: #3a424a; --borda-perigo: #5a3336;
+    --placeholder: #6b7480; --sobre-verde: #05130a;
+    --sombra: rgba(0,0,0,.45);
+
+    --p0: #24FF72; --p1: #62C6FF; --p2: #FFC46B;
+    --p3: #FF8FB1; --p4: #C9A6FF; --p5: #7CE7D2;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #F5F7F8; --surface: #FFFFFF; --card: #EDF0F3;
+      --cinza1: #5A636E; --cinza2: #3B434C; --texto: #14181C;
+
+      --verde-txt: #0E7A38; --vermelho-txt: #C0392B;
+      --azul-txt: #0B6FA4; --ambar-txt: #8A6100;
+
+      --borda-forte: #D5DAE0; --borda-suave: #E4E7EB; --fundo-tenue: #E7EBEF;
+      --borda-campo: #C2C9D1; --borda-perigo: #E3A9AC;
+      --placeholder: #8A929C; --sobre-verde: #05130a;
+      --sombra: rgba(20,24,28,.18);
+
+      --p0: #1B7F3B; --p1: #0B6FA4; --p2: #8A5A00;
+      --p3: #B03060; --p4: #6A3FBF; --p5: #0E6F63;
+    }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--texto);
     font-family: 'Space Grotesk', system-ui, sans-serif;
     height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-  header { background: var(--surface); padding: 18px 24px; border-bottom: 1px solid #000;
+  header { background: var(--surface); padding: 18px 24px; border-bottom: 1px solid var(--borda-forte);
     display: flex; align-items: baseline; gap: 12px; flex: none; }
   header .logo { font-family: 'Paytone One', system-ui, sans-serif;
-    font-weight: 800; font-size: 22px; color: var(--verde); letter-spacing: .3px; }
+    font-weight: 800; font-size: 22px; color: var(--verde-txt); letter-spacing: .3px; }
   header .sub { color: var(--cinza1); font-size: 14px; }
 
   /* Abas */
   .abas { flex: none; display: flex; gap: 4px; background: var(--surface);
-    padding: 0 16px; border-bottom: 1px solid #000; }
+    padding: 0 16px; border-bottom: 1px solid var(--borda-forte); }
   .abas button { background: transparent; border: none; border-bottom: 3px solid transparent;
     color: var(--cinza1); font: inherit; font-weight: 700; font-size: 14px;
     padding: 12px 14px; cursor: pointer; }
   .abas button:hover { color: var(--texto); }
-  .abas button[aria-selected="true"] { color: var(--verde); border-bottom-color: var(--verde); }
+  .abas button[aria-selected="true"] { color: var(--verde-txt); border-bottom-color: var(--verde); }
   .painel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .painel.oculto { display: none; }
 
   .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 0; flex: 1; min-height: 0; }
-  .list { border-right: 1px solid #000; overflow-y: auto; background: var(--surface); }
-  .item { padding: 14px 18px; border-bottom: 1px solid #1a1e22; cursor: pointer; }
+  .list { border-right: 1px solid var(--borda-forte); overflow-y: auto; background: var(--surface); }
+  .item { padding: 14px 18px; border-bottom: 1px solid var(--borda-suave); cursor: pointer; }
   .item:hover { background: var(--card); }
   .item.sel { background: var(--card); border-left: 3px solid var(--verde); }
   .item .code { font-weight: 700; color: var(--texto); }
@@ -58,63 +98,63 @@ export function reviewPageHtml(): string {
   .item .meta { font-size: 12px; color: var(--cinza1); margin-top: 4px; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
     font-weight: 700; }
-  .badge.ok { background: rgba(37,208,102,.15); color: var(--verde); }
-  .badge.warn { background: rgba(255,196,0,.15); color: var(--ambar); }
-  .badge.mut { background: #1a1e22; color: var(--cinza1); }
-  .badge.info { background: rgba(98,198,255,.15); color: var(--azul); }
-  .badge.err { background: rgba(255,107,107,.18); color: var(--vermelho); }
-  .badge.rec { background: rgba(255,107,107,.18); color: var(--vermelho);
+  .badge.ok { background: rgba(37,208,102,.15); color: var(--verde-txt); }
+  .badge.warn { background: rgba(255,196,0,.18); color: var(--ambar-txt); }
+  .badge.mut { background: var(--fundo-tenue); color: var(--cinza1); }
+  .badge.info { background: rgba(98,198,255,.18); color: var(--azul-txt); }
+  .badge.err { background: rgba(255,107,107,.18); color: var(--vermelho-txt); }
+  .badge.rec { background: rgba(255,107,107,.18); color: var(--vermelho-txt);
     animation: pulsa 1.4s ease-in-out infinite; }
   @keyframes pulsa { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
   @media (prefers-reduced-motion: reduce) { .badge.rec { animation: none; } }
   .detail { overflow-y: auto; padding: 24px 28px; }
   .empty { color: var(--cinza1); margin-top: 40px; text-align: center; }
   .cov { margin: 8px 0 18px; }
-  .bar { height: 8px; background: #1a1e22; border-radius: 999px; overflow: hidden; }
+  .bar { height: 8px; background: var(--fundo-tenue); border-radius: 999px; overflow: hidden; }
   .bar > div { height: 100%; background: var(--verde); }
-  .gap { color: var(--ambar); font-size: 13px; margin: 3px 0; }
+  .gap { color: var(--ambar-txt); font-size: 13px; margin: 3px 0; }
   .players { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0 20px; }
   .players div { font-size: 12px; color: var(--cinza1); }
   audio { display: block; margin-top: 4px; }
   .line { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 8px 0;
-    border-bottom: 1px solid #1a1e22; }
+    border-bottom: 1px solid var(--borda-suave); }
   /* A coluna de quem falou é mais larga nas reuniões: nome real + "anfitrião". */
   .line.reuniao { grid-template-columns: 118px 1fr; }
   .line.reuniao .who { word-break: break-word; }
   .line.reuniao .t { font-weight: 400; }
   .who { font-weight: 700; font-size: 13px; }
-  .who.at { color: var(--verde); }
-  .who.cl { color: var(--neon); }
+  .who.at { color: var(--verde-txt); }
+  .who.cl { color: var(--p0); }
   .who.ot { color: var(--cinza1); }
   .t { font-size: 12px; color: var(--cinza1); }
   .txt { line-height: 1.5; }
-  .btn { background: var(--verde); color: #05130a; border: none; padding: 11px 20px;
+  .btn { background: var(--verde); color: var(--sobre-verde); border: none; padding: 11px 20px;
     border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer; }
   .btn:hover { background: var(--verde-hover); }
   .btn:disabled { opacity: .5; cursor: default; }
-  .btn.ghost { background: transparent; color: var(--cinza1); border: 1px solid #3a424a; }
+  .btn.ghost { background: transparent; color: var(--cinza1); border: 1px solid var(--borda-campo); }
   .btn.ghost:hover { background: var(--card); color: var(--texto); }
-  .btn.perigo { background: transparent; color: var(--vermelho); border: 1px solid #5a3336; }
-  .btn.perigo:hover { background: rgba(255,107,107,.12); color: var(--vermelho); }
+  .btn.perigo { background: transparent; color: var(--vermelho-txt); border: 1px solid var(--borda-perigo); }
+  .btn.perigo:hover { background: rgba(255,107,107,.12); color: var(--vermelho-txt); }
   .actions { margin: 18px 0 8px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .note { font-size: 12px; color: var(--cinza1); }
   h2 { margin: 0 0 4px; word-break: break-word; }
 
   /* Formulário de convocação do bot */
-  .forma { flex: none; background: var(--surface); border-bottom: 1px solid #000;
+  .forma { flex: none; background: var(--surface); border-bottom: 1px solid var(--borda-forte);
     padding: 16px 20px; }
   .forma .linha { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-  .forma input { background: var(--bg); border: 1px solid #3a424a; border-radius: 8px;
+  .forma input { background: var(--bg); border: 1px solid var(--borda-campo); border-radius: 8px;
     color: var(--texto); font: inherit; font-size: 14px; padding: 10px 12px; }
-  .forma input::placeholder { color: #6b7480; }
+  .forma input::placeholder { color: var(--placeholder); }
   .forma input:focus { outline: none; border-color: var(--verde);
     box-shadow: 0 0 0 2px rgba(37,208,102,.25); }
   .forma input.url { flex: 2 1 300px; }
   .forma input.sessao { flex: 1 1 220px; }
   .aviso { font-size: 12px; color: var(--cinza1); margin-top: 8px; }
   .msg { font-size: 13px; margin-top: 10px; }
-  .msg.ok { color: var(--verde); }
-  .msg.erro { color: var(--vermelho); }
+  .msg.ok { color: var(--verde-txt); }
+  .msg.erro { color: var(--vermelho-txt); }
 
   /* Participantes e cores estáveis por pessoa */
   .parts { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 2px; }
@@ -122,21 +162,95 @@ export function reviewPageHtml(): string {
     font-size: 12px; font-weight: 700; }
   .chip .host, .who .host { color: var(--cinza1); font-weight: 400; font-size: 11px; }
   .chip .host { margin-left: 6px; }
-  .p0 { color: var(--neon); }
-  .p1 { color: var(--azul); }
-  .p2 { color: #FFC46B; }
-  .p3 { color: #FF8FB1; }
-  .p4 { color: #C9A6FF; }
-  .p5 { color: #7CE7D2; }
+  .p0 { color: var(--p0); }
+  .p1 { color: var(--p1); }
+  .p2 { color: var(--p2); }
+  .p3 { color: var(--p3); }
+  .p4 { color: var(--p4); }
+  .p5 { color: var(--p5); }
   .anfitriao { box-shadow: inset 2px 0 0 var(--verde); padding-left: 8px; }
+
+  /* ─── Supervisão: indicadores, gráfico por dia e busca ─── */
+  .super { flex: none; background: var(--bg); border-bottom: 1px solid var(--borda-forte);
+    padding: 14px 20px 16px; }
+  .super-cab { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .super-cab h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--cinza1); }
+  .btn-min { background: transparent; border: none; color: var(--cinza1); font: inherit;
+    font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
+  .btn-min:hover { background: var(--card); color: var(--texto); }
+  .super-corpo { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px;
+    align-items: start; margin-top: 12px; }
+  .super-corpo.oculto { display: none; }
+  .super-aviso { font-size: 12px; color: var(--cinza1); margin: 0; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .kpi { background: var(--card); border: 1px solid transparent; border-radius: 10px;
+    padding: 9px 12px; }
+  .kpi .n { font-size: 24px; font-weight: 800; line-height: 1.1; }
+  .kpi .r { font-size: 11px; color: var(--cinza1); margin-top: 2px; line-height: 1.3; }
+  .kpi.bom .n { color: var(--verde-txt); }
+  .kpi.atencao .n { color: var(--ambar-txt); }
+  /* Reunião sem gravação é o buraco que a ferramenta existe pra fechar: grita. */
+  .kpi.destaque { border-color: var(--vermelho-txt); background: rgba(255,107,107,.12); }
+  .kpi.destaque .n { color: var(--vermelho-txt); }
+  .kpi.destaque .r { color: var(--vermelho-txt); font-weight: 700; }
+  #por-atendente { margin-top: 8px; }
+
+  .grafico { margin-top: 10px; }
+  .grafico svg { display: block; width: 100%; height: 132px; }
+  .g-ok { fill: var(--verde); }
+  .g-falta { fill: var(--vermelho); }
+  .g-vazio { fill: var(--fundo-tenue); }
+  .g-eixo { stroke: var(--borda-suave); stroke-width: 1; }
+  .g-rot { fill: var(--cinza1); font-size: 10px; font-family: inherit; }
+  .g-num { font-weight: 700; }
+  .g-legenda { display: flex; gap: 16px; margin-top: 2px; font-size: 11px; color: var(--cinza1); }
+  .g-legenda .pt { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    margin-right: 5px; }
+  .g-legenda .pt.ok { background: var(--verde); }
+  .g-legenda .pt.falta { background: var(--vermelho); }
+
+  .busca { position: relative; }
+  .busca-rot { display: block; font-size: 12px; font-weight: 700; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--cinza1); margin-bottom: 6px; }
+  .busca input { width: 100%; background: var(--surface); border: 1px solid var(--borda-campo);
+    border-radius: 8px; color: var(--texto); font: inherit; font-size: 14px; padding: 10px 12px; }
+  .busca input::placeholder { color: var(--placeholder); }
+  .busca input:focus { outline: none; border-color: var(--verde);
+    box-shadow: 0 0 0 2px rgba(37,208,102,.25); }
+  .busca-status { font-size: 11px; color: var(--cinza1); margin-top: 6px; min-height: 14px; }
+  .resultados { position: absolute; z-index: 30; top: 100%; left: 0; right: 0;
+    max-height: 320px; overflow-y: auto; background: var(--surface);
+    border: 1px solid var(--borda-campo); border-radius: 10px;
+    box-shadow: 0 14px 30px var(--sombra); }
+  .resultados.oculto { display: none; }
+  .res { display: block; width: 100%; text-align: left; background: transparent; border: none;
+    border-bottom: 1px solid var(--borda-suave); color: var(--texto); font: inherit;
+    padding: 10px 12px; cursor: pointer; }
+  .res:last-child { border-bottom: none; }
+  .res:hover, .res:focus { background: var(--card); outline: none; }
+  .res .rc { font-size: 12px; font-weight: 700; color: var(--verde-txt); word-break: break-word; }
+  .res .rq { font-size: 11px; color: var(--cinza1); margin-top: 1px; word-break: break-word; }
+  .res .rt { font-size: 13px; line-height: 1.4; margin-top: 4px; }
+  .realce { background: rgba(37,208,102,.30); color: inherit; border-radius: 3px; padding: 0 2px; }
+
+  /* Tela baixa: a faixa não pode espremer a lista de reuniões a zero. */
+  @media (max-height: 760px) {
+    .grafico svg { height: 96px; }
+    .kpi .n { font-size: 19px; }
+  }
 
   @media (max-width: 860px) {
     body { height: auto; overflow: auto; }
     header { flex-wrap: wrap; gap: 4px; }
     .wrap { grid-template-columns: 1fr; }
-    .list { border-right: none; border-bottom: 1px solid #000; max-height: 42vh; }
+    .list { border-right: none; border-bottom: 1px solid var(--borda-forte); max-height: 42vh; }
     .detail { padding: 18px 16px; }
     .line { grid-template-columns: 1fr; gap: 2px; }
+    .super { padding: 12px 16px 14px; }
+    .super-corpo { grid-template-columns: 1fr; gap: 14px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -154,6 +268,29 @@ export function reviewPageHtml(): string {
 </nav>
 
 <section id="painel-reunioes" class="painel" role="tabpanel" aria-labelledby="aba-reunioes">
+  <div class="super">
+    <div class="super-cab">
+      <h3>Supervisão — últimos 7 dias</h3>
+      <button id="super-toggle" class="btn-min" type="button"
+        aria-controls="super-corpo" aria-expanded="true">ocultar</button>
+      <span id="super-aviso" class="super-aviso" role="status" aria-live="polite"></span>
+    </div>
+    <div id="super-corpo" class="super-corpo">
+      <div>
+        <div id="kpis" class="kpis"></div>
+        <p id="por-atendente" class="super-aviso"></p>
+        <div id="grafico" class="grafico"></div>
+      </div>
+      <div class="busca">
+        <label class="busca-rot" for="busca-campo">Buscar nas transcrições</label>
+        <input id="busca-campo" type="search" autocomplete="off" spellcheck="false"
+          placeholder="palavra, nome, código do Meet…">
+        <div id="busca-status" class="busca-status" role="status" aria-live="polite"></div>
+        <div id="busca-resultados" class="resultados oculto"
+          aria-label="Resultados da busca"></div>
+      </div>
+    </div>
+  </div>
   <div class="forma">
     <div class="linha">
       <input id="meet-url" class="url" type="text" autocomplete="off" spellcheck="false"
@@ -239,8 +376,12 @@ export function reviewPageHtml(): string {
     atualizarAbaAtiva();
   }
   function atualizarAbaAtiva() {
-    if (abaAtiva === 'capturas') loadList();
-    else carregarReunioes();
+    if (abaAtiva === 'capturas') {
+      loadList();
+      return;
+    }
+    carregarReunioes();
+    carregarResumo(false);
   }
   for (const aba of abas) {
     aba.botao.addEventListener('click', () => ativarAba(aba.nome));
@@ -882,6 +1023,389 @@ export function reviewPageHtml(): string {
     return 'A transcrição aparece aqui quando a reunião terminar.';
   }
 
+  // ─── Supervisão: indicadores, gráfico por dia e busca ─────────────────────
+
+  const superCorpoEl = document.getElementById('super-corpo');
+  const superToggleEl = document.getElementById('super-toggle');
+  const superAvisoEl = document.getElementById('super-aviso');
+  const kpisEl = document.getElementById('kpis');
+  const porAtendenteEl = document.getElementById('por-atendente');
+  const graficoEl = document.getElementById('grafico');
+  const buscaEl = document.getElementById('busca-campo');
+  const buscaStatusEl = document.getElementById('busca-status');
+  const resultadosEl = document.getElementById('busca-resultados');
+
+  const DIAS_SUPERVISAO = 7;
+  // A lista de reuniões atualiza a cada 10s; o resumo é caro e muda devagar.
+  const INTERVALO_RESUMO_MS = 60000;
+  const ESPERA_BUSCA_MS = 350;
+  const MIN_BUSCA = 2;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function svgEl(tag, atributos) {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const chave of Object.keys(atributos || {})) {
+      e.setAttribute(chave, String(atributos[chave]));
+    }
+    return e;
+  }
+
+  /** Aceita envelope ({resumo:{...}}) ou objeto cru, camelCase ou snake_case. */
+  function normalizarResumo(data) {
+    const bruto = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+    const r = (bruto.resumo && typeof bruto.resumo === 'object') ? bruto.resumo : bruto;
+
+    const porDia = [];
+    const dias = campo(r, 'porDia', 'por_dia');
+    if (Array.isArray(dias)) {
+      for (const d of dias) {
+        if (!d || typeof d !== 'object') continue;
+        porDia.push({
+          dia: textoOuVazio(d.dia || d.data || d.day),
+          total: numero(d.total),
+          gravadas: numero(d.gravadas),
+        });
+      }
+    }
+
+    const porAtendente = [];
+    const atendentes = campo(r, 'porAtendente', 'por_atendente');
+    if (Array.isArray(atendentes)) {
+      for (const a of atendentes) {
+        if (!a || typeof a !== 'object') continue;
+        const nome = textoOuVazio(a.nome || a.name);
+        if (!nome) continue;
+        porAtendente.push({ nome: nome, total: numero(a.total) });
+      }
+    }
+
+    return {
+      total: numero(r.total),
+      gravadas: numero(r.gravadas),
+      semGravacao: numero(campo(r, 'semGravacao', 'sem_gravacao')),
+      semTranscricao: numero(campo(r, 'semTranscricao', 'sem_transcricao')),
+      porDia: porDia,
+      porAtendente: porAtendente,
+    };
+  }
+
+  let resumoUltimaBusca = 0;
+  let resumoAssinatura = '';
+  let resumoCarregado = false;
+
+  async function carregarResumo(forcar) {
+    const agora = Date.now();
+    if (!forcar && agora - resumoUltimaBusca < INTERVALO_RESUMO_MS) return;
+    resumoUltimaBusca = agora;
+
+    let data;
+    try {
+      const res = await fetch('/api/meetings/resumo-supervisao?dias=' + DIAS_SUPERVISAO);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (_) {
+      // A rota pode nem existir ainda: avisa baixinho, sem derrubar a aba.
+      superAvisoEl.textContent = 'Indicadores indisponíveis no momento.';
+      if (!resumoCarregado) {
+        kpisEl.replaceChildren();
+        graficoEl.replaceChildren();
+        porAtendenteEl.textContent = '';
+      }
+      return;
+    }
+
+    superAvisoEl.textContent = '';
+    resumoCarregado = true;
+    const resumo = normalizarResumo(data);
+    // Redesenhar só quando muda evita a faixa piscar a cada atualização.
+    const assinatura = JSON.stringify(resumo);
+    if (assinatura === resumoAssinatura) return;
+    resumoAssinatura = assinatura;
+    desenharKpis(resumo);
+    desenharGrafico(resumo.porDia);
+  }
+
+  function cartao(valor, rotulo, classe) {
+    const caixa = el('div', 'kpi' + (classe ? ' ' + classe : ''));
+    caixa.appendChild(el('div', 'n', String(valor)));
+    caixa.appendChild(el('div', 'r', rotulo));
+    return caixa;
+  }
+
+  function desenharKpis(r) {
+    kpisEl.replaceChildren();
+    kpisEl.appendChild(cartao(r.total, 'reuniões nos últimos 7 dias'));
+    kpisEl.appendChild(cartao(r.gravadas, 'gravadas pelo bot', r.gravadas > 0 ? 'bom' : ''));
+    kpisEl.appendChild(cartao(r.semGravacao, 'SEM gravação',
+      r.semGravacao > 0 ? 'destaque' : ''));
+    kpisEl.appendChild(cartao(r.semTranscricao, 'sem transcrição',
+      r.semTranscricao > 0 ? 'atencao' : ''));
+
+    if (!r.porAtendente.length) {
+      porAtendenteEl.textContent = '';
+      return;
+    }
+    const maiores = r.porAtendente.slice().sort((a, b) => b.total - a.total).slice(0, 4);
+    const partes = [];
+    for (const a of maiores) partes.push(a.nome + ' ' + a.total);
+    porAtendenteEl.textContent = 'Por atendente: ' + partes.join(' · ');
+  }
+
+  /** 'AAAA-MM-DD' vira 'DD/MM' sem passar por Date — fuso não pode virar o dia. */
+  function rotuloDia(dia) {
+    const partes = String(dia || '').split('-');
+    if (partes.length === 3) return partes[2] + '/' + partes[1];
+    return dia || '—';
+  }
+
+  function desenharGrafico(porDia) {
+    graficoEl.replaceChildren();
+    if (!porDia.length) {
+      graficoEl.appendChild(el('p', 'super-aviso', 'Ainda não há reuniões nestes 7 dias.'));
+      return;
+    }
+
+    const COLUNA = 60;
+    const BARRA = 26;
+    const ALTURA = 132;
+    const BASE = 104;
+    const TOPO = 22;
+    const UTIL = BASE - TOPO;
+    const largura = COLUNA * porDia.length;
+
+    let maior = 1;
+    let somaTotal = 0;
+    let somaFalta = 0;
+    for (const d of porDia) {
+      if (d.total > maior) maior = d.total;
+      somaTotal += d.total;
+      somaFalta += Math.max(d.total - Math.min(d.gravadas, d.total), 0);
+    }
+
+    const svg = svgEl('svg', {
+      viewBox: '0 0 ' + largura + ' ' + ALTURA,
+      preserveAspectRatio: 'xMidYMid meet',
+      role: 'img',
+    });
+    svg.setAttribute('aria-label',
+      'Reuniões por dia nos últimos ' + porDia.length + ' dias: ' + somaTotal +
+      ' no total, ' + somaFalta + ' sem gravação.');
+    svg.appendChild(svgEl('line',
+      { x1: 0, y1: BASE + 0.5, x2: largura, y2: BASE + 0.5, class: 'g-eixo' }));
+
+    for (let i = 0; i < porDia.length; i++) {
+      const d = porDia[i];
+      const gravadas = Math.min(Math.max(d.gravadas, 0), Math.max(d.total, 0));
+      const faltando = Math.max(d.total - gravadas, 0);
+      const centro = i * COLUNA + COLUNA / 2;
+      const x = centro - BARRA / 2;
+      const alturaTotal = d.total > 0 ? Math.max((d.total / maior) * UTIL, 4) : 0;
+      const alturaOk = d.total > 0 ? (gravadas / d.total) * alturaTotal : 0;
+      const alturaFalta = alturaTotal - alturaOk;
+
+      const grupo = svgEl('g', {});
+      const titulo = svgEl('title', {});
+      titulo.textContent = rotuloDia(d.dia) + ': ' + d.total + ' reunião(ões), ' +
+        gravadas + ' gravada(s), ' + faltando + ' sem gravação';
+      grupo.appendChild(titulo);
+
+      if (alturaTotal <= 0) {
+        grupo.appendChild(svgEl('rect',
+          { x: x, y: BASE - 3, width: BARRA, height: 3, rx: 1.5, class: 'g-vazio' }));
+      } else {
+        if (alturaFalta > 0) {
+          grupo.appendChild(svgEl('rect',
+            { x: x, y: BASE - alturaTotal, width: BARRA, height: alturaFalta, rx: 3,
+              class: 'g-falta' }));
+        }
+        if (alturaOk > 0) {
+          grupo.appendChild(svgEl('rect',
+            { x: x, y: BASE - alturaOk, width: BARRA, height: alturaOk, rx: 3,
+              class: 'g-ok' }));
+        }
+      }
+
+      const numeroTexto = svgEl('text',
+        { x: centro, y: BASE - alturaTotal - 6, 'text-anchor': 'middle', class: 'g-rot g-num' });
+      numeroTexto.textContent = String(d.total);
+      grupo.appendChild(numeroTexto);
+
+      const rotulo = svgEl('text',
+        { x: centro, y: BASE + 17, 'text-anchor': 'middle', class: 'g-rot' });
+      rotulo.textContent = rotuloDia(d.dia);
+      grupo.appendChild(rotulo);
+
+      svg.appendChild(grupo);
+    }
+
+    graficoEl.appendChild(svg);
+
+    const legenda = el('div', 'g-legenda');
+    for (const par of [['ok', 'gravadas'], ['falta', 'sem gravação']]) {
+      const item = el('span', null);
+      item.appendChild(el('span', 'pt ' + par[0]));
+      item.appendChild(document.createTextNode(par[1]));
+      legenda.appendChild(item);
+    }
+    graficoEl.appendChild(legenda);
+  }
+
+  // ── Busca nas transcrições ──
+
+  function normalizarResultados(data) {
+    let bruto = null;
+    if (Array.isArray(data)) bruto = data;
+    else if (data && Array.isArray(data.resultados)) bruto = data.resultados;
+    else if (data && Array.isArray(data.results)) bruto = data.results;
+    if (!bruto) return [];
+    const saida = [];
+    for (const r of bruto) {
+      if (!r || typeof r !== 'object') continue;
+      saida.push({
+        meetingId: textoOuVazio(campo(r, 'meetingId', 'meeting_id')),
+        sessionId: textoOuVazio(campo(r, 'sessionId', 'session_id')),
+        meetingCode: textoOuVazio(campo(r, 'meetingCode', 'meeting_code')),
+        quando: textoOuVazio(r.quando || campo(r, 'startedAt', 'started_at')),
+        trecho: textoOuVazio(r.trecho || r.texto || r.text),
+      });
+    }
+    return saida;
+  }
+
+  /** Realça o termo sem HTML cru: pedaços de texto + <mark> montados no DOM. */
+  function marcarTrecho(texto, termo) {
+    const frag = document.createDocumentFragment();
+    const minusculo = texto.toLowerCase();
+    const alvo = termo.toLowerCase();
+    let i = 0;
+    while (alvo && i < texto.length) {
+      const achou = minusculo.indexOf(alvo, i);
+      if (achou < 0) break;
+      if (achou > i) frag.appendChild(document.createTextNode(texto.slice(i, achou)));
+      frag.appendChild(el('mark', 'realce', texto.slice(achou, achou + alvo.length)));
+      i = achou + alvo.length;
+    }
+    if (i < texto.length) frag.appendChild(document.createTextNode(texto.slice(i)));
+    return frag;
+  }
+
+  function fecharResultados() {
+    resultadosEl.classList.add('oculto');
+    resultadosEl.replaceChildren();
+  }
+
+  function desenharResultados(itens, termo) {
+    resultadosEl.replaceChildren();
+    if (!itens.length) {
+      buscaStatusEl.textContent = 'Nada encontrado para "' + termo + '".';
+      resultadosEl.classList.add('oculto');
+      return;
+    }
+    buscaStatusEl.textContent = itens.length === 1
+      ? '1 trecho encontrado'
+      : itens.length + ' trechos encontrados';
+
+    for (const r of itens) {
+      const botao = el('button', 'res');
+      botao.type = 'button';
+      botao.appendChild(el('div', 'rc', r.meetingCode || '(sem código)'));
+      const detalhe = fmtTime(r.quando) + (r.sessionId ? ' · sessão ' + r.sessionId : '');
+      botao.appendChild(el('div', 'rq', detalhe));
+      const trecho = el('div', 'rt');
+      trecho.appendChild(marcarTrecho(r.trecho, termo));
+      botao.appendChild(trecho);
+      if (r.meetingId) {
+        botao.addEventListener('click', () => {
+          fecharResultados();
+          ativarAba('reunioes');
+          selecionarReuniao(r.meetingId);
+        });
+      }
+      resultadosEl.appendChild(botao);
+    }
+    resultadosEl.classList.remove('oculto');
+  }
+
+  let buscaSeq = 0;
+  let buscaTimer = 0;
+
+  async function buscar(bruto) {
+    const termo = String(bruto || '').trim();
+    if (termo.length < MIN_BUSCA) {
+      buscaSeq++;
+      fecharResultados();
+      buscaStatusEl.textContent = termo.length
+        ? 'Digite ao menos ' + MIN_BUSCA + ' caracteres.'
+        : '';
+      return;
+    }
+
+    const seq = ++buscaSeq;
+    buscaStatusEl.textContent = 'Procurando…';
+    let data;
+    try {
+      const res = await fetch('/api/meetings/busca?q=' + encodeURIComponent(termo));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (_) {
+      if (seq !== buscaSeq) return;
+      fecharResultados();
+      buscaStatusEl.textContent = 'Busca indisponível no momento.';
+      return;
+    }
+    // Resposta atrasada de um termo antigo não pode sobrescrever a busca atual.
+    if (seq !== buscaSeq) return;
+    desenharResultados(normalizarResultados(data), termo);
+  }
+
+  buscaEl.addEventListener('input', () => {
+    clearTimeout(buscaTimer);
+    buscaTimer = setTimeout(() => buscar(buscaEl.value), ESPERA_BUSCA_MS);
+  });
+  buscaEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      clearTimeout(buscaTimer);
+      buscar(buscaEl.value);
+    } else if (ev.key === 'Escape') {
+      clearTimeout(buscaTimer);
+      buscaSeq++;
+      fecharResultados();
+      buscaStatusEl.textContent = '';
+    }
+  });
+  document.addEventListener('click', (ev) => {
+    if (ev.target !== buscaEl && !resultadosEl.contains(ev.target)) fecharResultados();
+  });
+
+  // ── Mostrar/ocultar a faixa (a tela tem altura fixa; a lista precisa de espaço) ──
+
+  const CHAVE_SUPERVISAO = 'chatpro.supervisao.oculta';
+
+  function aplicarSupervisao(oculta) {
+    superCorpoEl.classList.toggle('oculto', oculta);
+    superToggleEl.setAttribute('aria-expanded', oculta ? 'false' : 'true');
+    superToggleEl.textContent = oculta ? 'mostrar' : 'ocultar';
+    if (oculta) fecharResultados();
+    try {
+      localStorage.setItem(CHAVE_SUPERVISAO, oculta ? '1' : '0');
+    } catch (_) {
+      // Navegação privada bloqueia o storage: a preferência só não persiste.
+    }
+  }
+
+  superToggleEl.addEventListener('click', () => {
+    aplicarSupervisao(!superCorpoEl.classList.contains('oculto'));
+  });
+
+  let supervisaoOculta = false;
+  try {
+    supervisaoOculta = localStorage.getItem(CHAVE_SUPERVISAO) === '1';
+  } catch (_) {
+    supervisaoOculta = false;
+  }
+  aplicarSupervisao(supervisaoOculta);
+
   // ── Formulário: chamar o bot ──
 
   function mostrarErro(texto) {
@@ -980,6 +1504,7 @@ export function reviewPageHtml(): string {
       mostrarOk('Bot a caminho. Alguém precisa admitir o bot na sala de espera.');
       const criada = objetoDe(data);
       await carregarReunioes();
+      carregarResumo(true);
       const novoId = criada && typeof criada.id === 'string' ? criada.id : '';
       if (novoId) selecionarReuniao(novoId);
     } catch (_) {

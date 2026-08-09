@@ -2,6 +2,7 @@ import type { Db, MeetingRow, MeetingStatus, RecallEventRow } from '../db.js';
 import { RecallApiError, type RecallClient } from '../recall/client.js';
 import type { ChatproClient, ResultadoEntrega } from '../chatpro/client.js';
 import { normalizarTranscript, type Fala } from '../recall/transcript.js';
+import { gerarResumo, formatarResumo } from '../resumo/index.js';
 import { createLogger, errorMessage } from '../log.js';
 
 /**
@@ -129,6 +130,11 @@ export function lerTranscriptSalvo(transcriptJson: string | null): TranscriptSal
   };
 }
 
+/** Estados em que a reunião não anda mais — é quando cabe avisar. */
+function ehTerminal(status: MeetingStatus): boolean {
+  return status === 'ended' || status === 'done' || status === 'failed';
+}
+
 /**
  * Tem transcrição de VERDADE? Um transcript salvo mas sem nenhuma fala não
  * conta: significa que o download veio vazio, e isso pode ser só o arquivo
@@ -145,10 +151,21 @@ export function temTranscript(meeting: MeetingRow): boolean {
  * Usada tanto pelo envio automático (AUTO_SEND_CHATPRO) quanto pelo botão
  * do painel — o resultado precisa ser idêntico nos dois caminhos.
  */
+export interface OpcoesEntrega {
+  /** Chave da Anthropic. Sem ela o resumo não é gerado e vai só o cabeçalho. */
+  anthropicApiKey?: string | undefined;
+  resumoModelo?: string | undefined;
+  /** Link do painel, pra apontar onde está a transcrição completa. */
+  painelUrl?: string | undefined;
+  /** Injetável nos testes. */
+  gerarResumoImpl?: typeof gerarResumo;
+}
+
 export async function entregarAoChatpro(
   db: Db,
   chatpro: ChatproClient,
-  meeting: MeetingRow
+  meeting: MeetingRow,
+  opcoes: OpcoesEntrega = {}
 ): Promise<ResultadoEntrega> {
   const salvo = lerTranscriptSalvo(meeting.transcript_json);
   if (!salvo) {
@@ -158,7 +175,36 @@ export async function entregarAoChatpro(
       motivo: 'reunião ainda sem transcrição salva',
     };
   }
+
+  // O comentário leva SÓ O RESUMO — decisão do produto. A transcrição completa
+  // continua salva e visível no painel, mas não vai pra conversa do cliente.
+  //
+  // Como o resumo é o único conteúdo, ele NÃO PODE ser um ponto único de
+  // falha: `gerarResumo` devolve null em vez de lançar (sem chave, timeout,
+  // resposta inválida), e `formatarResumo` produz o cabeçalho com duração,
+  // participantes e link mesmo com null. Assim, o pior caso entrega algo útil
+  // em vez de nada.
+  const gerar = opcoes.gerarResumoImpl ?? gerarResumo;
+  const resumo = await gerar({
+    falas: salvo.falas,
+    participantes: salvo.participantes,
+    duracaoSegundos: meeting.duration_seconds ?? 0,
+    apiKey: opcoes.anthropicApiKey,
+    modelo: opcoes.resumoModelo,
+  });
+  const conteudo = formatarResumo(resumo, {
+    duracaoSegundos: meeting.duration_seconds ?? 0,
+    participantes: salvo.participantes,
+    meetingUrl: meeting.meeting_url,
+    painelUrl: opcoes.painelUrl,
+  });
+  log.info(
+    `reunião ${meeting.id}: comentário montado ` +
+      `(resumo ${resumo ? 'gerado' : 'indisponível — só cabeçalho'}, ${conteudo.length} chars).`
+  );
+
   const resultado = await chatpro.enviar({
+    conteudo,
     sessionId: meeting.session_id,
     meetingUrl: meeting.meeting_url,
     meetingCode: meeting.meeting_code,
@@ -192,7 +238,8 @@ const entregasEmCurso = new Map<string, Promise<ResultadoEntrega>>();
 export function entregarAoChatproComTrava(
   db: Db,
   chatpro: ChatproClient,
-  meeting: MeetingRow
+  meeting: MeetingRow,
+  opcoes: OpcoesEntrega = {}
 ): Promise<ResultadoEntrega> {
   const emCurso = entregasEmCurso.get(meeting.id);
   if (emCurso) {
@@ -203,7 +250,7 @@ export function entregarAoChatproComTrava(
   // chatpro_parts_sent atualizado pela entrega anterior.
   const promessa = (async (): Promise<ResultadoEntrega> => {
     const atual = db.getMeeting(meeting.id) ?? meeting;
-    return entregarAoChatpro(db, chatpro, atual);
+    return entregarAoChatpro(db, chatpro, atual, opcoes);
   })().finally(() => {
     entregasEmCurso.delete(meeting.id);
   });
@@ -220,6 +267,8 @@ export interface RecallQueueWorkerOptions {
   chatpro: ChatproClient;
   /** AUTO_SEND_CHATPRO — false deixa a entrega para o botão do painel. */
   autoSendChatpro: boolean;
+  /** Passa adiante pro resumo por IA e pro link do painel no comentário. */
+  entrega?: OpcoesEntrega;
   /** Injetável nos testes para controlar o relógio. */
   now?: () => Date;
 }
@@ -238,6 +287,7 @@ export class RecallQueueWorker {
   private readonly recall: RecallClient | undefined;
   private readonly chatpro: ChatproClient;
   private readonly autoSendChatpro: boolean;
+  private readonly opcoesEntrega: OpcoesEntrega;
   private readonly nowFn: () => Date;
   private timer: NodeJS.Timeout | undefined;
   private processing = false;
@@ -247,6 +297,7 @@ export class RecallQueueWorker {
     this.recall = options.recall;
     this.chatpro = options.chatpro;
     this.autoSendChatpro = options.autoSendChatpro;
+    this.opcoesEntrega = options.entrega ?? {};
     this.nowFn = options.now ?? ((): Date => new Date());
   }
 
@@ -355,7 +406,7 @@ export class RecallQueueWorker {
       }
 
       // Aqui `status` é sempre definido: `acionavel` já garantiu isso.
-      if (status) this.aplicarStatus(row, meeting, status, payload);
+      if (status) await this.aplicarStatus(row, meeting, status, payload);
     } catch (err) {
       if (err instanceof RecallApiError && !ehTransitorio(err)) {
         this.db.markRecallEventDead(row.id, `Recall recusou de forma definitiva: ${err.message}`);
@@ -367,12 +418,12 @@ export class RecallQueueWorker {
   }
 
   /** bot.* / transcript.failed → só mexe no estado da reunião. */
-  private aplicarStatus(
+  private async aplicarStatus(
     row: RecallEventRow,
     meeting: MeetingRow,
     status: MeetingStatus,
     payload: unknown
-  ): void {
+  ): Promise<void> {
     // Webhook pode chegar FORA DE ORDEM: o Svix reentrega por 24 h, então um
     // bot.call_ended atrasado (ou um transcript.failed de uma tentativa
     // anterior) pode aparecer DEPOIS que a transcrição já foi salva e entregue.
@@ -396,6 +447,54 @@ export class RecallQueueWorker {
     this.db.updateMeetingStatus(meeting.id, status, motivo);
     this.db.markRecallEventDone(row.id);
     log.info(`reunião ${meeting.id} → ${status}${motivo ? ` (${motivo})` : ` (${row.event})`}`);
+
+    // A reunião acabou sem nunca ter gravado? Avisa na conversa.
+    if (ehTerminal(status)) await this.avisarSeNaoGravou(meeting.id);
+  }
+
+  /**
+   * Reunião que terminou sem gravação vira um aviso na conversa do chatPro.
+   *
+   * É o buraco que motivou o projeto inteiro. O bot entra como convidado
+   * anônimo e alguém precisa ADMITIR ele; se ninguém admite, a conversa
+   * acontece e não fica registro — e hoje isso falhava em silêncio, que é o
+   * pior jeito de falhar, porque parece que está tudo certo.
+   *
+   * Só avisa uma vez: o carimbo em `chatpro_status` é o que segura a repetição
+   * quando um webhook atrasado reentra por aqui.
+   */
+  private async avisarSeNaoGravou(meetingId: string): Promise<void> {
+    const m = this.db.getMeeting(meetingId);
+    if (!m) return;
+    if (temTranscript(m)) return; // gravou: nada a avisar
+    if (m.chatpro_status === 'sent' || m.chatpro_status === 'aviso-enviado') return;
+    if (!m.session_id) return; // sem conversa, não há onde avisar
+
+    // `recording` no meio do caminho significa que chegou a gravar; aí a
+    // ausência de transcrição é outro problema (transcript.failed), com outra
+    // mensagem. Aqui tratamos só o caso de nunca ter entrado.
+    const nuncaGravou = m.started_at === null;
+    const texto = nuncaGravou
+      ? '⚠️ Esta reunião *não foi gravada* — o bot ficou na sala de espera e ninguém o admitiu.\n' +
+        'Na próxima, admita o participante "chatPro (gravando)" quando ele pedir para entrar.'
+      : '⚠️ A reunião foi gravada, mas a *transcrição não ficou pronta*.\n' +
+        'Se precisar dela, fale com quem cuida da ferramenta.';
+
+    try {
+      const r = await this.chatpro.comentar({
+        sessionId: m.session_id,
+        message: texto,
+        instanceId: m.chatpro_instance_id,
+      });
+      if (r.ok) {
+        this.db.setMeetingChatproStatus(m.id, 'aviso-enviado');
+        log.warn(`reunião ${m.id} terminou sem gravação — avisado na conversa ${m.session_id}.`);
+      }
+    } catch (err) {
+      // Aviso é efeito colateral: falhar aqui não pode derrubar o processamento
+      // do evento, que já foi concluído acima.
+      log.warn(`não deu pra avisar que a reunião ${m.id} não gravou: ${errorMessage(err)}`);
+    }
   }
 
   /** transcript.done → baixa, normaliza, grava e (se configurado) entrega. */
@@ -487,7 +586,12 @@ export class RecallQueueWorker {
     // Relê a linha: precisa do transcript e dos horários recém-gravados.
     const atual = this.db.getMeeting(meetingId);
     if (!atual) return;
-    const resultado = await entregarAoChatproComTrava(this.db, this.chatpro, atual);
+    const resultado = await entregarAoChatproComTrava(
+      this.db,
+      this.chatpro,
+      atual,
+      this.opcoesEntrega
+    );
     if (!resultado.ok && resultado.status === 'failed') {
       log.warn(
         `entrega automática ao chatPro falhou (reunião ${meetingId}) — reenvie pelo painel.`

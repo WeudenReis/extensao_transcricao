@@ -13,6 +13,9 @@ import { createLogger } from '../log.js';
  *
  * O evento nasce na agenda de quem clicou, curto e sem convidados: ele existe
  * pra carregar o link, não pra virar compromisso na agenda de ninguém.
+ *
+ * A exceção é a reunião MARCADA (`inicio` no futuro): aí o evento é o
+ * compromisso, cai no horário certo da agenda e ganha lembrete.
  */
 
 const log = createLogger('google/meetLink');
@@ -25,6 +28,19 @@ const TIMEOUT_MS = 20_000;
 
 /** Duração nominal do evento. Não limita a reunião — o Meet segue aberto. */
 const DURACAO_MINUTOS = 60;
+
+/**
+ * Teto da duração nominal. Um evento de dias na agenda de quem clicou seria
+ * ruído puro — e o valor vem de fora, então precisa de um limite.
+ */
+const DURACAO_MAXIMA_MINUTOS = 12 * 60;
+
+/**
+ * Antecedência a partir da qual o evento vira compromisso de verdade e ganha
+ * lembrete. Abaixo disso a pessoa já está indo pra reunião; o pop-up só
+ * atrapalharia.
+ */
+const LEMBRETE_MINUTOS = 10;
 
 export class MeetLinkError extends Error {
   constructor(
@@ -48,6 +64,13 @@ export interface CriarMeetOptions {
   accessToken: string;
   /** Vira o título do evento na agenda do atendente. */
   titulo: string;
+  /**
+   * Quando a reunião começa. Sem isto o evento nasce agora — que é o clique
+   * normal do atendente, e continua sendo o comportamento padrão.
+   */
+  inicio?: Date;
+  /** Duração nominal do evento na agenda. Fora de faixa cai no padrão/teto. */
+  duracaoMinutos?: number;
   /** Injetável nos testes. */
   fetchImpl?: typeof fetch;
   /** Injetável nos testes (o requestId precisa ser único por evento). */
@@ -82,17 +105,27 @@ export function extrairMeetUrl(evento: unknown): string | null {
   return null;
 }
 
+/** Duração pedida, quando faz sentido; senão o padrão. */
+function duracaoEmMinutos(pedida: number | undefined): number {
+  if (pedida === undefined || !Number.isFinite(pedida) || pedida <= 0) return DURACAO_MINUTOS;
+  return Math.min(pedida, DURACAO_MAXIMA_MINUTOS);
+}
+
 export async function criarLinkDoMeet(options: CriarMeetOptions): Promise<MeetCriado> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const agora = options.agora?.() ?? new Date();
-  const fim = new Date(agora.getTime() + DURACAO_MINUTOS * 60_000);
+  const inicio = options.inicio ?? agora;
+  const duracao = duracaoEmMinutos(options.duracaoMinutos);
+  const fim = new Date(inicio.getTime() + duracao * 60_000);
+  // Reunião marcada é compromisso; a de agora é só um link que precisa existir.
+  const agendada = inicio.getTime() - agora.getTime() >= LEMBRETE_MINUTOS * 60_000;
 
   const corpo = {
     summary: options.titulo,
     description:
       'Reunião criada pelo chatPro. A gravação é feita por um participante ' +
       'identificado na chamada.',
-    start: { dateTime: agora.toISOString() },
+    start: { dateTime: inicio.toISOString() },
     end: { dateTime: fim.toISOString() },
     // O requestId precisa ser único por evento: reaproveitar conferência entre
     // eventos diferentes expõe reunião pra quem não devia (aviso do Google).
@@ -102,8 +135,12 @@ export async function criarLinkDoMeet(options: CriarMeetOptions): Promise<MeetCr
         conferenceSolutionKey: { type: 'hangoutsMeet' },
       },
     },
-    // Sem convidados e sem e-mail: o evento existe só pra gerar o link.
-    reminders: { useDefault: false },
+    // Sem convidados e sem e-mail: o evento existe pra gerar o link. Quando é
+    // marcado pra depois ele também precisa lembrar o atendente — evento futuro
+    // sem lembrete é reunião perdida.
+    reminders: agendada
+      ? { useDefault: false, overrides: [{ method: 'popup', minutes: LEMBRETE_MINUTOS }] }
+      : { useDefault: false },
   };
 
   const controller = new AbortController();
@@ -145,7 +182,10 @@ export async function criarLinkDoMeet(options: CriarMeetOptions): Promise<MeetCr
       typeof (evento as Record<string, unknown>).id === 'string'
         ? ((evento as Record<string, unknown>).id as string)
         : '';
-    log.info(`link do Meet criado (evento ${eventId || '?'})`);
+    log.info(
+      `link do Meet criado (evento ${eventId || '?'}) para ${inicio.toISOString()}, ` +
+        `${duracao} min.`
+    );
     return { meetUrl, eventId, meetingCode: codigoDaUrl(meetUrl) };
   } catch (err) {
     if (controller.signal.aborted) {

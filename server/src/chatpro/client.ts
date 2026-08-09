@@ -53,6 +53,12 @@ export interface ChatproPayload {
   source: 'recall-ai';
   /** Instância da conversa. Sem ela, cai na CHATPRO_INSTANCE_ID do .env. */
   instanceId?: string | null;
+  /**
+   * Texto já pronto pra virar comentário. Quando vem, é ELE que é publicado —
+   * a transcrição é ignorada. É assim que o resumo entra sem a transcrição
+   * inteira ir junto pra conversa do cliente.
+   */
+  conteudo?: string;
   /** Quantas partes já foram entregues — o reenvio continua daqui. */
   partesEnviadas?: number;
   /**
@@ -132,6 +138,14 @@ export function montarPartes(
   p: ChatproPayload,
   limite: number = MAX_CARACTERES_COMENTARIO
 ): string[] {
+  // Conteúdo pronto vindo de fora (hoje: o RESUMO). Por decisão do produto, o
+  // comentário leva só o resumo — a transcrição completa fica no painel, não
+  // na conversa do cliente. O caminho da transcrição abaixo continua existindo
+  // pra quem chamar sem `conteudo`.
+  if (p.conteudo !== undefined && p.conteudo !== '') {
+    return fatiarTexto(p.conteudo, limite);
+  }
+
   const cabecalho = montarCabecalho(p);
 
   if (p.transcript.length === 0) {
@@ -172,6 +186,34 @@ export function montarPartes(
 
   if (blocos.length === 1) return blocos;
   return blocos.map((b, i) => `${b}\n\n_(parte ${i + 1}/${blocos.length})_`);
+}
+
+/**
+ * Fatia um texto pronto em partes numeradas, quebrando entre LINHAS pra não
+ * cortar uma frase no meio.
+ */
+function fatiarTexto(texto: string, limite: number): string[] {
+  const FOLGA_RODAPE = 24;
+  const util = Math.max(200, limite - FOLGA_RODAPE);
+
+  const blocos: string[] = [];
+  let atual = '';
+  for (const linha of texto.split('\n')) {
+    for (const pedaco of quebrarLinhaLonga(linha, util)) {
+      const candidato = atual === '' ? pedaco : `${atual}\n${pedaco}`;
+      if (candidato.length > util && atual !== '') {
+        blocos.push(atual);
+        atual = pedaco;
+      } else {
+        atual = candidato;
+      }
+    }
+  }
+  if (atual !== '') blocos.push(atual);
+  if (blocos.length <= 1) return blocos.length ? blocos : [texto];
+  return blocos.map((b, i) => `${b}
+
+_(parte ${i + 1}/${blocos.length})_`);
 }
 
 /** Fala gigante que não cabe nem sozinha: quebra em pedaços marcados. */
@@ -317,6 +359,37 @@ export class ChatproClient {
       const motivo = errorMessage(err);
       log.warn(`falha ao enviar mensagem na sessão ${entrada.sessionId}: ${motivo}`);
       return { ok: false, motivo };
+    }
+  }
+
+  /**
+   * Comentário AVULSO na conversa — interno, o cliente não vê.
+   *
+   * Diferente de `enviar()`, que entrega a transcrição fatiada e controla
+   * retomada. Aqui é um texto curto e único: o aviso de que a reunião não foi
+   * gravada, por exemplo.
+   */
+  async comentar(entrada: {
+    sessionId: string;
+    message: string;
+    instanceId?: string | null;
+  }): Promise<{ ok: true } | { ok: false; motivo: string }> {
+    if (!this.estaConfigurado()) {
+      return { ok: false, motivo: 'chatPro não configurado.' };
+    }
+    const instanceId = entrada.instanceId ?? this.instanceId;
+    if (!instanceId) return { ok: false, motivo: 'sem instanceId do chatPro' };
+
+    try {
+      await this.postarComentario({
+        instanceId,
+        sessionId: entrada.sessionId,
+        message: entrada.message,
+        userId: this.userId ?? '',
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, motivo: errorMessage(err) };
     }
   }
 

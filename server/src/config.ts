@@ -107,6 +107,17 @@ const envSchema = z.object({
   // texto de mensagem, e num WhatsApp de atendimento qualquer estranho escreve.
   CHATPRO_ACEITAR_LINK_DO_CLIENTE: z.string().optional(),
   AUTO_SEND_CHATPRO: z.string().optional(),
+  // Ids das etiquetas aplicadas ao lead depois da reunião. Cada etiqueta é
+  // criada UMA VEZ no chatPro (tela ou POST /tags/create) e o id vem pra cá.
+  // Todas opcionais e independentes: sem o id, aquela etiqueta é só pulada.
+  CHATPRO_TAG_REALIZADA: z.string().optional(),
+  CHATPRO_TAG_SEM_GRAVACAO: z.string().optional(),
+  CHATPRO_TAG_LONGA: z.string().optional(),
+  // ─── Resumo da reunião por IA (API da Anthropic) ───
+  // Vazia = resumo desligado. Nada quebra: o comentário sai só com o cabeçalho
+  // e o aviso de que a transcrição está no painel.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  RESUMO_MODELO: z.string().min(1).default('claude-sonnet-5'),
   // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
   // localhost). Vira obrigatório na prática assim que o servidor é exposto.
   PANEL_TOKEN: z
@@ -152,6 +163,11 @@ export interface Config {
   chatproAutoStartBot: boolean;
   chatproAceitarLinkDoCliente: boolean;
   autoSendChatpro: boolean;
+  chatproTagRealizada: string | undefined;
+  chatproTagSemGravacao: string | undefined;
+  chatproTagLonga: string | undefined;
+  anthropicApiKey: string | undefined;
+  resumoModelo: string;
   panelToken: string | undefined;
 }
 
@@ -275,6 +291,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chatproAutoStartBot: e.CHATPRO_AUTO_START_BOT !== 'false',
     chatproAceitarLinkDoCliente: e.CHATPRO_ACEITAR_LINK_DO_CLIENTE === 'true',
     autoSendChatpro: e.AUTO_SEND_CHATPRO === 'true',
+    chatproTagRealizada: e.CHATPRO_TAG_REALIZADA,
+    chatproTagSemGravacao: e.CHATPRO_TAG_SEM_GRAVACAO,
+    chatproTagLonga: e.CHATPRO_TAG_LONGA,
+    anthropicApiKey: e.ANTHROPIC_API_KEY,
+    resumoModelo: e.RESUMO_MODELO,
     panelToken: e.PANEL_TOKEN,
   };
 }

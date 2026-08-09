@@ -300,6 +300,60 @@ describe('worker da fila do Recall', () => {
     expect(meeting?.status).toBe('recording'); // o bot estava gravando de verdade
   });
 
+  it('reunião que terminou SEM gravar vira aviso na conversa', async () => {
+    // É o buraco que motivou o projeto: se ninguém admite o bot da sala de
+    // espera, a conversa acontece e não fica registro. Antes falhava calado.
+    criarReuniao();
+    const worker = makeWorker({ chatproUrl: 'https://chatpro.exemplo' });
+    respostas = [jsonResponse({ ok: true }, 201)]; // o addComments do aviso
+
+    enfileirar(worker, 'bot.in_waiting_room', 'msg_espera');
+    await worker.processOnce();
+    enfileirar(worker, 'bot.call_ended', 'msg_fim');
+    await worker.processOnce();
+
+    const m = db.getMeeting(MEETING_ID);
+    expect(m?.status).toBe('ended');
+    expect(m?.chatpro_status).toBe('aviso-enviado');
+    expect(urlsChamadas.at(-1)).toContain('/messages/addComments');
+  });
+
+  it('não avisa duas vezes quando um webhook atrasado reentra', async () => {
+    criarReuniao();
+    const worker = makeWorker({ chatproUrl: 'https://chatpro.exemplo' });
+    respostas = [jsonResponse({ ok: true }, 201)];
+
+    enfileirar(worker, 'bot.call_ended', 'msg_fim');
+    await worker.processOnce();
+    const depoisDoPrimeiro = urlsChamadas.length;
+
+    enfileirar(worker, 'bot.done', 'msg_done_atrasado');
+    await worker.processOnce();
+
+    // Nenhuma chamada nova: o carimbo 'aviso-enviado' segura a repetição.
+    expect(urlsChamadas).toHaveLength(depoisDoPrimeiro);
+  });
+
+  it('reunião QUE GRAVOU não recebe aviso nenhum', async () => {
+    criarReuniao();
+    const worker = makeWorker({ chatproUrl: 'https://chatpro.exemplo' });
+    respostas = [
+      jsonResponse({
+        id: BOT_ID,
+        recordings: [{ media_shortcuts: { transcript: { data: { download_url: DOWNLOAD_URL } } } }],
+      }),
+      jsonResponse(TRANSCRIPT_BRUTO),
+    ];
+    enfileirar(worker, 'transcript.done', 'msg_done');
+    await worker.processOnce();
+    const antes = urlsChamadas.length;
+
+    enfileirar(worker, 'bot.done', 'msg_bot_done');
+    await worker.processOnce();
+
+    expect(urlsChamadas).toHaveLength(antes);
+  });
+
   it('evento informativo (transcript.processing) encerra sem mexer no status', async () => {
     criarReuniao();
     db.updateMeetingStatus(MEETING_ID, 'recording');

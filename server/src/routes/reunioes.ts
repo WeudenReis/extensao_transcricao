@@ -30,12 +30,28 @@ import { createLogger, errorMessage } from '../log.js';
  * vem antes do bot porque é o que o cliente espera ver; se o bot falhar, o
  * atendimento continua e a reunião fica marcada como 'failed' no painel. O
  * contrário — bot na sala e cliente sem link — seria pior.
+ *
+ * Com `quando` no corpo, os mesmos quatro passos acontecem pra uma data futura:
+ * o evento nasce no horário combinado, o cliente recebe "reunião marcada para
+ * …" e o bot fica agendado no Recall em vez de entrar agora.
  */
 
 const log = createLogger('routes/reunioes');
 
 /** Texto que vai pro cliente. `{link}` é trocado pela URL da reunião. */
 export const MENSAGEM_PADRAO = 'Segue o link da nossa reunião: {link}';
+
+/**
+ * Texto da reunião MARCADA. `{quando}` vira "quinta, 21/08, às 14h" — sem isso
+ * o cliente receberia "segue o link" e entraria numa sala vazia agora.
+ */
+export const MENSAGEM_AGENDADA_PADRAO = 'Reunião marcada para {quando}: {link}';
+
+/** Fuso do atendimento. O cliente lê a hora dele, não UTC. */
+export const FUSO = 'America/Sao_Paulo';
+
+/** Teto do agendamento. Além disso é engano de digitação, não compromisso. */
+export const MAX_DIAS_AGENDAMENTO = 90;
 
 export const iniciarSchema = z.object({
   sessionId: z.string().uuid('sessionId deve ser o UUID da conversa do chatPro.'),
@@ -46,7 +62,82 @@ export const iniciarSchema = z.object({
   contato: z.string().max(120).nullish(),
   /** Sobrescreve o texto enviado ao cliente. */
   mensagem: z.string().max(1000).nullish(),
+  /**
+   * Reunião marcada pra depois, em ISO 8601 COM fuso. Exigir o fuso é o que
+   * impede "14:00" virar 14 h em UTC — o cliente receberia 11 h da manhã.
+   */
+  quando: z
+    .string()
+    .datetime({
+      offset: true,
+      message: 'quando deve ser uma data ISO 8601 com fuso (ex.: 2026-08-21T14:00:00-03:00).',
+    })
+    .nullish()
+    .superRefine((valor, ctx) => {
+      if (valor === null || valor === undefined) return;
+      const alvo = Date.parse(valor);
+      const agora = Date.now();
+      if (alvo <= agora) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Esse horário já passou. Escolha uma data futura.',
+        });
+        return;
+      }
+      if (alvo - agora > MAX_DIAS_AGENDAMENTO * 24 * 60 * 60 * 1000) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Dá pra marcar até ${MAX_DIAS_AGENDAMENTO} dias à frente.`,
+        });
+      }
+    }),
 });
+
+const PARTES_DATA = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: FUSO,
+  weekday: 'long',
+  day: '2-digit',
+  month: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  // h23 explícito: sem isso a meia-noite pode sair como "24h" em algum ICU.
+  hourCycle: 'h23',
+});
+
+/** Data no calendário de São Paulo (YYYY-MM-DD), pra saber se é hoje/amanhã. */
+function diaLocal(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: FUSO,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+/**
+ * Como a data aparece pro cliente: "hoje às 14h", "amanhã às 9h30",
+ * "sexta, 21/08, às 14h". ISO 8601 numa mensagem de WhatsApp ninguém lê, e
+ * "sexta" sozinho, daqui a três semanas, é qualquer sexta.
+ */
+export function formatarQuando(quando: Date, agora: Date = new Date()): string {
+  const p: Record<string, string> = {};
+  for (const parte of PARTES_DATA.formatToParts(quando)) {
+    if (parte.type !== 'literal') p[parte.type] = parte.value;
+  }
+  const minuto = p.minute ?? '00';
+  const hora = `${Number(p.hour ?? '0')}h${minuto === '00' ? '' : minuto}`;
+
+  const distancia = Math.round(
+    (Date.parse(`${diaLocal(quando)}T00:00:00Z`) - Date.parse(`${diaLocal(agora)}T00:00:00Z`)) /
+      86_400_000
+  );
+  if (distancia === 0) return `hoje às ${hora}`;
+  if (distancia === 1) return `amanhã às ${hora}`;
+
+  // "quinta-feira" fica longo demais no meio da frase; "quinta" basta.
+  const diaSemana = (p.weekday ?? '').replace('-feira', '');
+  return `${diaSemana}, ${p.day ?? ''}/${p.month ?? ''}, às ${hora}`;
+}
 
 function assincrono(
   handler: (req: Request, res: Response) => Promise<void>
@@ -151,6 +242,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const { sessionId, deviceId } = parsed.data;
       const instanceId = parsed.data.instanceId ?? null;
       const contato = parsed.data.contato ?? null;
+      const quando = parsed.data.quando ? new Date(parsed.data.quando) : null;
 
       // 1. Link do Meet, na agenda de quem clicou.
       let meet;
@@ -159,6 +251,8 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         meet = await criarLink({
           accessToken,
           titulo: contato ? `Atendimento chatPro — ${contato}` : 'Atendimento chatPro',
+          // Marcada: o evento cai no horário combinado, não em cima do clique.
+          ...(quando ? { inicio: quando } : {}),
         });
       } catch (err) {
         if (err instanceof ContaNaoConectada) {
@@ -188,7 +282,11 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
 
       // 2. Manda o link pro cliente. Se falhar, PARA: um bot entrando numa sala
       //    que o cliente nem sabe que existe não ajuda ninguém.
-      const texto = (parsed.data.mensagem ?? MENSAGEM_PADRAO).replace('{link}', meet.meetUrl);
+      const modelo =
+        parsed.data.mensagem ?? (quando ? MENSAGEM_AGENDADA_PADRAO : MENSAGEM_PADRAO);
+      const texto = modelo
+        .replace('{quando}', quando ? formatarQuando(quando) : '')
+        .replace('{link}', meet.meetUrl);
       const envio = await chatpro.enviarMensagem({ sessionId, message: texto, instanceId });
       if (!envio.ok) {
         res.status(502).json({
@@ -204,12 +302,18 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       //    registrada como 'failed' no painel e dá pra reenviar de lá.
       const r = await criarReuniao(
         { db, recall, botName },
-        { meetingUrl: meet.meetUrl, sessionId, chatproInstanceId: instanceId, origem: 'api' }
+        {
+          meetingUrl: meet.meetUrl,
+          sessionId,
+          chatproInstanceId: instanceId,
+          origem: 'api',
+          joinAt: quando,
+        }
       );
 
       log.info(
-        `reunião iniciada pela sessão ${sessionId}: ${meet.meetingCode ?? '?'}, ` +
-          `bot ${r.ok ? 'ok' : 'FALHOU'}.`
+        `reunião ${quando ? `marcada pra ${quando.toISOString()}` : 'iniciada'} pela sessão ` +
+          `${sessionId}: ${meet.meetingCode ?? '?'}, bot ${r.ok ? 'ok' : 'FALHOU'}.`
       );
 
       res.status(201).json({
@@ -217,9 +321,16 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         meetingCode: meet.meetingCode,
         mensagemEnviada: true,
         gravando: r.ok,
+        // A extensão usa isto pra não abrir a sala de uma reunião que é depois.
+        agendadaPara: quando ? quando.toISOString() : null,
+        quandoTexto: quando ? formatarQuando(quando) : null,
         ...(r.ok
           ? { meeting: resumirReuniao(r.meeting) }
-          : { avisoGravacao: `A reunião abriu, mas o bot não entrou: ${r.erro}` }),
+          : {
+              avisoGravacao: quando
+                ? `A reunião foi marcada, mas o bot não foi agendado: ${r.erro}`
+                : `A reunião abriu, mas o bot não entrou: ${r.erro}`,
+            }),
       });
     })
   );

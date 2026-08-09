@@ -62,6 +62,15 @@ export interface CreateBotInput {
   meetingId: string;
   /** Vai em `metadata.session_id` e volta em todo webhook. */
   sessionId?: string | undefined;
+  /**
+   * Horário em que o bot deve entrar na sala (`join_at`). Sem isto o Recall
+   * manda o bot na hora — que é o clique normal do atendente.
+   *
+   * Quem decide se vale a pena agendar é o `criarReuniao`: o Recall pede
+   * antecedência mínima, e um `join_at` quase colado no agora só adiaria a
+   * entrada sem ganho nenhum.
+   */
+  joinAt?: Date | undefined;
 }
 
 export class RecallClient {
@@ -107,6 +116,10 @@ export class RecallClient {
         transcript: { provider: { recallai_streaming: {} } },
       },
     };
+    // Bot agendado: o Recall guarda o pedido e manda o bot no horário. O campo
+    // é ISO 8601 — mandar o Date cru viraria um objeto vazio no JSON.
+    if (input.joinAt) body.join_at = input.joinAt.toISOString();
+
     // O metadata volta em TODO webhook — é por ele que a transcrição
     // reencontra a reunião e a conversa do chatPro.
     const metadata: Record<string, string> = { meeting_id: input.meetingId };
@@ -124,7 +137,10 @@ export class RecallClient {
         JSON.stringify(bot).slice(0, 500)
       );
     }
-    log.info(`bot ${bot.id} criado (região ${this.region})`);
+    log.info(
+      `bot ${bot.id} criado (região ${this.region})` +
+        (input.joinAt ? `, entra em ${input.joinAt.toISOString()}` : '')
+    );
     return bot;
   }
 

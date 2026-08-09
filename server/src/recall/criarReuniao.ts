@@ -38,6 +38,31 @@ export const JANELA_DEDUP_MS = 12 * 60 * 60 * 1000;
  */
 export const JANELA_SEM_BOT_MS = 15 * 60_000;
 
+/**
+ * Antecedência mínima pro `join_at` do Recall (a doc deles recomenda ~10 min).
+ * Com menos que isso o pedido agendado vira um pedido normal: o bot entra
+ * agora. Adiar a entrada por 3 min só criaria uma janela em que a reunião já
+ * começou e o bot ainda não chegou.
+ */
+export const ANTECEDENCIA_MINIMA_JOIN_AT_MS = 10 * 60_000;
+
+/**
+ * Quanto dois horários podem diferir e ainda serem "a mesma reunião". Cobre o
+ * duplo clique e o retry (que chegam com o mesmo horário marcado) sem confundir
+ * a reunião das 14 h com a das 16 h na mesma sala.
+ */
+export const TOLERANCIA_MESMO_HORARIO_MS = 5 * 60_000;
+
+/**
+ * Prefixo da nota que guarda o horário marcado na reunião.
+ *
+ * Por que na nota e não numa coluna: o dedup é o único que lê esse horário, e a
+ * coluna de nota já é usada assim em 'created' (ver o caminho do timeout, logo
+ * abaixo). O formato é `agendada para <ISO> — <texto pra pessoa>`: máquina lê o
+ * começo, o painel mostra a frase inteira.
+ */
+const NOTA_AGENDADA = 'agendada para ';
+
 export interface CriarReuniaoEntrada {
   meetingUrl: string;
   sessionId: string | null;
@@ -45,6 +70,11 @@ export interface CriarReuniaoEntrada {
   chatproInstanceId?: string | null;
   /** De onde veio o pedido — só pra log. */
   origem: 'api' | 'chatpro-webhook';
+  /**
+   * Reunião marcada pra depois: horário em que o bot deve entrar na sala. Sem
+   * isto o bot entra agora, que é o caminho de sempre.
+   */
+  joinAt?: Date | null;
 }
 
 export type ResultadoCriacao =
@@ -88,6 +118,15 @@ export async function criarReuniao(
   }
 
   const meetingCode = normalizeMeetingCode(entrada.meetingUrl) || null;
+  const marcado = entrada.joinAt ? entrada.joinAt.getTime() : null;
+  const agendarNoRecall = marcado !== null && marcado - agora >= ANTECEDENCIA_MINIMA_JOIN_AT_MS;
+  if (marcado !== null && !agendarNoRecall) {
+    log.info(
+      `pedido marcado pra ${new Date(marcado).toISOString()}, a menos de ` +
+        `${Math.round(ANTECEDENCIA_MINIMA_JOIN_AT_MS / 60_000)} min daqui — vai SEM join_at, ` +
+        'o bot entra agora (é o que o Recall recomenda pra antecedência curta).'
+    );
+  }
 
   // Já tem bot vivo nessa sala? Este endpoint é chamado por máquina (o chatPro),
   // então repetição é esperada — e cada bot a mais é um robô a mais aparecendo
@@ -98,12 +137,29 @@ export async function criarReuniao(
   // dois clientes no mesmo dia. Tratar isso como duplicata seria o pior dos
   // erros possíveis aqui: o bot da conversa A gravaria a reunião do cliente B,
   // e a transcrição de B iria parar no atendimento de A.
+  //
+  // E "mesma sala" também só é o mesmo atendimento se for o MESMO HORÁRIO:
+  // marcar as 14 h e as 16 h no mesmo link são dois compromissos.
+  //
+  // A comparação olha só a reunião viva MAIS RECENTE da sala. Com duas marcadas
+  // ao mesmo tempo no mesmo link, um pedido repetido da mais antiga escaparia —
+  // e tudo bem: cada pedido pela rota gera um link novo, então sala repetida já
+  // é exceção, e duas marcadas na mesma sala é exceção da exceção.
   if (meetingCode) {
     const desde = new Date(agora - JANELA_DEDUP_MS).toISOString();
     const semBotDesde = new Date(agora - JANELA_SEM_BOT_MS).toISOString();
     const viva = db.findActiveMeetingByCode(meetingCode, desde, semBotDesde);
 
-    if (viva) {
+    if (viva && !mesmoMomento(marcado, horarioMarcado(viva))) {
+      // Mesma sala, HORÁRIOS diferentes: são duas reuniões, cada uma com o seu
+      // bot. Engolir a segunda como duplicata deixaria o atendente com um
+      // "marcado!" na tela e nenhum bot no horário combinado. E o bot da
+      // primeira continua de pé — ele tem hora marcada e ainda vai acontecer.
+      log.info(
+        `sala ${meetingCode} já tem a reunião ${viva.id} (${descreverMomento(horarioMarcado(viva))}) ` +
+          `e chegou pedido ${descreverMomento(marcado)} — reuniões diferentes, criando outro bot.`
+      );
+    } else if (viva) {
       const mesmaConversa =
         // Sem sessão dos dois lados, ou sessões iguais: é a mesma coisa.
         !entrada.sessionId || !viva.session_id || entrada.sessionId === viva.session_id;
@@ -155,17 +211,30 @@ export async function criarReuniao(
     status: 'created',
   });
 
+  // A nota é gravada ANTES do Recall: é ela que diz ao próximo pedido que esta
+  // sala já tem hora marcada. Se a chamada estourar o timeout com o bot criado,
+  // o horário não pode ter se perdido.
+  const nota =
+    marcado === null
+      ? null
+      : NOTA_AGENDADA +
+        new Date(marcado).toISOString() +
+        (agendarNoRecall ? ' — o bot entra sozinho no horário' : ' — falta pouco, o bot entra agora');
+  if (nota) db.updateMeetingStatus(meetingId, 'created', nota);
+
   try {
     const bot = await recall.createBot({
       meetingUrl: entrada.meetingUrl,
       botName,
       meetingId,
       sessionId: entrada.sessionId ?? undefined,
+      ...(agendarNoRecall && marcado !== null ? { joinAt: new Date(marcado) } : {}),
     });
     db.setMeetingBotId(meetingId, bot.id);
     log.info(
       `reunião ${meetingId} criada (${entrada.origem}): bot ${bot.id}, ` +
-        `meet ${meetingCode ?? '?'}, sessão ${entrada.sessionId ?? '(sem vínculo)'}.`
+        `meet ${meetingCode ?? '?'}, sessão ${entrada.sessionId ?? '(sem vínculo)'}, ` +
+        `${descreverMomento(marcado)}.`
     );
     return { ok: true, criada: true, meeting: db.getMeeting(meetingId) ?? meeting };
   } catch (err) {
@@ -181,10 +250,15 @@ export async function criarReuniao(
       if (apiErr?.timedOut) {
         // Timeout NÃO vira 'failed': o bot pode estar entrando na sala agora.
         // Deixar em 'created' também mantém o dedup segurando um segundo bot.
+        // A nota do agendamento vai na frente porque o dedup lê ela daqui — sem
+        // isso, o retry acharia que é outro horário e poria um segundo bot.
         db.updateMeetingStatus(
           meetingId,
           'created',
-          `o Recall não respondeu a tempo; o bot pode ter entrado assim mesmo: ${detalhe}`.slice(0, 300)
+          `${nota ? `${nota} | ` : ''}o Recall não respondeu a tempo; o bot pode ter entrado assim mesmo: ${detalhe}`.slice(
+            0,
+            300
+          )
         );
       } else {
         db.updateMeetingStatus(meetingId, 'failed', `falha ao criar o bot: ${detalhe}`.slice(0, 300));
@@ -210,6 +284,37 @@ export async function criarReuniao(
         : {}),
     };
   }
+}
+
+/**
+ * Horário marcado de uma reunião já gravada, lido da nota. `null` quando ela é
+ * uma reunião pra agora — que é o caso da esmagadora maioria.
+ */
+export function horarioMarcado(meeting: MeetingRow): number | null {
+  if (!meeting.error?.startsWith(NOTA_AGENDADA)) return null;
+  const iso = meeting.error.slice(NOTA_AGENDADA.length).split(' ')[0] ?? '';
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * O pedido que chegou e a reunião viva apontam pro mesmo momento?
+ *
+ * Pedido SEM horário ("quero agora") casa com qualquer reunião viva na sala —
+ * inclusive uma marcada pra depois. É de propósito: o link que acabamos de
+ * mandar pro cliente volta como `sent_message` no webhook do chatPro e chega
+ * aqui como um pedido pra agora. Tratar esse eco como reunião nova poria um bot
+ * numa sala vazia, cobrado por hora, na frente do cliente.
+ */
+function mesmoMomento(pedido: number | null, viva: number | null): boolean {
+  if (pedido === null) return true;
+  if (viva === null) return false;
+  return Math.abs(pedido - viva) <= TOLERANCIA_MESMO_HORARIO_MS;
+}
+
+/** Só pra log ficar legível. */
+function descreverMomento(momento: number | null): string {
+  return momento === null ? 'pra agora' : `pra ${new Date(momento).toISOString()}`;
 }
 
 /** Aproveita o pedido repetido pra preencher o que faltava na reunião viva. */

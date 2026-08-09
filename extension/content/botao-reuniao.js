@@ -15,13 +15,22 @@
  *
  * Se o clone falhar (mudança grande no layout deles), há um fallback com estilo
  * próprio que lê a cor do texto vizinho pra se adaptar ao tema.
+ *
+ * Dois caminhos no mesmo botão:
+ *   clique            → reunião AGORA (link criado, enviado, sala aberta)
+ *   Shift + clique    → cartão pra MARCAR pra outro dia (botão direito também)
  */
 
 (() => {
   'use strict';
 
   const ID = 'cpm-botao-reuniao';
+  const ID_AGENDADOR = 'cpm-agendador';
   const ROTULO = 'reunião';
+  const VERDE = '#25D066';
+  const VERDE_HOVER = '#1BAD53';
+  /** Mesmo teto do servidor — o input já nem deixa escolher além disso. */
+  const MAX_DIAS = 90;
   /** Texto dos botões vizinhos — usados como âncora e como molde. */
   const VIZINHOS = ['transferir', 'etiquetas', 'agendar', 'finalizar'];
   const INTERVALO_MS = 1500;
@@ -112,7 +121,10 @@
   function ajustarClone(clone, moldeOriginal) {
     clone.id = ID;
     clone.setAttribute('data-cpm', '1');
-    clone.setAttribute('title', 'Cria o link, envia pro cliente e grava a reunião');
+    clone.setAttribute(
+      'title',
+      'Cria o link, envia pro cliente e grava a reunião.\nCom Shift (ou botão direito): marcar para outro dia.'
+    );
 
     // Substitui o ícone mantendo lugar E tamanho. Mede no ORIGINAL, que está
     // na tela: o clone ainda não foi inserido, então não tem dimensão.
@@ -169,6 +181,10 @@
     b.id = ID;
     b.type = 'button';
     b.setAttribute('data-cpm', '1');
+    b.setAttribute(
+      'title',
+      'Cria o link, envia pro cliente e grava a reunião.\nCom Shift (ou botão direito): marcar para outro dia.'
+    );
     const tam = referencia ? medirIcone(referencia) : TAMANHO_PADRAO;
     b.innerHTML = `${svgCamera(tam)}<span style="margin-left:6px">${ROTULO}</span>`;
     const cor = referencia ? getComputedStyle(referencia).color : '';
@@ -237,6 +253,193 @@
     setTimeout(() => d.remove(), tipo === 'erro' ? 9000 : 5000);
   }
 
+  // ─── Marcar pra depois ─────────────────────────────────────────────────────
+
+  /**
+   * O chatPro tem tema claro e escuro e não expõe nenhuma variável de CSS
+   * própria. Ler a cor de fundo que está VALENDO e olhar o brilho é o jeito de
+   * acertar nos dois sem chutar.
+   */
+  function temaEscuro() {
+    for (const el of [document.body, document.documentElement]) {
+      const cor = getComputedStyle(el).backgroundColor || '';
+      const m = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\)/.exec(cor);
+      if (!m) continue;
+      if (m[4] !== undefined && Number.parseFloat(m[4]) === 0) continue; // transparente
+      const brilho = (Number(m[1]) * 299 + Number(m[2]) * 587 + Number(m[3]) * 114) / 1000;
+      return brilho < 128;
+    }
+    return false;
+  }
+
+  /** `YYYY-MM-DDTHH:MM` no horário LOCAL, que é o que o input nativo entende. */
+  function paraInput(data) {
+    const p = (n) => String(n).padStart(2, '0');
+    return (
+      `${data.getFullYear()}-${p(data.getMonth() + 1)}-${p(data.getDate())}` +
+      `T${p(data.getHours())}:${p(data.getMinutes())}`
+    );
+  }
+
+  /** Sugestão: daqui a uma hora, arredondado pros 15 min seguintes. */
+  function horarioSugerido() {
+    const d = new Date(Date.now() + 60 * 60 * 1000);
+    d.setSeconds(0, 0);
+    d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15);
+    return d;
+  }
+
+  function fecharAgendador() {
+    const aberto = document.getElementById(ID_AGENDADOR);
+    if (aberto) aberto.remove();
+  }
+
+  /**
+   * Cartão com o `<input type="datetime-local">` nativo. Nativo de propósito:
+   * o seletor de data do próprio navegador já é acessível, já fala o idioma do
+   * usuário e não pesa nada — um calendário próprio aqui seria manutenção sem
+   * ganho, dentro de uma página que não é nossa.
+   */
+  function abrirAgendador(botao) {
+    fecharAgendador();
+    const escuro = temaEscuro();
+    const fundo = escuro ? '#2c333a' : '#ffffff';
+    const texto = escuro ? '#E6E5E8' : '#1d2125';
+    const suave = escuro ? '#D1D1D5' : '#5b636b';
+    const borda = escuro ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)';
+
+    const caixa = document.createElement('div');
+    caixa.id = ID_AGENDADOR;
+    caixa.setAttribute('role', 'dialog');
+    caixa.setAttribute('aria-label', 'Marcar reunião');
+    const r = botao.getBoundingClientRect();
+    caixa.style.cssText = [
+      'position:fixed',
+      'z-index:2147483647',
+      `top:${Math.round(r.bottom + 8)}px`,
+      // Ancorado no botão, mas sem escapar da janela nos dois lados.
+      `left:${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 296)))}px`,
+      'width:280px',
+      `background:${fundo}`,
+      `color:${texto}`,
+      `border:1px solid ${borda}`,
+      'border-radius:12px',
+      'padding:14px',
+      'box-shadow:0 10px 30px rgba(0,0,0,.28)',
+      'font:400 14px/1.45 system-ui,sans-serif',
+      `color-scheme:${escuro ? 'dark' : 'light'}`,
+    ].join(';');
+
+    const titulo = document.createElement('div');
+    titulo.textContent = 'Marcar reunião';
+    titulo.style.cssText = 'font-weight:700;margin-bottom:2px';
+
+    const dica = document.createElement('div');
+    dica.textContent = 'O cliente recebe o link com a data e o horário.';
+    dica.style.cssText = `color:${suave};font-size:12px;margin-bottom:10px`;
+
+    const campo = document.createElement('input');
+    campo.type = 'datetime-local';
+    campo.value = paraInput(horarioSugerido());
+    campo.min = paraInput(new Date());
+    campo.max = paraInput(new Date(Date.now() + MAX_DIAS * 24 * 60 * 60 * 1000));
+    campo.style.cssText = [
+      'width:100%',
+      'box-sizing:border-box',
+      'padding:8px 10px',
+      `border:1px solid ${borda}`,
+      'border-radius:8px',
+      'background:transparent',
+      `color:${texto}`,
+      'font:inherit',
+    ].join(';');
+
+    const erro = document.createElement('div');
+    erro.style.cssText = 'color:#ff6b6b;font-size:12px;margin-top:6px;display:none';
+
+    const linha = document.createElement('div');
+    linha.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px';
+
+    const cancelar = document.createElement('button');
+    cancelar.type = 'button';
+    cancelar.textContent = 'Cancelar';
+    cancelar.style.cssText = [
+      'background:transparent',
+      `color:${suave}`,
+      'border:0',
+      'padding:8px 12px',
+      'border-radius:8px',
+      'cursor:pointer',
+      'font:inherit',
+    ].join(';');
+
+    const marcar = document.createElement('button');
+    marcar.type = 'button';
+    marcar.textContent = 'Marcar';
+    marcar.style.cssText = [
+      `background:${VERDE}`,
+      // Texto escuro sobre o verde: é o que dá contraste de verdade nos dois temas.
+      'color:#0b1b10',
+      'border:0',
+      'padding:8px 14px',
+      'border-radius:8px',
+      'cursor:pointer',
+      'font:600 14px/1 system-ui,sans-serif',
+    ].join(';');
+    marcar.addEventListener('mouseenter', () => {
+      marcar.style.background = VERDE_HOVER;
+    });
+    marcar.addEventListener('mouseleave', () => {
+      marcar.style.background = VERDE;
+    });
+
+    linha.append(cancelar, marcar);
+    caixa.append(titulo, dica, campo, erro, linha);
+    document.body.appendChild(caixa);
+    campo.focus();
+
+    const confirmar = () => {
+      const escolhido = new Date(campo.value);
+      if (!campo.value || Number.isNaN(escolhido.getTime())) {
+        erro.textContent = 'Escolha uma data e um horário.';
+        erro.style.display = 'block';
+        return;
+      }
+      if (escolhido.getTime() <= Date.now()) {
+        erro.textContent = 'Esse horário já passou. Escolha um horário futuro.';
+        erro.style.display = 'block';
+        return;
+      }
+      fecharAgendador();
+      // ISO com fuso: o servidor recusa data sem fuso justamente pra "14:00"
+      // não virar 11 h da manhã pro cliente.
+      void aoClicar(botao, escolhido.toISOString());
+    };
+
+    marcar.addEventListener('click', confirmar);
+    cancelar.addEventListener('click', fecharAgendador);
+    campo.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') confirmar();
+    });
+    caixa.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') fecharAgendador();
+    });
+    // Clique fora fecha. O `capture` pega o evento antes do React do chatPro.
+    setTimeout(() => {
+      document.addEventListener(
+        'mousedown',
+        function fora(ev) {
+          if (caixa.isConnected && !caixa.contains(ev.target)) {
+            fecharAgendador();
+            document.removeEventListener('mousedown', fora, true);
+          }
+          if (!caixa.isConnected) document.removeEventListener('mousedown', fora, true);
+        },
+        true
+      );
+    }, 0);
+  }
+
   // ─── Ação ──────────────────────────────────────────────────────────────────
 
   function nomeDoContato() {
@@ -251,19 +454,21 @@
     return null;
   }
 
-  async function aoClicar(botao) {
+  /** `quandoIso` presente = reunião marcada; ausente = reunião agora. */
+  async function aoClicar(botao, quandoIso) {
     const sessionId = sessaoAtual();
     if (!sessionId) {
       avisar('Abra uma conversa antes de iniciar a reunião.', 'erro');
       return;
     }
 
-    ocupado(botao, true, 'Criando reunião…');
+    ocupado(botao, true, quandoIso ? 'Marcando…' : 'Criando reunião…');
     try {
       const resposta = await chrome.runtime.sendMessage({
         tipo: 'INICIAR_REUNIAO',
         sessionId,
         contato: nomeDoContato(),
+        quando: quandoIso || null,
       });
 
       if (!resposta || !resposta.ok) {
@@ -275,7 +480,20 @@
         return;
       }
 
-      const { meetUrl, gravando, avisoGravacao } = resposta.dados;
+      const { meetUrl, gravando, avisoGravacao, quandoTexto } = resposta.dados;
+
+      if (quandoTexto) {
+        // Reunião marcada NÃO abre a sala: a hora é outra, e uma aba do Meet
+        // aberta agora só atrapalharia o atendimento em andamento.
+        avisar(
+          gravando
+            ? `Reunião marcada para ${quandoTexto}. O cliente já recebeu o link.`
+            : `Reunião marcada para ${quandoTexto}, mas ${avisoGravacao || 'a gravação não foi agendada.'}`,
+          gravando ? 'ok' : 'erro'
+        );
+        return;
+      }
+
       avisar(
         gravando
           ? 'Link enviado pro cliente. A reunião está sendo gravada.'
@@ -315,6 +533,7 @@
     // Sem conversa aberta, o botão não faz sentido.
     if (!sessao) {
       if (existente) existente.remove();
+      fecharAgendador();
       return;
     }
 
@@ -357,7 +576,18 @@
     botao.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      void aoClicar(botao);
+      // Clique normal é o caminho de sempre: reunião agora, em um clique. Com
+      // Shift abre o agendador — o atalho fica fora do caminho de quem só quer
+      // atender, que é a esmagadora maioria dos cliques.
+      if (ev.shiftKey) abrirAgendador(botao);
+      else void aoClicar(botao);
+    });
+
+    // Botão direito também abre — quem não conhece o Shift acha por aqui.
+    botao.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      abrirAgendador(botao);
     });
 
     // Entra ANTES do primeiro botão da barra: fica à esquerda de "transferir",
@@ -374,6 +604,8 @@
     if (sessaoAtual() !== ultimaSessao) {
       const antigo = document.getElementById(ID);
       if (antigo) antigo.remove();
+      // Trocou de conversa: um agendador aberto marcaria pro cliente errado.
+      fecharAgendador();
     }
     injetar();
   });

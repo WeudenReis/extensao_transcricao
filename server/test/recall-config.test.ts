@@ -13,8 +13,9 @@ describe('configuração do Recall.ai', () => {
     expect(config.recallWebhookSecret).toBeUndefined();
     expect(config.allowInsecureRecall).toBe(false);
     expect(config.publicBaseUrl).toBeUndefined();
-    expect(config.chatproApiUrl).toBeUndefined();
-    expect(config.chatproApiKey).toBeUndefined();
+    // O contrato real do chatPro Chat é base + instance-token, não url + key.
+    expect(config.chatproBaseUrl).toBe('https://sparks.chatpro.com.br');
+    expect(config.chatproInstanceToken).toBeUndefined();
     expect(config.autoSendChatpro).toBe(false);
   });
 

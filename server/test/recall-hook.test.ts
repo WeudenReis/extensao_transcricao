@@ -57,7 +57,12 @@ async function montarApp(options: {
   const worker = new WorkerEspiao({
     db,
     recall: undefined,
-    chatpro: new ChatproClient({ apiUrl: undefined, apiKey: undefined }),
+    chatpro: new ChatproClient({
+      baseUrl: undefined,
+      instanceToken: undefined,
+      instanceId: undefined,
+      userId: undefined,
+    }),
     autoSendChatpro: false,
   });
 

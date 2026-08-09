@@ -8,6 +8,9 @@ clique faz tudo:
 3. coloca o bot de gravação na sala
 4. abre a reunião numa aba nova
 
+Com **Shift + clique**, a mesma coisa acontece pra uma data futura: a reunião
+fica marcada e o bot entra sozinho na hora.
+
 Quando a chamada acaba, a transcrição volta sozinha como **comentário** naquela
 mesma conversa.
 
@@ -37,6 +40,19 @@ A conta Google é sua e serve pra criar o link. Funciona com **conta pessoal
 
 Abra uma conversa no chatPro. O botão aparece na barra de cima, ao lado de
 "transferir". Clique quando quiser levar o atendimento pra uma chamada.
+
+### Marcar pra outro dia
+
+**Shift + clique** no botão (ou clique com o **botão direito**) abre um cartão
+com data e hora. Ao confirmar:
+
+- o evento entra na sua agenda no horário combinado, com lembrete
+- o cliente recebe "Reunião marcada para quinta, 21/08, às 14h: {link}"
+- o bot fica **agendado** e entra sozinho na hora — nenhuma aba abre agora
+
+Dá pra marcar até 90 dias à frente. Menos de 10 minutos de antecedência conta
+como reunião de agora: o bot entra na hora, porque o Recall pede folga pra
+agendar.
 
 ## Como o botão se adapta ao tema
 
