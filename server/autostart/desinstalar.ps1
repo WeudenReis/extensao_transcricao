@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 
 $atalho = Join-Path ([Environment]::GetFolderPath('Startup')) 'chatPro Reunioes.lnk'
+$atalhoTunel = Join-Path $startup 'chatPro Reunioes - tunel.lnk'
 
 Write-Host ''
 Write-Host '  chatPro Reuniões — remover início automático' -ForegroundColor Yellow

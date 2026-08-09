@@ -16,8 +16,10 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 
 $supervisor = Join-Path $PSScriptRoot 'supervisor.ps1'
+$tunel = Join-Path $PSScriptRoot 'tunel.ps1'
 $startup = [Environment]::GetFolderPath('Startup')
 $atalho = Join-Path $startup 'chatPro Reunioes.lnk'
+$atalhoTunel = Join-Path $startup 'chatPro Reunioes - tunel.lnk'
 
 Write-Host ''
 Write-Host '  chatPro Reuniões — início automático' -ForegroundColor Green
@@ -40,7 +42,19 @@ $lnk.WindowStyle = 7   # minimizado; o -WindowStyle Hidden acima é quem esconde
 $lnk.Description = 'Servidor de reuniões do chatPro'
 $lnk.Save()
 
-Write-Host "  [ok] Atalho criado em Inicializar." -ForegroundColor Green
+Write-Host "  [ok] Atalho do servidor criado em Inicializar." -ForegroundColor Green
+
+# O túnel é peça separada de propósito: o servidor sozinho atende o botão da
+# extensão (localhost), mas o Recall precisa alcançar de fora pra entregar a
+# transcrição. Um atalho pra cada, então um pode cair sem levar o outro.
+$lnkT = $sh.CreateShortcut($atalhoTunel)
+$lnkT.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$lnkT.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$tunel`""
+$lnkT.WorkingDirectory = $PSScriptRoot
+$lnkT.WindowStyle = 7
+$lnkT.Description = 'Tunel publico do chatPro Reunioes'
+$lnkT.Save()
+Write-Host "  [ok] Atalho do tunel criado em Inicializar." -ForegroundColor Green
 
 # ─── Encerra o que estiver rodando e sobe de novo ────────────────────────────
 
@@ -52,6 +66,10 @@ Start-Sleep -Seconds 2
 Write-Host '  Iniciando (a primeira vez compila, leva ~30 s)...'
 Start-Process powershell.exe `
   -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$supervisor`"" `
+  -WindowStyle Hidden
+
+Start-Process powershell.exe `
+  -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$tunel`"" `
   -WindowStyle Hidden
 
 # ─── Confere que subiu de verdade ────────────────────────────────────────────
@@ -81,6 +99,24 @@ if ($ok) {
     Write-Host ''
     Write-Host '      Últimas linhas:'
     Get-Content $log -Tail 8 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+  }
+}
+
+Write-Host ''
+$arquivoUrl = Join-Path (Split-Path -Parent $PSScriptRoot) 'data\tunel-url.txt'
+foreach ($t in 1..15) {
+  Start-Sleep -Seconds 2
+  if (Test-Path $arquivoUrl) {
+    $u = (Get-Content $arquivoUrl -Raw).Trim()
+    if ($u) {
+      Write-Host ''
+      Write-Host '  URL publica do tunel:' -ForegroundColor Cyan
+      Write-Host "    $u"
+      Write-Host ''
+      Write-Host '  Cadastre no painel do Recall (Edit no endpoint existente):' -ForegroundColor Yellow
+      Write-Host "    $u/webhooks/recall"
+      break
+    }
   }
 }
 
