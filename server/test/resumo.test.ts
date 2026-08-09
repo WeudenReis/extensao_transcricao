@@ -165,10 +165,24 @@ describe('gerarResumo — caminho feliz', () => {
 });
 
 describe('gerarResumo — caminhos de erro (sempre null, nunca throw)', () => {
-  it('devolve null e não chama a rede quando não há apiKey', async () => {
+  it('sem chave nenhuma, usa o extrativo e NÃO toca a rede', async () => {
     const { fetchImpl, chamadas } = fetchGravador([]);
 
+    // Com provedor 'auto' e nenhuma chave, a escolha cai no extrativo — que
+    // roda só com código local. É o piso do sistema: o comentário no chatPro
+    // leva SÓ o resumo, então ficar sem nada deixaria o cliente sem conteúdo.
     const resumo = await gerarResumo(opcoes({ fetchImpl, apiKey: undefined }));
+
+    expect(chamadas).toHaveLength(0);
+    expect(resumo).not.toBeNull();
+  });
+
+  it('provedor anthropic sem chave devolve null (não inventa outro caminho)', async () => {
+    const { fetchImpl, chamadas } = fetchGravador([]);
+
+    const resumo = await gerarResumo(
+      opcoes({ fetchImpl, apiKey: undefined, provedor: 'anthropic' })
+    );
 
     expect(resumo).toBeNull();
     expect(chamadas).toHaveLength(0);

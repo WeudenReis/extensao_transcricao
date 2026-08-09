@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import { RECALL_REGIONS, type RecallRegion } from './recall/types.js';
 import { PROVIDERS, type ChatproProvider } from './chatpro/client.js';
+import { PROVEDORES_RESUMO, type ProvedorResumo } from './resumo/index.js';
 
 /**
  * Carrega e valida as variáveis de ambiente com zod.
@@ -116,6 +117,14 @@ const envSchema = z.object({
   // ─── Resumo da reunião por IA (API da Anthropic) ───
   // Vazia = resumo desligado. Nada quebra: o comentário sai só com o cabeçalho
   // e o aviso de que a transcrição está no painel.
+  // Quem escreve o resumo: auto | anthropic | gemini | extrativo.
+  // 'auto' usa a chave que existir; sem nenhuma, cai no extrativo (sem IA,
+  // custo zero, e a transcrição não sai da máquina).
+  RESUMO_PROVEDOR: z.enum(PROVEDORES_RESUMO).default('auto'),
+  // Free tier do Google — grátis sem cartão. ATENÇÃO: os termos permitem que o
+  // conteúdo do free tier seja usado pra treinar os modelos deles, e o que sai
+  // daqui é conversa de cliente. Decida antes de ligar em produção.
+  GEMINI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   RESUMO_MODELO: z.string().min(1).default('claude-sonnet-5'),
   // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
@@ -167,6 +176,8 @@ export interface Config {
   chatproTagSemGravacao: string | undefined;
   chatproTagLonga: string | undefined;
   anthropicApiKey: string | undefined;
+  geminiApiKey: string | undefined;
+  resumoProvedor: ProvedorResumo;
   resumoModelo: string;
   panelToken: string | undefined;
 }
@@ -295,6 +306,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chatproTagSemGravacao: e.CHATPRO_TAG_SEM_GRAVACAO,
     chatproTagLonga: e.CHATPRO_TAG_LONGA,
     anthropicApiKey: e.ANTHROPIC_API_KEY,
+    geminiApiKey: e.GEMINI_API_KEY,
+    resumoProvedor: e.RESUMO_PROVEDOR,
     resumoModelo: e.RESUMO_MODELO,
     panelToken: e.PANEL_TOKEN,
   };

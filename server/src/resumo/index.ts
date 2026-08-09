@@ -3,6 +3,9 @@ import { createLogger, errorMessage } from '../log.js';
 import type { Fala } from '../recall/transcript.js';
 import { montarPrompt, type ParticipanteResumo } from './prompt.js';
 import { normalizarResumo, type ResumoReuniao } from './schema.js';
+import { resumoExtrativo } from './extrativo.js';
+export { resumoExtrativo } from './extrativo.js';
+import { gerarComGemini } from './gemini.js';
 
 /**
  * Resumo da reunião por IA (API da Anthropic).
@@ -35,11 +38,28 @@ const MAX_TOKENS = 4096;
 
 export type { ResumoReuniao } from './schema.js';
 
+/**
+ * Quem escreve o resumo.
+ *
+ * - `extrativo`: só código, sem IA. Custa zero e NADA sai da máquina.
+ * - `gemini`:    free tier do Google. Grátis de verdade, mas o conteúdo do
+ *                 free tier pode ser usado pra treinar os modelos deles.
+ * - `anthropic`: melhor resultado, pago, sem treino sobre dados de API.
+ *
+ * `auto` escolhe pela chave disponível, nesta ordem: anthropic → gemini →
+ * extrativo. O extrativo é sempre o piso: nunca ficamos sem resumo nenhum.
+ */
+export const PROVEDORES_RESUMO = ['auto', 'anthropic', 'gemini', 'extrativo'] as const;
+export type ProvedorResumo = (typeof PROVEDORES_RESUMO)[number];
+
 export interface GerarResumoOptions {
   falas: Fala[];
   participantes: ParticipanteResumo[];
   duracaoSegundos: number;
   apiKey: string | undefined;
+  /** Chave do Gemini (free tier). */
+  geminiApiKey?: string | undefined;
+  provedor?: ProvedorResumo | undefined;
   modelo?: string;
   /** Injetável nos testes — a suíte nunca toca a rede. */
   fetchImpl?: typeof fetch;
@@ -88,13 +108,54 @@ function extrairJson(texto: string): unknown {
  * Gera o resumo. Devolve `null` em qualquer caminho de falha — ver o bloco de
  * decisão no topo do arquivo.
  */
+/** Qual provedor usar de fato, dado o que está configurado. */
+export function escolherProvedor(o: GerarResumoOptions): Exclude<ProvedorResumo, 'auto'> {
+  const pedido = o.provedor ?? 'auto';
+  if (pedido !== 'auto') return pedido;
+  if (o.apiKey) return 'anthropic';
+  if (o.geminiApiKey) return 'gemini';
+  return 'extrativo';
+}
+
 export async function gerarResumo(o: GerarResumoOptions): Promise<ResumoReuniao | null> {
-  if (!o.apiKey) {
-    log.info('ANTHROPIC_API_KEY vazia — resumo por IA desligado.');
-    return null;
-  }
   if (o.falas.length === 0) {
     log.info('transcrição sem falas — nada a resumir.');
+    return null;
+  }
+
+  const provedor = escolherProvedor(o);
+
+  // Sem IA: garimpa as frases que carregam decisão e risco. Não sai da máquina.
+  if (provedor === 'extrativo') {
+    const r = resumoExtrativo(o.falas);
+    log.info(`resumo extrativo (sem IA): ${r ? 'gerado' : 'nada relevante encontrado'}.`);
+    return r;
+  }
+
+
+  if (provedor === 'gemini') {
+    if (!o.geminiApiKey) {
+      log.info('GEMINI_API_KEY vazia — sem resumo por IA.');
+      return null;
+    }
+    const promptG = montarPrompt({
+      falas: o.falas,
+      participantes: o.participantes,
+      duracaoSegundos: o.duracaoSegundos,
+      ...(o.orcamentoCaracteres === undefined ? {} : { orcamento: o.orcamentoCaracteres }),
+    });
+    const r = await gerarComGemini({
+      apiKey: o.geminiApiKey,
+      modelo: o.modelo,
+      system: promptG.system,
+      user: promptG.user,
+      ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
+    });
+    return r;
+  }
+
+  if (!o.apiKey) {
+    log.info('ANTHROPIC_API_KEY vazia — sem resumo por IA.');
     return null;
   }
 

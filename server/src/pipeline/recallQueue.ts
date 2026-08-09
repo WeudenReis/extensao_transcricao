@@ -2,7 +2,7 @@ import type { Db, MeetingRow, MeetingStatus, RecallEventRow } from '../db.js';
 import { RecallApiError, type RecallClient } from '../recall/client.js';
 import type { ChatproClient, ResultadoEntrega } from '../chatpro/client.js';
 import { normalizarTranscript, type Fala } from '../recall/transcript.js';
-import { gerarResumo, formatarResumo } from '../resumo/index.js';
+import { gerarResumo, formatarResumo, resumoExtrativo } from '../resumo/index.js';
 import { createLogger, errorMessage } from '../log.js';
 
 /**
@@ -154,6 +154,8 @@ export function temTranscript(meeting: MeetingRow): boolean {
 export interface OpcoesEntrega {
   /** Chave da Anthropic. Sem ela o resumo não é gerado e vai só o cabeçalho. */
   anthropicApiKey?: string | undefined;
+  geminiApiKey?: string | undefined;
+  resumoProvedor?: 'auto' | 'anthropic' | 'gemini' | 'extrativo' | undefined;
   resumoModelo?: string | undefined;
   /** Link do painel, pra apontar onde está a transcrição completa. */
   painelUrl?: string | undefined;
@@ -190,9 +192,15 @@ export async function entregarAoChatpro(
     participantes: salvo.participantes,
     duracaoSegundos: meeting.duration_seconds ?? 0,
     apiKey: opcoes.anthropicApiKey,
+    geminiApiKey: opcoes.geminiApiKey,
+    provedor: opcoes.resumoProvedor,
     modelo: opcoes.resumoModelo,
   });
-  const conteudo = formatarResumo(resumo, {
+  // Piso: se a IA não produziu nada (sem chave, fora do ar, resposta ruim), o
+  // extrativo entra no lugar. O comentário leva SÓ o resumo — deixar vazio
+  // significaria o cliente não receber nada.
+  const comPiso = resumo ?? resumoExtrativo(salvo.falas);
+  const conteudo = formatarResumo(comPiso, {
     duracaoSegundos: meeting.duration_seconds ?? 0,
     participantes: salvo.participantes,
     meetingUrl: meeting.meeting_url,
@@ -200,7 +208,7 @@ export async function entregarAoChatpro(
   });
   log.info(
     `reunião ${meeting.id}: comentário montado ` +
-      `(resumo ${resumo ? 'gerado' : 'indisponível — só cabeçalho'}, ${conteudo.length} chars).`
+      `(resumo ${resumo ? 'por IA' : comPiso ? 'extrativo' : 'indisponível — só cabeçalho'}, ${conteudo.length} chars).`
   );
 
   const resultado = await chatpro.enviar({

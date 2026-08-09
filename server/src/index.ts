@@ -132,6 +132,8 @@ function main(): void {
     autoSendChatpro: config.autoSendChatpro,
     entrega: {
       anthropicApiKey: config.anthropicApiKey,
+      geminiApiKey: config.geminiApiKey,
+      resumoProvedor: config.resumoProvedor,
       resumoModelo: config.resumoModelo,
       // Aponta pra onde está a transcrição completa — o comentário só leva o
       // resumo, então o link é o que fecha o caminho.

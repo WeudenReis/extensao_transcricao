@@ -229,6 +229,12 @@ function montarPainel(rotas: Rotas): Ambiente {
     },
     chamadas,
     escoar: async (): Promise<void> => {
+      // A busca tem debounce de 350 ms com setTimeout REAL. Drenar só
+      // microtask não faz o timer disparar: o teste passava sozinho (a
+      // máquina ociosa entregava o callback antes das asserções) e falhava na
+      // suíte completa, com os outros arquivos disputando CPU. Esperar o
+      // tempo de verdade tira a corrida do meio.
+      await new Promise((r) => setTimeout(r, 450));
       for (let i = 0; i < 30; i++) await Promise.resolve();
     },
   };
