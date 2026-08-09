@@ -24,10 +24,26 @@ async function atualizarStatusGoogle() {
       mostrarBotoes(false);
       return;
     }
-    if (!r.dados?.configurado) {
+    // `configurado` só é booleano quando a resposta veio MESMO da nossa rota.
+    // Se o endereço apontar pro lugar errado, a resposta é outra coisa (o HTML
+    // do painel, por exemplo) e `configurado` vem undefined — que não é a
+    // mesma coisa que "o servidor está sem as credenciais". Antes os dois
+    // casos davam a mesma mensagem, e ela mandava procurar no .env um problema
+    // que estava no campo de endereço.
+    if (typeof r.dados?.configurado !== 'boolean') {
       definirEstado(
         estado,
-        'O servidor está sem as credenciais do Google (GOOGLE_CLIENT_ID/SECRET).',
+        'Resposta inesperada do servidor. O Endereço abaixo aponta pro lugar certo? ' +
+          'Use só http://localhost:3333, sem caminho nem ?token=.',
+        'erro'
+      );
+      mostrarBotoes(false);
+      return;
+    }
+    if (!r.dados.configurado) {
+      definirEstado(
+        estado,
+        'O servidor está sem as credenciais do Google (GOOGLE_CLIENT_ID/SECRET no .env).',
         'erro'
       );
       mostrarBotoes(false);
@@ -62,12 +78,42 @@ $('desconectar').addEventListener('click', async () => {
   await atualizarStatusGoogle();
 });
 
+/**
+ * Fica só com a origem: protocolo + host + porta.
+ *
+ * É fácil colar aqui a URL do PAINEL (`http://localhost:3333/?token=…`) em vez
+ * do endereço do servidor. Com o caminho e a query junto, toda chamada da
+ * extensão vira `…/?token=…/api/google/status`, que o Express roteia pra `/` e
+ * devolve o HTML do painel — a extensão então conclui "servidor sem
+ * credenciais do Google", que é um diagnóstico errado e manda procurar longe.
+ *
+ * Também aceita quem digita só `localhost:3333`, sem protocolo.
+ */
+function normalizarEndereco(bruto) {
+  const texto = bruto.trim();
+  if (!texto) return '';
+  const comProtocolo = /^https?:\/\//i.test(texto) ? texto : `http://${texto}`;
+  try {
+    return new URL(comProtocolo).origin;
+  } catch {
+    // Não é URL válida: devolve como veio e deixa a chamada falhar com a
+    // mensagem de rede, que é mais honesta que inventar um endereço.
+    return texto.replace(/\/+$/, '');
+  }
+}
+
 $('salvar').addEventListener('click', async () => {
-  const backendUrl = $('backend').value.trim().replace(/\/+$/, '');
+  const digitado = $('backend').value;
+  const backendUrl = normalizarEndereco(digitado);
   const panelToken = $('token').value.trim();
   await chrome.storage.local.set({ backendUrl, panelToken });
-  definirEstado($('salvo'), 'Salvo.', 'ok');
-  setTimeout(() => $('salvo').classList.add('oculto'), 2500);
+
+  // Mostra o que foi realmente guardado: se limpamos um caminho colado junto,
+  // a pessoa precisa ver isso acontecendo, não descobrir depois.
+  $('backend').value = backendUrl;
+  const mudou = digitado.trim() !== backendUrl;
+  definirEstado($('salvo'), mudou ? `Salvo como ${backendUrl}` : 'Salvo.', 'ok');
+  setTimeout(() => $('salvo').classList.add('oculto'), 4000);
   await atualizarStatusGoogle();
 });
 
