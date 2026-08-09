@@ -44,6 +44,10 @@ const temRecall = Boolean(V('RECALL_API_KEY'));
 const temGoogle = V('GOOGLE_CLIENT_ID') && V('GOOGLE_CLIENT_SECRET');
 const temTunel = Boolean(V('PUBLIC_BASE_URL'));
 const temHookRecall = Boolean(V('RECALL_WEBHOOK_SECRET'));
+const temResumo = Boolean(V('ANTHROPIC_API_KEY'));
+const temEtiquetas = Boolean(
+  V('CHATPRO_TAG_REALIZADA') || V('CHATPRO_TAG_SEM_GRAVACAO') || V('CHATPRO_TAG_LONGA')
+);
 
 console.log('  ' + (temChatpro ? ok('chatPro') : nao('chatPro')) +
   ' — comentar a transcrição e mandar o link pro cliente');
@@ -53,6 +57,10 @@ console.log('  ' + (temRecall ? ok('Recall') : nao('Recall  ')) +
   ' — o bot entrar na sala e gravar');
 console.log('  ' + (temTunel && temHookRecall ? ok('Webhooks') : nao('Webhooks')) +
   ' — a transcrição voltar quando a reunião acabar');
+console.log('  ' + (temResumo ? ok('Resumo IA') : meio('Resumo IA')) +
+  ' — o comentário leva o resumo (sem ela vai só o cabeçalho)');
+console.log('  ' + (temEtiquetas ? ok('Etiquetas') : meio('Etiquetas')) +
+  ' — marcar a conversa depois da reunião (opcional)');
 
 console.log('\n\x1b[1mORDEM SUGERIDA\x1b[0m\n');
 const passos = [
@@ -79,6 +87,23 @@ async function chatpro(caminho, corpo) {
 }
 
 let falhou = false;
+
+if (temTunel) {
+  console.log(`
+[1mTESTE 0 — a URL pública ainda responde?[0m
+`);
+  const base = V('PUBLIC_BASE_URL');
+  try {
+    const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(15000) });
+    console.log('  ' + (r.ok ? ok(`${base} → ${r.status}`) : nao(`${base} → ${r.status}`)));
+    if (!r.ok) falhou = true;
+  } catch {
+    falhou = true;
+    console.log('  ' + nao(`${base} não respondeu.`));
+    console.log('    Túnel rápido morre quando o processo cai, e a URL muda ao subir de novo.');
+    console.log('    Suba outro e EDITE o endpoint no painel do Recall (não crie um segundo).');
+  }
+}
 
 if (temChatpro) {
   console.log('\n\x1b[1mTESTE 1 — o token do chatPro funciona?\x1b[0m (só leitura)\n');
