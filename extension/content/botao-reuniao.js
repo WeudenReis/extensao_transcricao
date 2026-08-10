@@ -17,8 +17,8 @@
  * próprio que lê a cor do texto vizinho pra se adaptar ao tema.
  *
  * Dois caminhos no mesmo botão:
- *   clique            → reunião AGORA (link criado, enviado, sala aberta)
- *   Shift + clique    → cartão pra MARCAR pra outro dia (botão direito também)
+ *   clique         → abre a escolha: "Agora" ou "Agendar"
+ *   Shift + clique → pula direto pra "Agora" (atalho pra quem repete muito)
  */
 
 (() => {
@@ -123,7 +123,7 @@
     clone.setAttribute('data-cpm', '1');
     clone.setAttribute(
       'title',
-      'Cria o link, envia pro cliente e grava a reunião.\nCom Shift (ou botão direito): marcar para outro dia.'
+      'Reunião com o cliente: agora ou agendada.\nCria o link, envia e grava a chamada.'
     );
 
     // Substitui o ícone mantendo lugar E tamanho. Mede no ORIGINAL, que está
@@ -183,7 +183,7 @@
     b.setAttribute('data-cpm', '1');
     b.setAttribute(
       'title',
-      'Cria o link, envia pro cliente e grava a reunião.\nCom Shift (ou botão direito): marcar para outro dia.'
+      'Reunião com o cliente: agora ou agendada.\nCria o link, envia e grava a chamada.'
     );
     const tam = referencia ? medirIcone(referencia) : TAMANHO_PADRAO;
     b.innerHTML = `${svgCamera(tam)}<span style="margin-left:6px">${ROTULO}</span>`;
@@ -291,7 +291,11 @@
 
   function fecharAgendador() {
     const aberto = document.getElementById(ID_AGENDADOR);
-    if (aberto) aberto.remove();
+    if (!aberto) return;
+    // Avisa antes de remover: quem prendeu listener no documento (Esc, clique
+    // fora) precisa soltar. Sem isso eles se acumulam a cada abertura.
+    aberto.dispatchEvent(new CustomEvent('cpm-fechou'));
+    aberto.remove();
   }
 
   /**
@@ -300,6 +304,122 @@
    * usuário e não pesa nada — um calendário próprio aqui seria manutenção sem
    * ganho, dentro de uma página que não é nossa.
    */
+  /**
+   * A tela que o clique abre: duas escolhas claras.
+   *
+   * "Agora" faz o que o botão fazia antes — cria o link, manda pro cliente e
+   * põe o bot na sala. "Agendar" abre o cartão de data e hora.
+   */
+  function abrirEscolha(botao) {
+    fecharAgendador();
+    const escuro = temaEscuro();
+    const fundo = escuro ? '#2c333a' : '#ffffff';
+    const cortexto = escuro ? '#E6E5E8' : '#1d2125';
+    const suave = escuro ? '#D1D1D5' : '#5b636b';
+    const borda = escuro ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)';
+
+    const caixa = document.createElement('div');
+    caixa.id = ID_AGENDADOR;
+    caixa.setAttribute('role', 'dialog');
+    caixa.setAttribute('aria-label', 'Reunião com o cliente');
+    const r = botao.getBoundingClientRect();
+    caixa.style.cssText = [
+      'position:fixed',
+      'z-index:2147483647',
+      `top:${Math.round(r.bottom + 8)}px`,
+      `left:${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 296)))}px`,
+      'width:280px',
+      `background:${fundo}`,
+      `color:${cortexto}`,
+      `border:1px solid ${borda}`,
+      'border-radius:12px',
+      'padding:14px',
+      'box-shadow:0 10px 30px rgba(0,0,0,.28)',
+      'font:400 14px/1.45 system-ui,sans-serif',
+      `color-scheme:${escuro ? 'dark' : 'light'}`,
+    ].join(';');
+
+    const titulo = document.createElement('div');
+    titulo.textContent = 'Reunião com o cliente';
+    titulo.style.cssText = 'font-weight:700;margin-bottom:10px';
+    caixa.appendChild(titulo);
+
+    const opcao = (rotulo, descricao, principal, aoEscolher) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.style.cssText = [
+        'display:block',
+        'width:100%',
+        'text-align:left',
+        'padding:10px 12px',
+        'margin-bottom:8px',
+        'border-radius:9px',
+        'cursor:pointer',
+        'font:inherit',
+        principal
+          ? `background:${VERDE};color:#08240f;border:0;font-weight:700`
+          : `background:transparent;color:${cortexto};border:1px solid ${borda}`,
+      ].join(';');
+      const t = document.createElement('div');
+      t.textContent = rotulo;
+      const d = document.createElement('div');
+      d.textContent = descricao;
+      d.style.cssText = `font-size:12px;opacity:.8;margin-top:2px;font-weight:400${
+        principal ? '' : `;color:${suave}`
+      }`;
+      b.append(t, d);
+      if (principal) {
+        b.addEventListener('mouseenter', () => {
+          b.style.background = VERDE_HOVER;
+        });
+        b.addEventListener('mouseleave', () => {
+          b.style.background = VERDE;
+        });
+      }
+      b.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        aoEscolher();
+      });
+      return b;
+    };
+
+    caixa.appendChild(
+      opcao('Agora', 'Cria a sala e manda o link na hora.', true, () => {
+        fecharAgendador();
+        void aoClicar(botao);
+      })
+    );
+    caixa.appendChild(
+      opcao('Agendar', 'Escolhe dia e hora. O link vai perto do horário.', false, () => {
+        fecharAgendador();
+        abrirAgendador(botao);
+      })
+    );
+
+    document.body.appendChild(caixa);
+    prenderFechamento(caixa);
+    const primeiro = caixa.querySelector('button');
+    if (primeiro) primeiro.focus();
+  }
+
+  /** Fecha com Esc ou clique fora — vale pros dois cartões. */
+  function prenderFechamento(caixa) {
+    const noEsc = (ev) => {
+      if (ev.key === 'Escape') fecharAgendador();
+    };
+    const foraDaCaixa = (ev) => {
+      if (!caixa.contains(ev.target) && ev.target.id !== ID) fecharAgendador();
+    };
+    document.addEventListener('keydown', noEsc, true);
+    // No próximo tick: senão o próprio clique que abriu já fecharia.
+    setTimeout(() => document.addEventListener('mousedown', foraDaCaixa, true), 0);
+    caixa.addEventListener('cpm-fechou', () => {
+      document.removeEventListener('keydown', noEsc, true);
+      document.removeEventListener('mousedown', foraDaCaixa, true);
+    });
+  }
+
   function abrirAgendador(botao) {
     fecharAgendador();
     const escuro = temaEscuro();
@@ -576,18 +696,16 @@
     botao.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      // Clique normal é o caminho de sempre: reunião agora, em um clique. Com
-      // Shift abre o agendador — o atalho fica fora do caminho de quem só quer
-      // atender, que é a esmagadora maioria dos cliques.
-      if (ev.shiftKey) abrirAgendador(botao);
-      else void aoClicar(botao);
-    });
-
-    // Botão direito também abre — quem não conhece o Shift acha por aqui.
-    botao.addEventListener('contextmenu', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      abrirAgendador(botao);
+      // O clique abre a escolha: "Agora" ou "Agendar".
+      //
+      // Antes, clicar criava a reunião na hora e agendar exigia segurar Shift.
+      // Ninguém descobre um atalho invisível — e o clique disparava algo
+      // irreversível (bot na sala, mensagem pro cliente) sem confirmação. Uma
+      // tela intermediária custa um clique e resolve os dois problemas.
+      //
+      // Shift continua pulando direto pra "agora", pra quem já pegou o ritmo.
+      if (ev.shiftKey) void aoClicar(botao);
+      else abrirEscolha(botao);
     });
 
     // Entra ANTES do primeiro botão da barra: fica à esquerda de "transferir",

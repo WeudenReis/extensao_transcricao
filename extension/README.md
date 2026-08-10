@@ -8,7 +8,7 @@ clique faz tudo:
 3. coloca o bot de gravação na sala
 4. abre a reunião numa aba nova
 
-Com **Shift + clique**, a mesma coisa acontece pra uma data futura: a reunião
+Escolhendo **Agendar**, a mesma coisa acontece pra uma data futura: a reunião
 fica marcada e o bot entra sozinho na hora.
 
 Quando a chamada acaba, a transcrição volta sozinha como **comentário** naquela
@@ -43,7 +43,7 @@ Abra uma conversa no chatPro. O botão aparece na barra de cima, ao lado de
 
 ### Marcar pra outro dia
 
-**Shift + clique** no botão (ou clique com o **botão direito**) abre um cartão
+A opção **Agendar** abre um cartão
 com data e hora. Ao confirmar:
 
 - o evento entra na sua agenda no horário combinado, com lembrete
