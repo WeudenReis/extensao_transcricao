@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "chatPro Reuniões",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "description": "Botão de reunião no chatPro: abre a aba lateral pra marcar agora ou agendar, manda o link pro cliente e grava a chamada.",
   "permissions": [
     "storage",

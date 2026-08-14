@@ -95,6 +95,22 @@
 
   function iniciar(contexto) {
     const aba = window.__cpmAba;
+
+    // Redimensionar a janela pode cruzar o limiar em que a aba deixa de
+    // empurrar e passa a sobrepor (ou o contrário). Trocar de modo exige
+    // remontar o elemento — e remontar sem reabrir o fluxo jogaria fora o que
+    // a pessoa já preencheu. Aqui a aba volta no MESMO passo.
+    if (!iniciar.ouvindoRemontagem) {
+      iniciar.ouvindoRemontagem = true;
+      document.addEventListener('cpm-aba-remontar', () => {
+        const ctx = iniciar.ultimoContexto;
+        const voltarPara = iniciar.passoAtual;
+        if (!ctx) return;
+        iniciar(ctx);
+        if (voltarPara) setTimeout(voltarPara, 0);
+      });
+    }
+    iniciar.ultimoContexto = contexto;
     // A conversa é travada AQUI, no começo. Entre abrir a aba e confirmar, o
     // atendente pode clicar numa notificação e cair em outra conversa — sem a
     // trava, os dados do cliente A criariam a reunião do cliente B.
@@ -209,6 +225,8 @@
 
       // ── Passo 1: agora ou marcar ─────────────────────────────────────────
       function passoModo() {
+        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
+        iniciar.passoAtual = passoModo;
         api.limpar();
         api.cabecalho('Reunião', null);
         const p = api.p;
@@ -282,6 +300,8 @@
 
       // ── Passo 2: tipo, só o que este atendente pode ──────────────────────
       function passoTipo() {
+        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
+        iniciar.passoAtual = passoTipo;
         api.limpar();
         api.cabecalho('Tipo da reunião', passoModo);
         const p = api.p;
@@ -360,6 +380,8 @@
 
       // ── Passo 3: dados do cliente ────────────────────────────────────────
       function passoDados() {
+        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
+        iniciar.passoAtual = passoDados;
         api.limpar();
         api.cabecalho(TIPOS[estado.tipo].rotulo, passoTipo);
         const p = api.p;
@@ -515,6 +537,8 @@
 
       // ── Passo 4: dia e horário, da grade real ────────────────────────────
       function passoHorario() {
+        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
+        iniciar.passoAtual = passoHorario;
         api.limpar();
         api.cabecalho('Quando', passoDados);
         const p = api.p;

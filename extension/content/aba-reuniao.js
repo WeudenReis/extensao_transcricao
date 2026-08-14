@@ -1,107 +1,144 @@
 /**
- * A aba "Reunião" — um painel lateral dentro do chatPro, no mesmo lugar e com
+ * A aba "Reunião" — uma coluna lateral dentro do chatPro, no mesmo lugar e com
  * o mesmo comportamento do Copiloto.
  *
- * POR QUE UM PAINEL E NÃO UM MODAL: o fluxo tem quatro passos (tipo → dados do
- * cliente → dia e horário → confirmação) e o atendente precisa continuar vendo
- * a conversa enquanto preenche — é de lá que ele tira nome, empresa e telefone.
- * Um modal centralizado tapa exatamente o que ele precisa ler.
+ * A DIFERENÇA QUE MANDA NA TÉCNICA: ela ENTRA no layout, não fica por cima.
+ * O Copiloto é um irmão de flex da área de conversa — quando abre, a conversa
+ * encolhe e continua inteira, só mais estreita. Um painel `position: fixed`
+ * pareceria igual numa tela grande e taparia a conversa numa pequena, que é
+ * exatamente quando o atendente mais precisa ler os dois lados.
  *
- * COMO ELE ACHA O LUGAR CERTO, sem depender das classes internas do chatPro
- * (que mudam a cada deploy e quebrariam em silêncio):
+ * COMO ACHAMOS ONDE ENTRAR, sem depender das classes do chatPro (que são
+ * geradas e mudam a cada deploy):
  *
- *   1. Se o Copiloto estiver aberto, medimos ELE e ocupamos o mesmo retângulo.
- *      É o caminho exato — mesma largura, mesma altura, mesmo topo.
- *   2. Se não estiver, procuramos a coluna da direita por geometria: um
- *      elemento alto, encostado na borda direita, com largura de painel.
- *   3. Não achando nada, caímos numa gaveta fixa de 360 px na direita.
+ *   1. Se o Copiloto estiver aberto, o pai DELE é o nosso pai. Caminho exato.
+ *   2. Senão, procuramos o container por FORMA: o flex-row mais externo que
+ *      ocupa a tela e tem a área de conversa dentro. Entramos como último filho.
+ *   3. Sem nada disso (layout mudou de vez), caímos numa gaveta sobreposta —
+ *      pior, mas o atendente ainda marca a reunião.
  *
- * Os três caminhos produzem o mesmo desenho; só a precisão do encaixe muda.
- * Nenhum depende de nome de classe.
+ * TELA ESTREITA: abaixo de 1100 px não há o que encolher sem espremer a
+ * conversa a nada, então a aba vira gaveta sobreposta de propósito — é o que o
+ * próprio chatPro faz com os painéis dele.
+ *
+ * REACT: o container é gerenciado por React, que remove nós que não conhece ao
+ * re-renderizar. Um observer recoloca a aba se ela sumir sem a gente ter
+ * fechado.
  */
 
 (() => {
   'use strict';
 
   const ID = 'cpm-aba-reuniao';
-  const LARGURA_PADRAO = 360;
+  const LARGURA = 380;
+  const LARGURA_MIN = 320;
+  /** Abaixo disso, empurrar espremeria a conversa: melhor sobrepor. */
+  const LIMIAR_ESTREITO = 1100;
+  /** Mesma curva e duração que um painel lateral do chatPro usa. */
+  const TRANSICAO = '220ms cubic-bezier(.4,0,.2,1)';
 
-  // ─── Tema ──────────────────────────────────────────────────────────────────
+  // ─── Identidade visual ─────────────────────────────────────────────────────
 
   function escuro() {
     const bg = getComputedStyle(document.body).backgroundColor || '';
     const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(bg);
     if (!m) return document.documentElement.classList.contains('dark');
-    // Luminância perceptual: fundo escuro do chatPro fica bem abaixo de 128.
-    const luz = 0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3];
-    return luz < 128;
+    // Luminância perceptual: o fundo escuro do chatPro fica bem abaixo de 128.
+    return 0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3] < 128;
   }
 
+  /**
+   * Tokens da identidade chatPro. Verde #25D066 é o CTA, #1BAD53 o hover, e os
+   * cinzas do dark theme são os oficiais (#1d2125 / #22272b / #2c333a) — não
+   * cores aproximadas, senão a aba destoa ao lado do Copiloto.
+   */
   function paleta() {
     const e = escuro();
     return {
       escuro: e,
       fundo: e ? '#22272b' : '#ffffff',
       fundoFraco: e ? '#2c333a' : '#f1f0f2',
+      fundoTopo: e ? '#1d2125' : '#ffffff',
       texto: e ? '#E6E5E8' : '#1d2125',
       textoFraco: e ? '#9aa4ad' : '#6b7280',
-      borda: e ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.10)',
+      borda: e ? 'rgba(255,255,255,.10)' : '#E6E5E8',
       verde: '#25D066',
       verdeHover: '#1BAD53',
       perigo: e ? '#ff6b6b' : '#c92a2a',
     };
   }
 
-  // ─── Onde o painel vai ─────────────────────────────────────────────────────
+  // ─── Onde a aba entra ──────────────────────────────────────────────────────
+
+  function ehFlexRow(el) {
+    const s = getComputedStyle(el);
+    if (s.display !== 'flex' && s.display !== 'grid') return false;
+    return s.display === 'grid' || s.flexDirection === 'row';
+  }
 
   /**
-   * Acha o painel do Copiloto pela ESTRUTURA, não pelo nome: um bloco alto,
-   * encostado à direita, com largura de painel lateral. Procurar pelo texto
-   * "Copiloto" também funcionaria, mas só enquanto ele estiver aberto — e o
-   * ponto é justamente ocupar o lugar dele quando está fechado.
+   * O painel do Copiloto, quando aberto: bloco alto encostado na direita, com
+   * largura de painel. Achando ele, o pai dele é onde a gente entra — é a
+   * garantia de cair no mesmo nível do layout.
    */
-  function medirColunaDireita() {
+  function acharCopiloto() {
     const alturaMin = window.innerHeight * 0.5;
-    const direita = window.innerWidth;
     let melhor = null;
-
-    for (const el of document.querySelectorAll('div, aside, section')) {
+    for (const el of document.querySelectorAll('aside, section, div')) {
+      if (el.id === ID || el.closest(`#${ID}`)) continue;
       const r = el.getBoundingClientRect();
-      if (r.width < 260 || r.width > 560) continue;
-      if (r.height < alturaMin) continue;
-      // Encostado na borda direita (tolerância pra sombra/scrollbar).
-      if (direita - r.right > 24) continue;
-      // O mais externo com essa forma é o painel; os de dentro são o conteúdo.
-      if (!melhor || r.width > melhor.width || r.height > melhor.height) {
-        melhor = { top: r.top, right: direita - r.right, width: r.width, height: r.height };
-      }
+      if (r.width < 280 || r.width > 560 || r.height < alturaMin) continue;
+      if (window.innerWidth - r.right > 24) continue;
+      const pai = el.parentElement;
+      if (!pai || !ehFlexRow(pai)) continue;
+      // O mais externo com essa forma é o painel; os de dentro são conteúdo.
+      if (!melhor || r.height > melhor.rect.height) melhor = { el, pai, rect: r };
     }
     return melhor;
   }
 
-  function geometria() {
-    const medida = medirColunaDireita();
-    // Nada encontrado: gaveta fixa, abaixo de qualquer barra de topo.
-    const bruta = medida ?? {
-      top: 56,
-      right: 0,
-      width: LARGURA_PADRAO,
-      height: window.innerHeight - 56,
-    };
-
-    // A medida vem de um elemento da página, e elemento de página pode estar
-    // rolado pra fora (top negativo), maior que a janela, ou deslocado. Se
-    // qualquer um desses valores passasse direto, a aba abriria FORA DA TELA —
-    // e o sintoma seria "cliquei e não aconteceu nada", que é indistinguível
-    // de um botão quebrado.
-    const top = Math.max(0, Math.min(bruta.top, window.innerHeight - 200));
-    const width = Math.max(300, Math.min(bruta.width, window.innerWidth - 40));
-    const right = Math.max(0, Math.min(bruta.right, window.innerWidth - width));
-    const height = Math.max(240, Math.min(bruta.height, window.innerHeight - top));
-    return { top, right, width, height };
+  /**
+   * Sem Copiloto aberto: o container do layout é o flex-row mais externo que
+   * ocupa quase a tela inteira e tem mais de um filho visível. É onde a lista de
+   * conversas e a área de mensagens convivem — e é onde a aba cabe.
+   */
+  function acharContainer() {
+    let melhor = null;
+    for (const el of document.querySelectorAll('div, main, section')) {
+      if (el.id === ID || el.closest(`#${ID}`)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < window.innerWidth * 0.6) continue;
+      if (r.height < window.innerHeight * 0.6) continue;
+      if (!ehFlexRow(el)) continue;
+      const filhos = [...el.children].filter((c) => c.getBoundingClientRect().width > 40);
+      if (filhos.length < 2) continue;
+      // O MAIS EXTERNO ganha: entrar num container interno encolheria só um
+      // pedaço da tela em vez da conversa toda.
+      if (!melhor || r.width * r.height > melhor.area) {
+        melhor = { el, area: r.width * r.height };
+      }
+    }
+    return melhor ? melhor.el : null;
   }
 
-  // ─── Peças de UI ───────────────────────────────────────────────────────────
+  /** Onde entrar e como. `modo` decide se empurra ou sobrepõe. */
+  function decidirDestino() {
+    if (window.innerWidth < LIMIAR_ESTREITO) {
+      return { modo: 'sobrepoe', pai: document.body, largura: Math.min(LARGURA, window.innerWidth - 24) };
+    }
+    const copiloto = acharCopiloto();
+    if (copiloto) {
+      // Mesma largura do Copiloto: as duas colunas ocupam o mesmo espaço, e
+      // trocar de uma pra outra não faz a conversa pular de tamanho.
+      const largura = Math.round(Math.max(LARGURA_MIN, Math.min(copiloto.rect.width, 560)));
+      return { modo: 'empurra', pai: copiloto.pai, largura, referencia: copiloto.el };
+    }
+    const container = acharContainer();
+    if (container) return { modo: 'empurra', pai: container, largura: LARGURA };
+    return { modo: 'sobrepoe', pai: document.body, largura: LARGURA };
+  }
+
+  // ─── Peças ─────────────────────────────────────────────────────────────────
 
   function el(tag, estilo, texto) {
     const n = document.createElement(tag);
@@ -121,7 +158,7 @@
       'border-radius:10px',
       'font:600 14px/1.2 system-ui,-apple-system,Segoe UI,sans-serif',
       'cursor:pointer',
-      'transition:background .15s,border-color .15s',
+      `transition:background ${TRANSICAO},border-color ${TRANSICAO}`,
       primario ? `background:${p.verde}` : 'background:transparent',
       primario ? 'color:#0b2016' : `color:${p.texto}`,
       primario ? 'border:1px solid transparent' : `border:1px solid ${p.borda}`,
@@ -137,13 +174,13 @@
 
   function campo(p, rotulo, opcoes) {
     const wrap = el('label', 'display:block;margin-bottom:12px');
-    const t = el(
-      'span',
-      `display:block;margin-bottom:6px;font:500 12px/1.3 system-ui,sans-serif;color:${p.textoFraco}`,
-      rotulo
+    wrap.appendChild(
+      el(
+        'span',
+        `display:block;margin-bottom:6px;font:500 12px/1.3 system-ui,sans-serif;color:${p.textoFraco}`,
+        rotulo
+      )
     );
-    wrap.appendChild(t);
-
     const entrada = el(opcoes && opcoes.select ? 'select' : 'input', '');
     entrada.style.cssText = [
       'width:100%',
@@ -155,6 +192,7 @@
       `color:${p.texto}`,
       'font:400 14px/1.3 system-ui,-apple-system,Segoe UI,sans-serif',
       'outline:none',
+      `transition:border-color ${TRANSICAO}`,
     ].join(';');
     if (opcoes && opcoes.placeholder) entrada.placeholder = opcoes.placeholder;
     if (opcoes && opcoes.tipo) entrada.type = opcoes.tipo;
@@ -164,63 +202,95 @@
     entrada.addEventListener('blur', () => {
       entrada.style.borderColor = p.borda;
     });
-
     const erro = el(
       'span',
       `display:none;margin-top:5px;font:500 11px/1.3 system-ui,sans-serif;color:${p.perigo}`
     );
-    wrap.appendChild(entrada);
-    wrap.appendChild(erro);
+    wrap.append(entrada, erro);
     return { wrap, entrada, erro };
   }
 
-  // ─── O painel ──────────────────────────────────────────────────────────────
+  // ─── A aba ─────────────────────────────────────────────────────────────────
 
   let aberto = null;
 
   function fechar() {
     if (!aberto) return;
-    window.removeEventListener('resize', aberto.reposicionar);
-    document.removeEventListener('keydown', aberto.aoTeclar, true);
-    aberto.raiz.remove();
+    const { raiz, aoRedimensionar, aoTeclar, observer } = aberto;
+    window.removeEventListener('resize', aoRedimensionar);
+    document.removeEventListener('keydown', aoTeclar, true);
+    if (observer) observer.disconnect();
+
+    // Recolhe antes de sumir: tirar do DOM na hora faria a conversa dar um
+    // pulo de 380 px. A largura anima de volta a zero e só então removemos.
     aberto = null;
-    document.dispatchEvent(new CustomEvent('cpm-aba-fechou'));
+    raiz.style.width = '0px';
+    raiz.style.minWidth = '0px';
+    raiz.style.opacity = '0';
+    const remover = () => {
+      raiz.remove();
+      document.dispatchEvent(new CustomEvent('cpm-aba-fechou'));
+    };
+    raiz.addEventListener('transitionend', remover, { once: true });
+    // Se a transição não disparar (aba já em 0, prefers-reduced-motion), o
+    // nó ficaria pra sempre. O timer é a rede de segurança.
+    setTimeout(remover, 400);
   }
 
   function estaAberta() {
     return aberto !== null;
   }
 
-  /**
-   * Abre a aba. `render(corpo, api)` desenha o conteúdo; `api` traz o que os
-   * passos precisam (paleta, trocar de passo, fechar, rodapé).
-   */
   function abrir(render) {
     fechar();
     const p = paleta();
-    const g = geometria();
+    const destino = decidirDestino();
 
     const raiz = el('div', '');
     raiz.id = ID;
-    raiz.setAttribute('role', 'dialog');
+    raiz.setAttribute('role', 'complementary');
     raiz.setAttribute('aria-label', 'Marcar reunião');
-    raiz.style.cssText = [
-      'position:fixed',
-      `top:${Math.round(g.top)}px`,
-      `right:${Math.round(g.right)}px`,
-      `width:${Math.round(g.width)}px`,
-      `height:${Math.round(g.height)}px`,
-      'z-index:2147483646',
+
+    const comuns = [
       `background:${p.fundo}`,
       `color:${p.texto}`,
       `border-left:1px solid ${p.borda}`,
-      'box-shadow:-8px 0 24px rgba(0,0,0,.18)',
       'display:flex',
       'flex-direction:column',
+      'overflow:hidden',
       'font-family:system-ui,-apple-system,Segoe UI,sans-serif',
-    ].join(';');
+      // Anima largura E opacidade: só a largura faria o texto se espremer
+      // durante a abertura, que é o efeito que denuncia painel improvisado.
+      `transition:width ${TRANSICAO},opacity ${TRANSICAO}`,
+      'opacity:0',
+      'width:0px',
+    ];
 
-    // Cabeçalho no mesmo desenho do Copiloto: ação à esquerda, título no meio,
+    if (destino.modo === 'empurra') {
+      // Irmão de flex: a conversa encolhe sozinha, sem a gente tocar nela.
+      // `flex:0 0 auto` impede o container de esticar ou espremer a aba.
+      raiz.style.cssText = [
+        ...comuns,
+        'position:relative',
+        'flex:0 0 auto',
+        'align-self:stretch',
+        'min-width:0',
+        'z-index:5',
+      ].join(';');
+    } else {
+      // Gaveta: só quando não há espaço pra encolher.
+      raiz.style.cssText = [
+        ...comuns,
+        'position:fixed',
+        'top:0',
+        'right:0',
+        'height:100vh',
+        'z-index:2147483646',
+        'box-shadow:-8px 0 28px rgba(0,0,0,.28)',
+      ].join(';');
+    }
+
+    // Cabeçalho no desenho do Copiloto: ação à esquerda, título no centro,
     // fechar à direita.
     const cabecalho = el(
       'div',
@@ -228,52 +298,90 @@
         'display:flex',
         'align-items:center',
         'gap:8px',
-        'padding:14px 14px',
+        'padding:14px',
         `border-bottom:1px solid ${p.borda}`,
+        `background:${p.fundoTopo}`,
         'flex:0 0 auto',
       ].join(';')
     );
     const voltar = el(
       'button',
-      `background:none;border:none;color:${p.textoFraco};cursor:pointer;font-size:18px;` +
-        'line-height:1;padding:4px;visibility:hidden'
+      `background:none;border:none;color:${p.textoFraco};cursor:pointer;font-size:20px;` +
+        'line-height:1;padding:2px 6px;border-radius:6px;visibility:hidden'
     );
     voltar.type = 'button';
     voltar.textContent = '‹';
     voltar.title = 'Voltar';
-    const titulo = el(
-      'div',
-      'flex:1;text-align:center;font:600 15px/1.2 system-ui,sans-serif',
+
+    const titulo = el('div', 'flex:1;text-align:center;min-width:0');
+    const tituloTexto = el(
+      'span',
+      `font:600 15px/1.2 system-ui,sans-serif;color:${p.texto}`,
       'Reunião'
     );
+    titulo.appendChild(tituloTexto);
+
     const fecharBtn = el(
       'button',
-      `background:none;border:none;color:${p.textoFraco};cursor:pointer;font-size:18px;` +
-        'line-height:1;padding:4px'
+      `background:none;border:none;color:${p.textoFraco};cursor:pointer;font-size:17px;` +
+        'line-height:1;padding:4px 6px;border-radius:6px'
     );
     fecharBtn.type = 'button';
     fecharBtn.textContent = '✕';
     fecharBtn.title = 'Fechar';
     fecharBtn.addEventListener('click', fechar);
+    for (const b of [voltar, fecharBtn]) {
+      b.addEventListener('mouseenter', () => {
+        b.style.background = p.fundoFraco;
+        b.style.color = p.texto;
+      });
+      b.addEventListener('mouseleave', () => {
+        b.style.background = 'none';
+        b.style.color = p.textoFraco;
+      });
+    }
     cabecalho.append(voltar, titulo, fecharBtn);
 
-    const corpo = el('div', 'flex:1;overflow-y:auto;padding:16px 14px');
+    const corpo = el('div', 'flex:1;overflow-y:auto;overflow-x:hidden;padding:16px 14px');
     const rodape = el(
       'div',
       `padding:12px 14px;border-top:1px solid ${p.borda};flex:0 0 auto;display:none`
     );
-
     raiz.append(cabecalho, corpo, rodape);
-    document.body.appendChild(raiz);
 
-    const reposicionar = () => {
-      const novo = geometria();
-      raiz.style.top = `${Math.round(novo.top)}px`;
-      raiz.style.right = `${Math.round(novo.right)}px`;
-      raiz.style.width = `${Math.round(novo.width)}px`;
-      raiz.style.height = `${Math.round(novo.height)}px`;
+    // Entra no fim do container — a coluna mais à direita, como o Copiloto.
+    destino.pai.appendChild(raiz);
+
+    // Abre no quadro seguinte: aplicar a largura no mesmo quadro em que o nó
+    // entrou faria o navegador pular a transição e a aba apareceria estalando.
+    //
+    // Com fallback pra setTimeout porque requestAnimationFrame NÃO dispara em
+    // aba de fundo — e a aba pode ser aberta com a janela atrás de outra. Sem
+    // isso ela ficaria parada em largura 0, e o atendente veria o clique não
+    // fazer nada até voltar pra aba.
+    const larguraAlvo = `${destino.largura}px`;
+    const mostrar = () => {
+      raiz.style.width = larguraAlvo;
+      raiz.style.opacity = '1';
     };
-    window.addEventListener('resize', reposicionar);
+    const proximoQuadro = typeof window.requestAnimationFrame === 'function'
+      ? (fn) => window.requestAnimationFrame(() => window.requestAnimationFrame(fn))
+      : (fn) => window.setTimeout(fn, 16);
+    proximoQuadro(mostrar);
+    // Rede de segurança: se o quadro não vier (aba de fundo), abre mesmo assim.
+    window.setTimeout(mostrar, 120);
+
+    const aoRedimensionar = () => {
+      // Passar do limiar troca o modo, e trocar de modo exige remontar — a aba
+      // é reaberta pelo fluxo, que preserva o passo em que a pessoa estava.
+      const novo = decidirDestino();
+      if (novo.modo !== destino.modo) {
+        document.dispatchEvent(new CustomEvent('cpm-aba-remontar'));
+        return;
+      }
+      raiz.style.width = `${novo.largura}px`;
+    };
+    window.addEventListener('resize', aoRedimensionar);
 
     const aoTeclar = (ev) => {
       if (ev.key === 'Escape') {
@@ -283,16 +391,36 @@
     };
     document.addEventListener('keydown', aoTeclar, true);
 
-    aberto = { raiz, corpo, rodape, reposicionar, aoTeclar };
+    // O container é do React, que remove nós que não conhece ao re-renderizar.
+    // Se a aba sumir sem a gente ter fechado, recolocamos no mesmo lugar.
+    let observer = null;
+    if (destino.modo === 'empurra') {
+      observer = new MutationObserver(() => {
+        if (aberto && !raiz.isConnected) {
+          destino.pai.appendChild(raiz);
+          raiz.style.width = larguraAlvo;
+          raiz.style.opacity = '1';
+        }
+      });
+      observer.observe(destino.pai, { childList: true });
+    }
+
+    aberto = { raiz, corpo, rodape, aoRedimensionar, aoTeclar, observer, modo: destino.modo };
+    console.log(
+      `%c[chatPro reunião]%c aba aberta — modo ${destino.modo}, ${destino.largura}px` +
+        (destino.referencia ? ' (medida no Copiloto)' : ''),
+      'color:#25D066;font-weight:700',
+      ''
+    );
 
     const api = {
       p,
       corpo,
       rodape,
       fechar,
-      /** Título do cabeçalho e o botão voltar, que só aparece quando há pra onde. */
+      modo: destino.modo,
       cabecalho(texto, aoVoltar) {
-        titulo.textContent = texto;
+        tituloTexto.textContent = texto;
         if (aoVoltar) {
           voltar.style.visibility = 'visible';
           voltar.onclick = aoVoltar;
@@ -316,7 +444,6 @@
       campo: (rotulo, opcoes) => campo(p, rotulo, opcoes),
       botao: (rotulo, tipo) => botao(rotulo, p, tipo),
       el,
-      /** Aviso curto no topo do corpo — erro de API, campo faltando, etc. */
       aviso(texto, tom) {
         const cor = tom === 'erro' ? p.perigo : p.textoFraco;
         const n = el(
@@ -334,13 +461,13 @@
         corpo.prepend(n);
         return n;
       },
-      /** Estado de carregando, com o texto do que está esperando. */
       carregando(texto) {
         api.limpar();
         corpo.appendChild(
           el(
             'div',
-            `padding:28px 8px;text-align:center;color:${p.textoFraco};font:500 13px/1.4 system-ui,sans-serif`,
+            `padding:28px 8px;text-align:center;color:${p.textoFraco};` +
+              'font:500 13px/1.4 system-ui,sans-serif',
             texto
           )
         );
@@ -351,5 +478,5 @@
     return api;
   }
 
-  window.__cpmAba = { abrir, fechar, estaAberta, paleta };
+  window.__cpmAba = { abrir, fechar, estaAberta, paleta, decidirDestino };
 })();
