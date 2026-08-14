@@ -4,6 +4,7 @@ import type { ChatproClient, ResultadoEntrega } from '../chatpro/client.js';
 import { normalizarTranscript, type Fala } from '../recall/transcript.js';
 import { gerarResumo, formatarResumo, resumoExtrativo } from '../resumo/index.js';
 import { createLogger, errorMessage } from '../log.js';
+import { detectarTopicos, formatarComentarioPalavras } from '../palavras/motor.js';
 
 /**
  * Fila DURÁVEL dos webhooks do Recall.ai (tabela recall_events).
@@ -211,8 +212,32 @@ export async function entregarAoChatpro(
       `(resumo ${resumo ? 'por IA' : comPiso ? 'extrativo' : 'indisponível — só cabeçalho'}, ${conteudo.length} chars).`
   );
 
+  // Palavras-chave: lógica de programação pura, sem IA. Roda mesmo quando o
+  // resumo por IA falhou — é dicionário e expressão regular, não depende de
+  // rede nem de chave. O que o CLIENTE falou é o que pesa, então o motor conta
+  // as menções dele separado das do atendente.
+  //
+  // Vai junto do resumo, num comentário só: duas entregas dobrariam o risco de
+  // republicar em caso de retomada, e a fatia de partes já é resolvida ali.
+  let corpo = conteudo;
+  try {
+    const topicos = detectarTopicos(salvo.falas);
+    const bloco = formatarComentarioPalavras(topicos, { tipo: meeting.tipo ?? undefined });
+    if (bloco) {
+      corpo = `${conteudo}\n\n${bloco}`;
+      db.setMeetingPalavras(
+        meeting.id,
+        topicos.map((t) => t.chave)
+      );
+      log.info(`reunião ${meeting.id}: ${topicos.length} tópico(s) detectado(s) sem IA.`);
+    }
+  } catch (err) {
+    // Detecção é enfeite: se ela quebrar, o resumo ainda tem que chegar.
+    log.warn(`reunião ${meeting.id}: falha ao detectar palavras-chave: ${errorMessage(err)}`);
+  }
+
   const resultado = await chatpro.enviar({
-    conteudo,
+    conteudo: corpo,
     sessionId: meeting.session_id,
     meetingUrl: meeting.meeting_url,
     meetingCode: meeting.meeting_code,

@@ -97,6 +97,12 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
             contato: msg.contato ?? null,
             // Só vai quando o atendente marcou hora; sem isso é reunião agora.
             ...(msg.quando ? { quando: msg.quando } : {}),
+            // Campos do fluxo comercial — só entram quando existem, pra não
+            // quebrar a validação do servidor com null onde ele espera ausência.
+            ...(msg.tipoReuniao ? { tipo: msg.tipoReuniao } : {}),
+            ...(msg.atendenteEmail ? { atendenteEmail: msg.atendenteEmail } : {}),
+            ...(msg.cliente ? { cliente: msg.cliente } : {}),
+            ...(msg.vendedorEmail ? { vendedorEmail: msg.vendedorEmail } : {}),
           }),
         });
         if (r.ok) {
@@ -114,6 +120,21 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
           erro: r.corpo?.detail || issues || r.corpo?.error || `Servidor respondeu ${r.status}.`,
           precisaConectar: Boolean(r.corpo?.precisaConectar),
         });
+        return;
+      }
+
+      if (msg?.tipo === 'CONSULTAR_ONBOARDING') {
+        // Migração: o painel interno pode já ter os dados do cliente pelo CNPJ.
+        // Erro aqui não é fatal — o content script segue com digitação manual.
+        const cnpj = String(msg.cnpj || '').replace(/\D/g, '');
+        const r = await chamar(`/api/painel/onboarding?cnpj=${encodeURIComponent(cnpj)}`);
+        responder({ ok: r.ok, dados: r.corpo });
+        return;
+      }
+
+      if (msg?.tipo === 'LISTAR_VENDEDORES') {
+        const r = await chamar('/api/painel/vendedores');
+        responder({ ok: r.ok, dados: r.corpo });
         return;
       }
 

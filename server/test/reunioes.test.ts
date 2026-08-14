@@ -4,8 +4,13 @@ import type { Server } from 'node:http';
 import { Db } from '../src/db.js';
 import { RecallClient } from '../src/recall/client.js';
 import { ChatproClient } from '../src/chatpro/client.js';
+import { PainelClient } from '../src/painel/client.js';
 import { ContasGoogle, ContaGoogleExpirada } from '../src/google/contas.js';
-import { createReunioesRouter, formatarQuando } from '../src/routes/reunioes.js';
+import {
+  createReunioesRouter,
+  formatarQuando,
+  ANTECEDENCIA_CONVITE_MS,
+} from '../src/routes/reunioes.js';
 import {
   extrairMeetUrl,
   criarLinkDoMeet,
@@ -49,6 +54,8 @@ async function montarApp(
     chatproConfigurado?: boolean;
     respostaChatpro?: Response;
     linkFalha?: Error;
+    /** Painel interno comercial fora do ar: TODAS as chamadas dele falham. */
+    painelIndisponivel?: boolean;
   } = {}
 ): Promise<App> {
   const db = new Db(':memory:');
@@ -58,11 +65,27 @@ async function montarApp(
   const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const u = String(url);
     chamadas.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (u.includes('painel.exemplo')) {
+      if (options.painelIndisponivel) {
+        return Promise.resolve(new Response('fora do ar', { status: 503 }));
+      }
+      if (u.includes('/distribuicao')) {
+        return Promise.resolve(jsonResponse({ email: 'distribuido@time.com', nome: 'Distribuído' }));
+      }
+      return Promise.resolve(jsonResponse({ ok: true }, 201));
+    }
     if (u.includes('/messages/sendMessage')) {
       return Promise.resolve(options.respostaChatpro ?? jsonResponse({ ok: true }, 201));
     }
     return Promise.resolve(jsonResponse({ id: 'bot-1' }));
   }) as typeof fetch;
+
+  const painel = new PainelClient({
+    baseUrl: 'https://painel.exemplo',
+    apiToken: 'token-painel',
+    fetchImpl,
+    timeoutMs: 200,
+  });
 
   const contas = new ContasGoogle({
     clientId: 'cliente-fake',
@@ -97,6 +120,7 @@ async function montarApp(
       db,
       contas,
       chatpro,
+      painel,
       recall: new RecallClient({ apiKey: 'k', fetchImpl }),
       botName: 'chatPro (gravando)',
       criarLink: (opcoes: CriarMeetOptions) => {
@@ -375,41 +399,76 @@ describe('POST /api/reunioes/iniciar', () => {
   });
 });
 
+/** A fila de convites agendados que ainda está 'pendente'. */
+function filaDeConvites(db: Db) {
+  return db.enviosVencidos(daquiA(365 * 24 * 60), 100);
+}
+
 describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
-  it('marca o evento na hora combinada, avisa o cliente e agenda o bot', async () => {
+  it('marca o evento na hora, agenda o convite pra 5 min antes e agenda o bot', async () => {
     const app = await montarApp();
     const quando = daquiA(3 * 24 * 60);
 
     const res = await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE, quando });
 
     expect(res.status).toBe(201);
-    const corpo = (await res.json()) as { agendadaPara: string; quandoTexto: string };
+    const corpo = (await res.json()) as {
+      agendadaPara: string;
+      quandoTexto: string;
+      mensagemEnviada: boolean;
+      conviteAgendadoPara: string;
+    };
     expect(corpo.agendadaPara).toBe(quando);
 
     // 1. O evento do Google nasce no horário marcado, não em cima do clique.
     expect(app.linkOpcoes[0]?.inicio?.toISOString()).toBe(quando);
 
-    // 2. O cliente recebe a data, não só o link — senão entra numa sala vazia.
-    const envio = app.chamadas.find((c) => c.url.includes('/messages/sendMessage'));
-    const texto = (envio?.body as { message: string }).message;
-    expect(texto).toContain('Reunião marcada para');
-    expect(texto).toContain(corpo.quandoTexto);
-    expect(texto).toContain(MEET_URL);
+    // 2. NADA sai pro cliente agora: link mandado três dias antes se perde na
+    //    conversa. O convite entra na fila durável pra sair 5 min antes.
+    expect(corpo.mensagemEnviada).toBe(false);
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(false);
+    expect(corpo.conviteAgendadoPara).toBe(
+      new Date(Date.parse(quando) - ANTECEDENCIA_CONVITE_MS).toISOString()
+    );
+    const fila = filaDeConvites(app.db);
+    expect(fila).toHaveLength(1);
+    expect(fila[0]?.enviar_em).toBe(corpo.conviteAgendadoPara);
+    expect(fila[0]?.session_id).toBe(SESSION);
+    // O link já vai resolvido, mas o {quando} fica CRU de propósito: quem
+    // resolve é o worker, no instante do envio. Congelar aqui mandaria
+    // "amanhã às 10h" pro cliente no próprio dia da reunião.
+    expect(fila[0]?.message).toContain('Reunião marcada para');
+    expect(fila[0]?.message).toContain('{quando}');
+    expect(fila[0]?.message).toContain(MEET_URL);
+    // O horário da REUNIÃO viaja junto — é a partir dele que o worker escreve
+    // "hoje às 10h" na hora certa.
+    expect(fila[0]?.reuniao_em).toBe(new Date(quando).toISOString());
+    // E aponta pra reunião criada — é o que cancela o convite se ela for
+    // desmarcada (a sala reaproveitada faz isso explicitamente).
+    expect(fila[0]?.meeting_id).toBe(app.db.listMeetings()[0]?.id);
 
     // 3. O bot fica agendado no Recall, em ISO 8601.
     const bot = app.chamadas.find((c) => c.url.endsWith('/bot'));
     expect((bot?.body as { join_at?: string }).join_at).toBe(quando);
   });
 
-  it('faltando menos de 10 min, vai sem join_at — o bot entra na hora', async () => {
+  it('faltando menos de 10 min, vai sem join_at — e o convite sai já', async () => {
     // O Recall pede antecedência pro bot agendado. Adiar a entrada em 4 min só
     // criaria uma janela com a reunião rolando e o bot fora dela.
     const app = await montarApp();
+    const antes = Date.now();
 
     await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE, quando: daquiA(4) });
 
     const bot = app.chamadas.find((c) => c.url.endsWith('/bot'));
     expect((bot?.body as { join_at?: string }).join_at).toBeUndefined();
+
+    // "5 min antes" já passou (a reunião é daqui a 4): o convite vence AGORA —
+    // o worker manda na primeira passada, não depois da reunião começar.
+    const fila = filaDeConvites(app.db);
+    const enviarEm = Date.parse(fila[0]?.enviar_em ?? '');
+    expect(enviarEm).toBeGreaterThanOrEqual(antes);
+    expect(enviarEm).toBeLessThanOrEqual(Date.now());
   });
 
   it('recusa horário no passado com motivo legível', async () => {
@@ -455,7 +514,7 @@ describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('mensagem personalizada também recebe {quando}', async () => {
+  it('mensagem personalizada também recebe {quando} — já pronta na fila', async () => {
     const app = await montarApp();
     const quando = daquiA(2 * 24 * 60);
 
@@ -466,10 +525,189 @@ describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
       mensagem: 'Fechado para {quando}. Link: {link}',
     });
 
-    const envio = app.chamadas.find((c) => c.url.includes('/messages/sendMessage'));
-    expect((envio?.body as { message: string }).message).toBe(
-      `Fechado para ${formatarQuando(new Date(quando))}. Link: ${MEET_URL}`
+    // Só o {link} é resolvido aqui. O {quando} sobrevive cru até o envio —
+    // é o worker que sabe se, naquele momento, a reunião é "hoje" ou "amanhã".
+    expect(filaDeConvites(app.db)[0]?.message).toBe(
+      `Fechado para {quando}. Link: ${MEET_URL}`
     );
+  });
+});
+
+describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () => {
+  const CNPJ_VALIDO = '11.222.333/0001-81';
+  const cliente = {
+    nome: 'Padaria Real',
+    cnpj: CNPJ_VALIDO,
+    instancia: 'chatpro-abc123',
+    telefone: '+5511999998888',
+  };
+
+  it('implantação sem os dados do cliente é 400 com mensagem clara', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'implantacao',
+    });
+
+    expect(res.status).toBe(400);
+    const corpo = (await res.json()) as { issues: { path: string; message: string }[] };
+    const issue = corpo.issues.find((i) => i.path === 'cliente');
+    expect(issue?.message).toContain('implantacao');
+    expect(issue?.message).toContain('dados do cliente');
+    // Nada aconteceu: nem link, nem mensagem, nem bot.
+    expect(app.chamadas).toHaveLength(0);
+    expect(app.linkOpcoes).toHaveLength(0);
+  });
+
+  it('CNPJ com dígito verificador errado é recusado', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'cs',
+      cliente: { ...cliente, cnpj: '11.222.333/0001-80' },
+    });
+
+    expect(res.status).toBe(400);
+    const corpo = (await res.json()) as { issues: { message: string }[] };
+    expect(corpo.issues.some((i) => i.message.includes('CNPJ'))).toBe(true);
+  });
+
+  it('apresentação não exige cliente', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('reunião AGORA fica com quem marcou, sem consultar a distribuição', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'cs',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(201);
+    // "Agora" não verifica nada: o cliente está na linha COM o atendente.
+    expect(app.chamadas.some((c) => c.url.includes('/distribuicao'))).toBe(false);
+    // A mensagem sai na hora, como sempre foi.
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(true);
+
+    const reuniao = app.db.listMeetings()[0];
+    expect(reuniao?.atendente_email).toBe('quem@marcou.com');
+    expect(reuniao?.tipo).toBe('cs');
+    expect(JSON.parse(reuniao?.cliente_json ?? '{}')).toMatchObject({
+      nome: 'Padaria Real',
+      instancia: 'chatpro-abc123',
+    });
+  });
+
+  it('AGENDADA de migração pega o responsável da distribuição do painel', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: daquiA(2 * 24 * 60),
+      tipo: 'migracao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as { responsavel: string };
+    expect(corpo.responsavel).toBe('distribuido@time.com');
+
+    const distribuicao = app.chamadas.find((c) => c.url.includes('/distribuicao'));
+    expect(distribuicao?.body).toEqual({ tipo: 'migracao' });
+    // A coluna de atribuição leva o RESPONSÁVEL, não quem clicou.
+    expect(app.db.listMeetings()[0]?.atendente_email).toBe('distribuido@time.com');
+  });
+
+  it('painel interno fora do ar NÃO trava: o responsável cai em quem marcou', async () => {
+    const app = await montarApp({ painelIndisponivel: true });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: daquiA(2 * 24 * 60),
+      tipo: 'implantacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { responsavel: string }).responsavel).toBe('quem@marcou.com');
+    expect(app.db.listMeetings()[0]?.atendente_email).toBe('quem@marcou.com');
+  });
+
+  it('AGENDADA de apresentação usa o vendedor escolhido, sem distribuição', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando: daquiA(2 * 24 * 60),
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      vendedorEmail: 'vendedor@time.com',
+    });
+
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { responsavel: string }).responsavel).toBe('vendedor@time.com');
+    expect(app.chamadas.some((c) => c.url.includes('/distribuicao'))).toBe(false);
+    expect(app.db.listMeetings()[0]?.atendente_email).toBe('vendedor@time.com');
+  });
+
+  it('sem atendente identificado o fluxo segue — a reunião só fica sem atribuição', async () => {
+    // O @chatpro:auth pode não ter e-mail nenhum; bloquear o botão por isso
+    // pararia o atendimento por causa de um dado de relatório.
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE });
+
+    expect(res.status).toBe(201);
+    expect(app.db.listMeetings()[0]?.atendente_email).toBeNull();
+  });
+
+  it('a reunião criada é registrada no painel interno em melhor esforço', async () => {
+    const app = await montarApp();
+
+    await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'cs',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    // O registro é disparado FORA do caminho da resposta (fire-and-forget) —
+    // dá um tick pra ele acontecer antes de olhar.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const registro = app.chamadas.find(
+      (c) => c.url.includes('painel.exemplo') && c.url.includes('/reunioes')
+    );
+    expect(registro?.body).toMatchObject({
+      sessionId: SESSION,
+      tipo: 'cs',
+      atendenteEmail: 'quem@marcou.com',
+      responsavelEmail: 'quem@marcou.com',
+      meetUrl: MEET_URL,
+      // O CNPJ viaja normalizado pro painel interno.
+      cliente: { cnpj: '11222333000181' },
+    });
   });
 });
 

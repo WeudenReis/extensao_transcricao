@@ -127,6 +127,13 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   RESUMO_MODELO: z.string().min(1).default('claude-sonnet-5'),
+  // ─── Painel interno (plataforma comercial da empresa) ───
+  // Vazias = integração desligada, e nada quebra: distribuição de responsável
+  // cai em quem marcou, lista de vendedores volta vazia e o onboarding por
+  // CNPJ não acha ninguém. O contrato real ainda não foi passado — ver o
+  // "CONTRATO PROVISÓRIO" em src/painel/client.ts.
+  PAINEL_API_URL: z.string().url('PAINEL_API_URL deve ser uma URL válida.').optional(),
+  PAINEL_API_TOKEN: z.string().optional(),
   // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
   // localhost). Vira obrigatório na prática assim que o servidor é exposto.
   PANEL_TOKEN: z
@@ -179,6 +186,8 @@ export interface Config {
   geminiApiKey: string | undefined;
   resumoProvedor: ProvedorResumo;
   resumoModelo: string;
+  painelApiUrl: string | undefined;
+  painelApiToken: string | undefined;
   panelToken: string | undefined;
 }
 
@@ -309,6 +318,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     geminiApiKey: e.GEMINI_API_KEY,
     resumoProvedor: e.RESUMO_PROVEDOR,
     resumoModelo: e.RESUMO_MODELO,
+    painelApiUrl: e.PAINEL_API_URL,
+    painelApiToken: e.PAINEL_API_TOKEN,
     panelToken: e.PANEL_TOKEN,
   };
 }

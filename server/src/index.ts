@@ -19,6 +19,9 @@ import { createRecallHookRouter } from './routes/recallHook.js';
 import { criarPainelAuth } from './routes/painelAuth.js';
 import { createChatproHookRouter } from './routes/chatproHook.js';
 import { createReunioesRouter } from './routes/reunioes.js';
+import { createPainelInternoRouter } from './routes/painelInterno.js';
+import { PainelClient } from './painel/client.js';
+import { EnviosAgendadosWorker } from './pipeline/enviosAgendados.js';
 import { ContasGoogle } from './google/contas.js';
 import { RecallClient } from './recall/client.js';
 import { ChatproClient } from './chatpro/client.js';
@@ -125,6 +128,18 @@ function main(): void {
     db,
   });
 
+  // Plataforma interna (calendário, distribuição, onboarding por CNPJ). Sem
+  // PAINEL_API_URL ela fica inerte: nenhum método lança, então marcar reunião
+  // continua funcionando com o adapter desligado.
+  const painel = new PainelClient({
+    baseUrl: config.painelApiUrl,
+    apiToken: config.painelApiToken,
+  });
+
+  // Convite da reunião AGENDADA: sai ~5 min antes do horário, não na hora de
+  // marcar. Sem este worker a fila enche e ninguém recebe nada.
+  const enviosAgendados = new EnviosAgendadosWorker({ db, chatpro });
+
   const recallQueue = new RecallQueueWorker({
     db,
     recall,
@@ -175,8 +190,10 @@ function main(): void {
       chatpro,
       recall,
       botName: config.recallBotName,
+      painel,
     })
   );
+  app.use(createPainelInternoRouter({ painel }));
   app.use(
     createChatproHookRouter({
       db,
@@ -232,6 +249,7 @@ function main(): void {
   eventQueue.poke(); // retoma eventos pendentes que sobraram de antes do restart
   audioPipeline.resumePending(); // retoma capturas 'pending'/'transcribing' interrompidas
   recallQueue.startWorker();
+  enviosAgendados.startWorker();
   recallQueue.resumePending(); // webhooks do Recall que ficaram pendentes
 
   // Pré-carrega o modelo de STT em segundo plano (não bloqueia o boot).

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Db } from '../db.js';
 import type { RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
+import { validarCnpj, PainelClient } from '../painel/client.js';
 import { ContasGoogle, ContaNaoConectada, ContaGoogleExpirada } from '../google/contas.js';
 import { criarLinkDoMeet, MeetLinkError } from '../google/meetLink.js';
 import { criarReuniao } from '../recall/criarReuniao.js';
@@ -53,6 +54,28 @@ export const FUSO = 'America/Sao_Paulo';
 /** Teto do agendamento. Além disso é engano de digitação, não compromisso. */
 export const MAX_DIAS_AGENDAMENTO = 90;
 
+/**
+ * Reunião AGENDADA: o convite sai esta antecedência ANTES do horário, não na
+ * hora de marcar — link mandado três dias antes se perde na conversa.
+ */
+export const ANTECEDENCIA_CONVITE_MS = 5 * 60_000;
+
+export const TIPOS_REUNIAO = ['apresentacao', 'migracao', 'implantacao', 'cs'] as const;
+export type TipoReuniao = (typeof TIPOS_REUNIAO)[number];
+
+/**
+ * Dados do cliente que implantação/CS/migração exigem. O CNPJ passa pelos
+ * dígitos verificadores: ele vira chave de consulta no painel interno, e um
+ * dígito trocado apontaria pra empresa errada.
+ */
+export const clienteSchema = z.object({
+  nome: z.string().min(1, 'nome do cliente é obrigatório.').max(200),
+  cnpj: z.string().refine(validarCnpj, 'CNPJ inválido — confira os 14 dígitos.'),
+  /** Código da instância, formato chatpro-xxx. */
+  instancia: z.string().min(1, 'instância do cliente é obrigatória.').max(80),
+  telefone: z.string().min(8, 'telefone do cliente é obrigatório.').max(30),
+});
+
 export const iniciarSchema = z.object({
   sessionId: z.string().uuid('sessionId deve ser o UUID da conversa do chatPro.'),
   /** Id da instalação da extensão — aponta pra conta Google conectada. */
@@ -91,6 +114,27 @@ export const iniciarSchema = z.object({
         });
       }
     }),
+  // ─── Fluxo do time comercial (tudo opcional pra não quebrar a extensão antiga) ───
+  /** apresentacao | migracao | implantacao | cs. */
+  tipo: z.enum(TIPOS_REUNIAO).nullish(),
+  /** Quem clicou — e-mail lido do @chatpro:auth da página do chatPro. */
+  atendenteEmail: z.string().email('atendenteEmail deve ser um e-mail válido.').nullish(),
+  /** Vendedor escolhido no seletor da APRESENTAÇÃO agendada. */
+  vendedorEmail: z.string().email('vendedorEmail deve ser um e-mail válido.').nullish(),
+  cliente: clienteSchema.nullish(),
+}).superRefine((corpo, ctx) => {
+  // Implantação, CS e migração são reuniões SOBRE uma conta que já existe (ou
+  // vai existir) — sem nome/CNPJ/instância/telefone o painel não sabe de quem
+  // é a reunião, e a atribuição comercial fica cega.
+  if (corpo.tipo && corpo.tipo !== 'apresentacao' && !corpo.cliente) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cliente'],
+      message:
+        `Reunião de ${corpo.tipo} exige os dados do cliente ` +
+        '(nome, CNPJ, instância e telefone).',
+    });
+  }
 });
 
 const PARTES_DATA = new Intl.DateTimeFormat('pt-BR', {
@@ -139,7 +183,12 @@ export function formatarQuando(quando: Date, agora: Date = new Date()): string {
   return `${diaSemana}, ${p.day ?? ''}/${p.month ?? ''}, às ${hora}`;
 }
 
-function assincrono(
+/**
+ * Embrulho pra handler async: o Express 4 NÃO encaminha rejeição de promise
+ * pro error handler — sem isto, um `throw` derrubaria o processo.
+ * Exportado porque as outras rotas (painelInterno) usam o mesmo embrulho.
+ */
+export function assincrono(
   handler: (req: Request, res: Response) => Promise<void>
 ): RequestHandler {
   return (req, res, next) => {
@@ -152,6 +201,12 @@ export interface ReunioesRouterDeps {
   contas: ContasGoogle;
   chatpro: ChatproClient;
   recall: RecallClient | undefined;
+  /**
+   * Painel interno comercial — distribuição de responsável e registro.
+   * Opcional: sem ele, entra um client desconfigurado (todos os fallbacks) —
+   * é o que mantém o index.ts compilando até o wiring real chegar.
+   */
+  painel?: PainelClient;
   botName: string;
   /** Injetável nos testes — evita bater no Google de verdade. */
   criarLink?: typeof criarLinkDoMeet;
@@ -159,6 +214,7 @@ export interface ReunioesRouterDeps {
 
 export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
   const { db, contas, chatpro, recall, botName } = deps;
+  const painel = deps.painel ?? new PainelClient({ baseUrl: undefined, apiToken: undefined });
   const criarLink = deps.criarLink ?? criarLinkDoMeet;
   const router = Router();
 
@@ -243,6 +299,26 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const instanceId = parsed.data.instanceId ?? null;
       const contato = parsed.data.contato ?? null;
       const quando = parsed.data.quando ? new Date(parsed.data.quando) : null;
+      const tipo = parsed.data.tipo ?? null;
+      const atendenteEmail = parsed.data.atendenteEmail ?? null;
+      const vendedorEmail = parsed.data.vendedorEmail ?? null;
+      const cliente = parsed.data.cliente ?? null;
+
+      // Quem responde pela reunião:
+      // - AGORA: quem está marcando já está com o cliente na linha — é dele.
+      //   Não consultamos nada.
+      // - AGENDADA de implantação/CS/migração: a distribuição do painel
+      //   interno decide; painel fora do ar cai em quem marcou (o fluxo do
+      //   atendente nunca trava por causa da plataforma interna).
+      // - AGENDADA de apresentação: o vendedor escolhido no seletor.
+      let responsavel = atendenteEmail;
+      if (quando) {
+        if (tipo === 'migracao' || tipo === 'implantacao' || tipo === 'cs') {
+          responsavel = (await painel.distribuirResponsavel(tipo))?.email ?? atendenteEmail;
+        } else if (tipo === 'apresentacao') {
+          responsavel = vendedorEmail ?? atendenteEmail;
+        }
+      }
 
       // 1. Link do Meet, na agenda de quem clicou.
       let meet;
@@ -280,22 +356,38 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         return;
       }
 
-      // 2. Manda o link pro cliente. Se falhar, PARA: um bot entrando numa sala
-      //    que o cliente nem sabe que existe não ajuda ninguém.
+      // 2. A mensagem pro cliente.
+      //
+      //    Reunião AGORA: sai na hora, e se falhar PARA — um bot entrando numa
+      //    sala que o cliente nem sabe que existe não ajuda ninguém.
+      //
+      //    Reunião AGENDADA: NÃO sai agora. O convite entra na fila durável e
+      //    o worker dispara ~5 min antes do horário — link mandado dias antes
+      //    se perde na conversa, e o cliente clicaria numa sala vazia. Se o
+      //    "5 min antes" já passou (marcaram pra daqui a 3 min), sai já.
       const modelo =
         parsed.data.mensagem ?? (quando ? MENSAGEM_AGENDADA_PADRAO : MENSAGEM_PADRAO);
-      const texto = modelo
-        .replace('{quando}', quando ? formatarQuando(quando) : '')
-        .replace('{link}', meet.meetUrl);
-      const envio = await chatpro.enviarMensagem({ sessionId, message: texto, instanceId });
-      if (!envio.ok) {
-        res.status(502).json({
-          error: 'O link foi criado, mas não deu pra enviar pro cliente.',
-          detail: envio.motivo,
-          meetUrl: meet.meetUrl,
-          hint: 'Você pode colar o link na conversa manualmente.',
-        });
-        return;
+      // Agendada guarda o modelo com `{quando}` AINDA CRU: quem resolve é o
+      // worker, no instante do envio. Congelar aqui produziria "amanhã às 10h"
+      // chegando no próprio dia da reunião — o cliente entende o dia seguinte
+      // e perde a reunião que começa em 5 minutos.
+      const texto = quando
+        ? modelo.replace('{link}', meet.meetUrl)
+        : modelo.replace('{quando}', '').replace('{link}', meet.meetUrl);
+      const enviarEm = quando
+        ? new Date(Math.max(Date.now(), quando.getTime() - ANTECEDENCIA_CONVITE_MS))
+        : null;
+      if (!quando) {
+        const envio = await chatpro.enviarMensagem({ sessionId, message: texto, instanceId });
+        if (!envio.ok) {
+          res.status(502).json({
+            error: 'O link foi criado, mas não deu pra enviar pro cliente.',
+            detail: envio.motivo,
+            meetUrl: meet.meetUrl,
+            hint: 'Você pode colar o link na conversa manualmente.',
+          });
+          return;
+        }
       }
 
       // 3. Bot na sala. Falhar aqui não desfaz o atendimento — a reunião fica
@@ -308,22 +400,64 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
           chatproInstanceId: instanceId,
           origem: 'api',
           joinAt: quando,
+          // Na coluna de atribuição vai o RESPONSÁVEL calculado, não
+          // necessariamente quem clicou.
+          atendenteEmail: responsavel,
+          tipo,
+          clienteJson: cliente ? JSON.stringify(cliente) : null,
         }
       );
 
+      // 4. Agendada: o convite entra na fila DEPOIS da reunião existir, pra
+      //    carregar o meeting_id (é ele que cancela o convite se a reunião for
+      //    desmarcada). Se o bot falhou a ponto de nem haver linha
+      //    (RECALL_API_KEY vazia), o convite sai mesmo assim com um id órfão —
+      //    o cliente receber o link importa mais que a gravação, e o worker
+      //    não cancela por falta de reunião justamente por causa deste caso.
+      if (quando && enviarEm) {
+        db.criarEnvioAgendado({
+          meetingId: r.meeting?.id ?? randomUUID(),
+          sessionId,
+          instanceId,
+          message: texto,
+          enviarEm: enviarEm.toISOString(),
+          reuniaoEm: quando.toISOString(),
+        });
+      }
+
+      // 5. Registro no painel interno — melhor esforço, fora do caminho da
+      //    resposta (o painel tem 15 s de timeout; o clique não espera isso).
+      //    registrarReuniao nunca lança: falha só loga.
+      if (r.meeting) {
+        void painel.registrarReuniao({
+          meetingId: r.meeting.id,
+          sessionId,
+          tipo,
+          atendenteEmail,
+          responsavelEmail: responsavel,
+          meetUrl: meet.meetUrl,
+          quando: quando ? quando.toISOString() : null,
+          cliente,
+        });
+      }
+
       log.info(
         `reunião ${quando ? `marcada pra ${quando.toISOString()}` : 'iniciada'} pela sessão ` +
-          `${sessionId}: ${meet.meetingCode ?? '?'}, bot ${r.ok ? 'ok' : 'FALHOU'}.`
+          `${sessionId}: ${meet.meetingCode ?? '?'}, tipo ${tipo ?? '(sem tipo)'}, ` +
+          `responsável ${responsavel ?? '(sem atendente)'}, bot ${r.ok ? 'ok' : 'FALHOU'}.`
       );
 
       res.status(201).json({
         meetUrl: meet.meetUrl,
         meetingCode: meet.meetingCode,
-        mensagemEnviada: true,
+        // Agendada: a mensagem NÃO saiu agora — sai perto do horário.
+        mensagemEnviada: !quando,
         gravando: r.ok,
         // A extensão usa isto pra não abrir a sala de uma reunião que é depois.
         agendadaPara: quando ? quando.toISOString() : null,
         quandoTexto: quando ? formatarQuando(quando) : null,
+        responsavel,
+        ...(enviarEm ? { conviteAgendadoPara: enviarEm.toISOString() } : {}),
         ...(r.ok
           ? { meeting: resumirReuniao(r.meeting) }
           : {

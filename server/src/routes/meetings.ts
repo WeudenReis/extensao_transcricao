@@ -56,9 +56,23 @@ export interface ResumoReuniao {
   endedAt: string | null;
   durationSeconds: number | null;
   chatproStatus: string | null;
+  atendenteEmail: string | null;
+  tipo: string | null;
+  palavras: string[];
   error: string | null;
   createdAt: string;
   temTranscript: boolean;
+}
+
+/** JSON de palavras estragado não pode derrubar a listagem. */
+function lerPalavras(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const bruto: unknown = JSON.parse(json);
+    return Array.isArray(bruto) ? bruto.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 export function resumirReuniao(row: MeetingRow): ResumoReuniao {
@@ -74,6 +88,11 @@ export function resumirReuniao(row: MeetingRow): ResumoReuniao {
     endedAt: row.ended_at,
     durationSeconds: row.duration_seconds,
     chatproStatus: row.chatpro_status,
+    // Fluxo comercial: quem responde pela reunião, o tipo dela e o que a
+    // transcrição revelou. O painel exibe os três.
+    atendenteEmail: row.atendente_email,
+    tipo: row.tipo,
+    palavras: lerPalavras(row.palavras_json),
     error: row.error,
     createdAt: row.created_at,
     temTranscript: Boolean(row.transcript_json),

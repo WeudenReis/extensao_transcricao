@@ -41,6 +41,7 @@ export function reviewPageHtml(): string {
     /* Variantes legíveis como TEXTO (as de cima são de preenchimento). */
     --verde-txt: #25D066; --vermelho-txt: #ff6b6b;
     --azul-txt: #62C6FF; --ambar-txt: #ffc400;
+    --laranja-txt: #FFB05E; --roxo-txt: #C9A6FF;
 
     --borda-forte: #000; --borda-suave: #1a1e22; --fundo-tenue: #1a1e22;
     --borda-campo: #3a424a; --borda-perigo: #5a3336;
@@ -57,6 +58,7 @@ export function reviewPageHtml(): string {
 
       --verde-txt: #0E7A38; --vermelho-txt: #C0392B;
       --azul-txt: #0B6FA4; --ambar-txt: #8A6100;
+      --laranja-txt: #9A5200; --roxo-txt: #6A3FBF;
 
       --borda-forte: #D5DAE0; --borda-suave: #E4E7EB; --fundo-tenue: #E7EBEF;
       --borda-campo: #C2C9D1; --borda-perigo: #E3A9AC;
@@ -103,6 +105,11 @@ export function reviewPageHtml(): string {
   .badge.mut { background: var(--fundo-tenue); color: var(--cinza1); }
   .badge.info { background: rgba(98,198,255,.18); color: var(--azul-txt); }
   .badge.err { background: rgba(255,107,107,.18); color: var(--vermelho-txt); }
+  /* Tipos do fluxo comercial: cada tipo tem uma cor fixa, legível nos dois temas. */
+  .badge.tipo-apresentacao { background: rgba(98,198,255,.18); color: var(--azul-txt); }
+  .badge.tipo-migracao { background: rgba(255,159,67,.18); color: var(--laranja-txt); }
+  .badge.tipo-implantacao { background: rgba(178,132,255,.18); color: var(--roxo-txt); }
+  .badge.tipo-cs { background: rgba(37,208,102,.15); color: var(--verde-txt); }
   .badge.rec { background: rgba(255,107,107,.18); color: var(--vermelho-txt);
     animation: pulsa 1.4s ease-in-out infinite; }
   @keyframes pulsa { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
@@ -170,6 +177,13 @@ export function reviewPageHtml(): string {
   .p5 { color: var(--p5); }
   .anfitriao { box-shadow: inset 2px 0 0 var(--verde); padding-left: 8px; }
 
+  /* Palavras-chave detectadas: chips só de leitura (filtro visual, não botão). */
+  .palavras { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 2px; }
+  .palavras .lupa { font-size: 13px; }
+  .palavra { background: var(--fundo-tenue); border: 1px solid var(--borda-campo);
+    border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700;
+    color: var(--verde-txt); }
+
   /* ─── Supervisão: indicadores, gráfico por dia e busca ─── */
   .super { flex: none; background: var(--bg); border-bottom: 1px solid var(--borda-forte);
     padding: 14px 20px 16px; }
@@ -183,6 +197,12 @@ export function reviewPageHtml(): string {
     align-items: start; margin-top: 12px; }
   .super-corpo.oculto { display: none; }
   .super-aviso { font-size: 12px; color: var(--cinza1); margin: 0; }
+  /* O filtro fica no cabeçalho da faixa: continua à mão mesmo com ela recolhida. */
+  .filtro-tipo { background: var(--surface); border: 1px solid var(--borda-campo);
+    border-radius: 8px; color: var(--texto); font: inherit; font-size: 12px;
+    font-weight: 700; padding: 4px 8px; cursor: pointer; }
+  .filtro-tipo:focus { outline: none; border-color: var(--verde);
+    box-shadow: 0 0 0 2px rgba(37,208,102,.25); }
 
   .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
   .kpi { background: var(--card); border: 1px solid transparent; border-radius: 10px;
@@ -273,6 +293,14 @@ export function reviewPageHtml(): string {
       <h3>Supervisão — últimos 7 dias</h3>
       <button id="super-toggle" class="btn-min" type="button"
         aria-controls="super-corpo" aria-expanded="true">ocultar</button>
+      <select id="filtro-tipo" class="filtro-tipo"
+        aria-label="Filtrar a lista de reuniões por tipo">
+        <option value="">Todos os tipos</option>
+        <option value="apresentacao">Apresentação</option>
+        <option value="migracao">Migração</option>
+        <option value="implantacao">Implantação</option>
+        <option value="cs">CS</option>
+      </select>
       <span id="super-aviso" class="super-aviso" role="status" aria-live="polite"></span>
     </div>
     <div id="super-corpo" class="super-corpo">
@@ -624,11 +652,21 @@ export function reviewPageHtml(): string {
     ['failed', 'Falhou'],
     ['skipped-no-url', 'chatPro não configurado'],
   ]);
+  // Tipos do fluxo comercial. Reunião antiga (sem tipo) segue na lista sem badge.
+  const ROTULO_TIPO = new Map([
+    ['apresentacao', 'Apresentação'],
+    ['migracao', 'Migração'],
+    ['implantacao', 'Implantação'],
+    ['cs', 'CS'],
+  ]);
 
   let reunioes = [];
   let reunioesCarregadas = false;
   let reuniaoSel = null;
   let assinaturaRenderizada = '';
+  // Filtro por tipo escolhido na faixa de supervisão. Só refaz o desenho da
+  // lista: os dados já estão em memória, não faz sentido voltar ao servidor.
+  let filtroTipo = '';
 
   // O contrato de /api/meetings é criado em paralelo: aceitar tanto camelCase
   // quanto snake_case (e envelope ou objeto cru) evita a página quebrar por
@@ -678,6 +716,34 @@ export function reviewPageHtml(): string {
     const classe = CLASSE_STATUS.get(status) || 'mut';
     const rotulo = ROTULO_STATUS.get(status) || (status || '—');
     return el('span', 'badge ' + classe, rotulo);
+  }
+
+  /** Valor desconhecido vira vazio: melhor sem badge do que badge errada. */
+  function tipoDaReuniao(m) {
+    const t = textoOuVazio(m && m.tipo).trim().toLowerCase();
+    return ROTULO_TIPO.has(t) ? t : '';
+  }
+  function badgeTipo(tipo) {
+    return el('span', 'badge tipo-' + tipo, ROTULO_TIPO.get(tipo));
+  }
+  /** Quem marcou a reunião. O contrato ainda está sendo ligado: pode faltar. */
+  function atendenteDe(m) {
+    return textoOuVazio(campo(m, 'atendenteEmail', 'atendente_email')).trim();
+  }
+  /** Na lista só cabe o prefixo do e-mail (antes do @); o inteiro fica no detalhe. */
+  function prefixoEmail(email) {
+    const arroba = email.indexOf('@');
+    return arroba > 0 ? email.slice(0, arroba) : email;
+  }
+  /** Palavras-chave detectadas pela análise; qualquer coisa fora de string[] vira []. */
+  function palavrasDe(m) {
+    const bruto = m ? m.palavras : null;
+    if (!Array.isArray(bruto)) return [];
+    const saida = [];
+    for (const p of bruto) {
+      if (typeof p === 'string' && p.trim() !== '') saida.push(p.trim());
+    }
+    return saida;
   }
 
   /** Aceita transcript como array de falas ou como objeto normalizado. */
@@ -733,9 +799,12 @@ export function reviewPageHtml(): string {
   }
 
   function assinaturaDe(m) {
+    // Palavras e tipo entram na assinatura: a análise chega DEPOIS da reunião
+    // e o detalhe aberto precisa ganhar os chips sem o supervisor recarregar.
     return statusDaReuniao(m) + '|' +
       textoOuVazio(campo(m, 'chatproStatus', 'chatpro_status')) + '|' +
-      numero(campo(m, 'durationSeconds', 'duration_seconds'));
+      numero(campo(m, 'durationSeconds', 'duration_seconds')) + '|' +
+      tipoDaReuniao(m) + '|' + palavrasDe(m).length;
   }
 
   // ── Lista ──
@@ -766,19 +835,42 @@ export function reviewPageHtml(): string {
         el('p', 'empty', 'Nenhuma reunião ainda. Cole a URL de um Meet acima.'));
       return;
     }
-    for (const m of reunioes) {
+    const visiveis = filtroTipo
+      ? reunioes.filter((m) => tipoDaReuniao(m) === filtroTipo)
+      : reunioes;
+    if (!visiveis.length) {
+      // Mensagem distinta da lista vazia: existem reuniões, o filtro que escondeu.
+      listaReuEl.appendChild(el('p', 'empty',
+        'Nenhuma reunião do tipo "' + (ROTULO_TIPO.get(filtroTipo) || filtroTipo) + '".'));
+      return;
+    }
+    for (const m of visiveis) {
       const id = textoOuVazio(m && m.id);
       const item = el('div', 'item' + (id && id === reuniaoSel ? ' sel' : ''));
       item.appendChild(el('div', 'code', codigoDaReuniao(m)));
       const meta = el('div', 'meta');
       meta.appendChild(badgeReuniao(statusDaReuniao(m)));
+      const tipo = tipoDaReuniao(m);
+      if (tipo) {
+        meta.appendChild(document.createTextNode(' '));
+        meta.appendChild(badgeTipo(tipo));
+      }
       const quando = campo(m, 'createdAt', 'created_at') || campo(m, 'startedAt', 'started_at');
-      meta.appendChild(document.createTextNode(' ' + fmtTime(quando)));
+      const atendente = atendenteDe(m);
+      meta.appendChild(document.createTextNode(' ' + fmtTime(quando) +
+        (atendente ? ' · ' + prefixoEmail(atendente) : '')));
       item.appendChild(meta);
       if (id) item.addEventListener('click', () => selecionarReuniao(id));
       listaReuEl.appendChild(item);
     }
   }
+
+  // O filtro mora na faixa de supervisão, mas mexe só nesta lista, localmente.
+  const filtroTipoEl = document.getElementById('filtro-tipo');
+  filtroTipoEl.addEventListener('change', () => {
+    filtroTipo = textoOuVazio(filtroTipoEl.value);
+    desenharListaReunioes();
+  });
 
   /**
    * O status muda sozinho (webhook do Recall). A cada atualização da lista,
@@ -839,6 +931,11 @@ export function reviewPageHtml(): string {
 
     const linhaStatus = el('p', 'note');
     linhaStatus.appendChild(badgeReuniao(status));
+    const tipo = tipoDaReuniao(m);
+    if (tipo) {
+      linhaStatus.appendChild(document.createTextNode(' '));
+      linhaStatus.appendChild(badgeTipo(tipo));
+    }
     linhaStatus.appendChild(document.createTextNode(
       ' ' + textoOuVazio(campo(m, 'meetingUrl', 'meeting_url'))));
     detalheReuEl.appendChild(linhaStatus);
@@ -853,6 +950,22 @@ export function reviewPageHtml(): string {
       ' · Fim ' + fmtTime(campo(m, 'endedAt', 'ended_at')) +
       ' · Duração ' + fmtDuracao(duracaoFinal) +
       ' · sessão chatPro: ' + (textoOuVazio(campo(m, 'sessionId', 'session_id')) || '—')));
+
+    // Quem marcou responde pela reunião perante o time: e-mail inteiro aqui.
+    const atendente = atendenteDe(m);
+    if (atendente) {
+      detalheReuEl.appendChild(el('p', 'note', 'Marcada por / Responsável: ' + atendente));
+    }
+
+    // Palavras-chave da análise: filtro visual pro supervisor bater o olho —
+    // não é botão, clicar não faz nada de propósito.
+    const palavras = palavrasDe(m);
+    if (palavras.length) {
+      const faixaPalavras = el('div', 'palavras');
+      faixaPalavras.appendChild(el('span', 'lupa', '🔎'));
+      for (const p of palavras) faixaPalavras.appendChild(el('span', 'palavra', p));
+      detalheReuEl.appendChild(faixaPalavras);
+    }
 
     const erro = textoOuVazio(m.error);
     if (erro) detalheReuEl.appendChild(el('p', 'gap', '⚠ ' + erro));

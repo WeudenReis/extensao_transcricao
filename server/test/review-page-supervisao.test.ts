@@ -553,6 +553,147 @@ describe('painel de supervisão — faixa recolhível', () => {
   });
 });
 
+describe('painel de reuniões — fluxo comercial', () => {
+  const REUNIOES_COMERCIAIS = {
+    corpo: {
+      meetings: [
+        {
+          id: 'reu-1', meetingCode: 'abc-defg-hij', status: 'done', tipo: 'migracao',
+          atendenteEmail: 'ana@timeviamais.com', createdAt: '2026-08-07T14:00:00.000Z',
+        },
+        {
+          id: 'reu-2', meetingCode: 'klm-nopq-rst', status: 'recording', tipo: 'cs',
+          atendente_email: 'bruno@timeviamais.com', created_at: '2026-08-08T10:00:00.000Z',
+        },
+        // Reunião antiga, de antes do fluxo comercial: sem tipo nem atendente.
+        { id: 'reu-3', meetingCode: 'uvw-xyza-bcd', status: 'created' },
+      ],
+    },
+  };
+
+  async function painelComercial(rotas: Rotas = {}): Promise<Ambiente> {
+    const painel = montarPainel({
+      '/api/meetings/resumo-supervisao': RESUMO,
+      '/api/meetings': REUNIOES_COMERCIAIS,
+      ...rotas,
+    });
+    await painel.escoar();
+    return painel;
+  }
+
+  it('mostra a badge do tipo e o prefixo do atendente na lista', async () => {
+    const painel = await painelComercial();
+    const lista = painel.pegar('lista-reunioes');
+    const itens = porClasse(lista, 'item');
+    expect(itens).toHaveLength(3);
+
+    // camelCase e snake_case entram do mesmo jeito; só o prefixo do e-mail aparece.
+    expect(itens[0]?.textContent).toContain('Migração');
+    expect(itens[0]?.textContent).toContain('ana');
+    expect(itens[0]?.textContent).not.toContain('@timeviamais.com');
+    expect(porClasse(itens[0] as Elemento, 'tipo-migracao')).toHaveLength(1);
+    expect(itens[1]?.textContent).toContain('CS');
+    expect(itens[1]?.textContent).toContain('bruno');
+    expect(porClasse(itens[1] as Elemento, 'tipo-cs')).toHaveLength(1);
+  });
+
+  it('reunião sem tipo continua na lista, só sem a badge de tipo', async () => {
+    const painel = await painelComercial();
+    const itens = porClasse(painel.pegar('lista-reunioes'), 'item');
+    expect(itens[2]?.textContent).toContain('uvw-xyza-bcd');
+    const badgesTipo = ['tipo-apresentacao', 'tipo-migracao', 'tipo-implantacao', 'tipo-cs']
+      .flatMap((c) => porClasse(itens[2] as Elemento, c));
+    expect(badgesTipo).toHaveLength(0);
+  });
+
+  it('filtra a lista por tipo localmente, sem voltar ao servidor', async () => {
+    const painel = await painelComercial();
+    const filtro = painel.pegar('filtro-tipo');
+    const chamadasAntes = painel.chamadas.length;
+
+    filtro.value = 'cs';
+    filtro.disparar('change');
+    const soCs = porClasse(painel.pegar('lista-reunioes'), 'item');
+    expect(soCs).toHaveLength(1);
+    expect(soCs[0]?.textContent).toContain('klm-nopq-rst');
+    expect(painel.chamadas.length).toBe(chamadasAntes);
+
+    // Tipo sem nenhuma reunião: mensagem própria, diferente da lista vazia.
+    filtro.value = 'apresentacao';
+    filtro.disparar('change');
+    expect(porClasse(painel.pegar('lista-reunioes'), 'item')).toHaveLength(0);
+    expect(painel.pegar('lista-reunioes').textContent)
+      .toBe('Nenhuma reunião do tipo "Apresentação".');
+
+    filtro.value = '';
+    filtro.disparar('change');
+    expect(porClasse(painel.pegar('lista-reunioes'), 'item')).toHaveLength(3);
+  });
+
+  it('mostra o responsável e os chips de palavras-chave no detalhe', async () => {
+    const painel = await painelComercial({
+      '/api/meetings/reu-1': {
+        corpo: {
+          meeting: {
+            id: 'reu-1', meetingCode: 'abc-defg-hij', status: 'done', tipo: 'migracao',
+            atendenteEmail: 'ana@timeviamais.com',
+            palavras: ['IA', 'Oficial', 'Preço'],
+            transcript: [],
+          },
+        },
+      },
+    });
+    porClasse(painel.pegar('lista-reunioes'), 'item')[0]?.disparar('click');
+    await painel.escoar();
+
+    const detalhe = painel.pegar('detalhe-reuniao');
+    // No detalhe o e-mail vai inteiro: é quem responde pela reunião.
+    expect(detalhe.textContent).toContain('Marcada por / Responsável: ana@timeviamais.com');
+    const chips = porClasse(detalhe, 'palavra');
+    expect(chips.map((c) => c.textContent)).toEqual(['IA', 'Oficial', 'Preço']);
+    // Chip é filtro visual, não botão: nada de clique pendurado nele.
+    for (const chip of chips) {
+      expect(chip.tag).not.toBe('button');
+      expect((chip.ouvintes as Map<string, unknown[]>).get('click') ?? []).toHaveLength(0);
+    }
+    expect(porClasse(detalhe, 'tipo-migracao')).toHaveLength(1);
+  });
+
+  it('detalhe sem tipo, atendente ou palavras não quebra nem inventa linha', async () => {
+    const painel = await painelComercial({
+      '/api/meetings/reu-3': {
+        corpo: {
+          meeting: { id: 'reu-3', meetingCode: 'uvw-xyza-bcd', status: 'created', transcript: [] },
+        },
+      },
+    });
+    porClasse(painel.pegar('lista-reunioes'), 'item')[2]?.disparar('click');
+    await painel.escoar();
+
+    const detalhe = painel.pegar('detalhe-reuniao');
+    expect(detalhe.textContent).toContain('uvw-xyza-bcd');
+    expect(detalhe.textContent).not.toContain('Marcada por');
+    expect(porClasse(detalhe, 'palavra')).toHaveLength(0);
+  });
+
+  it('palavras fora do contrato (não string[]) viram lista vazia', async () => {
+    const painel = await painelComercial({
+      '/api/meetings/reu-1': {
+        corpo: {
+          meeting: {
+            id: 'reu-1', meetingCode: 'abc-defg-hij', status: 'done',
+            palavras: 'IA, Oficial', transcript: [],
+          },
+        },
+      },
+    });
+    porClasse(painel.pegar('lista-reunioes'), 'item')[0]?.disparar('click');
+    await painel.escoar();
+
+    expect(porClasse(painel.pegar('detalhe-reuniao'), 'palavra')).toHaveLength(0);
+  });
+});
+
 describe('painel — armadilhas do template literal', () => {
   const html = reviewPageHtml();
 

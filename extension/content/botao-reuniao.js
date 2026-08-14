@@ -35,8 +35,19 @@
   const VIZINHOS = ['transferir', 'etiquetas', 'agendar', 'finalizar'];
   const INTERVALO_MS = 1500;
 
+  /** Tipos de reunião do comercial. O `valor` é o que o servidor espera. */
+  const TIPOS = [
+    { valor: 'apresentacao', rotulo: 'Apresentação' },
+    { valor: 'migracao', rotulo: 'Migração' },
+    { valor: 'implantacao', rotulo: 'Implantação' },
+    { valor: 'cs', rotulo: 'CS' },
+  ];
+  /** Esses tipos não andam sem os dados do cliente (nome, CNPJ, instância, telefone). */
+  const TIPOS_COM_DADOS = ['implantacao', 'cs', 'migracao'];
+
   let ultimaSessao = null;
   let avisouSemBarra = false;
+  let avisouAtendenteNulo = false;
 
   // ─── Utilidades ────────────────────────────────────────────────────────────
 
@@ -49,6 +60,117 @@
   function sessaoAtual() {
     const m = /\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
     return m ? m[1] : null;
+  }
+
+  // ─── Atendente (localStorage do chatPro) ───────────────────────────────────
+
+  const REGEX_EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+  /** Cache de 60 s: vasculhar o localStorage a cada clique seria desperdício. */
+  let cacheAtendente = null; // { email, lidoEm }
+  let logouAtendente = false;
+
+  /**
+   * Procura um e-mail em qualquer nível do objeto. O formato do `@chatpro:auth`
+   * não é documentado, então não dá pra apostar num caminho fixo — chaves com
+   * "mail" no nome têm prioridade pra não pegar um e-mail de contato qualquer
+   * que esteja em outro canto do objeto.
+   */
+  function acharEmailNoObjeto(valor, profundidade) {
+    if (profundidade > 6 || valor == null) return null;
+    if (typeof valor === 'string') {
+      const m = REGEX_EMAIL.exec(valor);
+      return m ? m[0] : null;
+    }
+    if (typeof valor !== 'object') return null;
+    for (const chave of Object.keys(valor)) {
+      if (/mail/i.test(chave)) {
+        const achado = acharEmailNoObjeto(valor[chave], profundidade + 1);
+        if (achado) return achado;
+      }
+    }
+    for (const chave of Object.keys(valor)) {
+      const achado = acharEmailNoObjeto(valor[chave], profundidade + 1);
+      if (achado) return achado;
+    }
+    return null;
+  }
+
+  function atendenteAtual() {
+    const agora = Date.now();
+    if (cacheAtendente && agora - cacheAtendente.lidoEm < 60000) return cacheAtendente.email;
+    let email = null;
+    try {
+      const cru = localStorage.getItem('@chatpro:auth');
+      if (cru) {
+        let dado = null;
+        try {
+          dado = JSON.parse(cru);
+        } catch {
+          dado = null; // não é JSON — cai pra busca por regex no valor cru
+        }
+        email = dado !== null ? acharEmailNoObjeto(dado, 0) : null;
+        if (!email) {
+          const m = REGEX_EMAIL.exec(cru);
+          email = m ? m[0] : null;
+        }
+      }
+    } catch (err) {
+      log('não consegui ler o @chatpro:auth:', err);
+    }
+    cacheAtendente = { email, lidoEm: agora };
+    if (!logouAtendente) {
+      // Loga UMA vez: é o diagnóstico de "por que a reunião saiu sem atendente".
+      logouAtendente = true;
+      if (email) log(`atendente: ${email}`);
+      else log('atendente não identificado no @chatpro:auth — reuniões seguem sem e-mail do atendente');
+    }
+    return email;
+  }
+
+  // ─── CNPJ e telefone ───────────────────────────────────────────────────────
+
+  const soDigitos = (v) => String(v || '').replace(/\D/g, '');
+
+  /** Máscara progressiva 00.000.000/0000-00 — aplica enquanto digita. */
+  function mascararCnpj(v) {
+    const d = soDigitos(v).slice(0, 14);
+    let saida = d.slice(0, 2);
+    if (d.length > 2) saida += '.' + d.slice(2, 5);
+    if (d.length > 5) saida += '.' + d.slice(5, 8);
+    if (d.length > 8) saida += '/' + d.slice(8, 12);
+    if (d.length > 12) saida += '-' + d.slice(12, 14);
+    return saida;
+  }
+
+  /**
+   * Dígitos verificadores de verdade, não só o formato: máscara certa com
+   * número inventado passaria batido e só estouraria lá na frente (onboarding,
+   * cadastro no painel).
+   */
+  function cnpjValido(v) {
+    const d = soDigitos(v);
+    if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false;
+    const dv = (quantos) => {
+      const pesos =
+        quantos === 12
+          ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+          : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+      let soma = 0;
+      for (let i = 0; i < quantos; i += 1) soma += Number(d[i]) * pesos[i];
+      const resto = soma % 11;
+      return resto < 2 ? 0 : 11 - resto;
+    };
+    return dv(12) === Number(d[12]) && dv(13) === Number(d[13]);
+  }
+
+  /** Máscara (00) 00000-0000; com 10 dígitos vira fixo (00) 0000-0000. */
+  function mascararTelefone(v) {
+    const d = soDigitos(v).slice(0, 11);
+    if (d.length === 0) return '';
+    if (d.length <= 2) return `(${d}`;
+    const meio = d.length <= 10 ? d.slice(2, 6) : d.slice(2, 7);
+    const fim = d.length <= 10 ? d.slice(6, 10) : d.slice(7, 11);
+    return `(${d.slice(0, 2)}) ${meio}${fim ? '-' + fim : ''}`;
   }
 
   function visivel(el) {
@@ -387,13 +509,13 @@
     caixa.appendChild(
       opcao('Agora', 'Cria a sala e manda o link na hora.', true, () => {
         fecharAgendador();
-        void aoClicar(botao);
+        escolherTipoESeguir(botao, null);
       })
     );
     caixa.appendChild(
       opcao('Agendar', 'Escolhe dia e hora. O link vai perto do horário.', false, () => {
         fecharAgendador();
-        abrirAgendador(botao);
+        escolherTipoESeguir(botao, 'agendar');
       })
     );
 
@@ -420,7 +542,321 @@
     });
   }
 
-  function abrirAgendador(botao) {
+  /**
+   * Encadeia os passos do comercial: tipo → dados do cliente (se o tipo
+   * exigir) → destino. `modo` 'agendar' termina no cartão de data/hora;
+   * null dispara a reunião na hora.
+   */
+  function escolherTipoESeguir(botao, modo) {
+    // A conversa é TRAVADA aqui, no começo do fluxo, e conferida na hora de
+    // disparar. Entre abrir o tipo e confirmar os dados o atendente pode clicar
+    // numa notificação e cair em outra conversa; sem esta trava, os dados do
+    // cliente A criariam a reunião do cliente B — link errado, transcrição no
+    // atendimento errado. Não dá pra confiar só no observer de troca de
+    // conversa: ele corre contra o tick de reinjeção do botão.
+    const sessaoOrigem = sessaoAtual();
+    abrirTipo(botao, (tipo) => {
+      const seguir = (cliente) => {
+        const extras = { tipo, cliente: cliente || null, sessaoOrigem };
+        if (modo === 'agendar') abrirAgendador(botao, extras);
+        else void aoClicar(botao, null, extras);
+      };
+      if (TIPOS_COM_DADOS.includes(tipo)) abrirModalCliente(botao, tipo, seguir);
+      else seguir(null);
+    });
+  }
+
+  /**
+   * Passo do TIPO: toda reunião do comercial tem um — é ele que decide se
+   * pedimos os dados do cliente e como o painel distribui o responsável.
+   */
+  function abrirTipo(botao, continuar) {
+    fecharAgendador();
+    const escuro = temaEscuro();
+    const fundo = escuro ? '#2c333a' : '#ffffff';
+    const texto = escuro ? '#E6E5E8' : '#1d2125';
+    const borda = escuro ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)';
+
+    const caixa = document.createElement('div');
+    caixa.id = ID_AGENDADOR;
+    caixa.setAttribute('role', 'dialog');
+    caixa.setAttribute('aria-label', 'Tipo da reunião');
+    const r = botao.getBoundingClientRect();
+    caixa.style.cssText = [
+      'position:fixed',
+      'z-index:2147483647',
+      `top:${Math.round(r.bottom + 8)}px`,
+      `left:${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 296)))}px`,
+      'width:280px',
+      `background:${fundo}`,
+      `color:${texto}`,
+      `border:1px solid ${borda}`,
+      'border-radius:12px',
+      'padding:14px',
+      'box-shadow:0 10px 30px rgba(0,0,0,.28)',
+      'font:400 14px/1.45 system-ui,sans-serif',
+      `color-scheme:${escuro ? 'dark' : 'light'}`,
+    ].join(';');
+
+    const titulo = document.createElement('div');
+    titulo.textContent = 'Qual o tipo da reunião?';
+    titulo.style.cssText = 'font-weight:700;margin-bottom:10px';
+    caixa.appendChild(titulo);
+
+    const grade = document.createElement('div');
+    grade.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px';
+    for (const t of TIPOS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = t.rotulo;
+      b.style.cssText = [
+        'padding:10px 8px',
+        'border-radius:9px',
+        'cursor:pointer',
+        `background:transparent`,
+        `color:${texto}`,
+        `border:1px solid ${borda}`,
+        'font:600 13px/1.2 system-ui,sans-serif',
+      ].join(';');
+      b.addEventListener('mouseenter', () => {
+        b.style.borderColor = VERDE;
+        b.style.background = 'rgba(37,208,102,.12)';
+      });
+      b.addEventListener('mouseleave', () => {
+        b.style.borderColor = '';
+        b.style.background = 'transparent';
+      });
+      b.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        fecharAgendador();
+        continuar(t.valor);
+      });
+      grade.appendChild(b);
+    }
+    caixa.appendChild(grade);
+
+    document.body.appendChild(caixa);
+    prenderFechamento(caixa);
+    const primeiro = grade.querySelector('button');
+    if (primeiro) primeiro.focus();
+  }
+
+  /**
+   * Modal de dados do cliente — implantação, CS e migração não andam sem
+   * nome, CNPJ, instância e telefone: é o que o painel usa pra distribuir o
+   * responsável e registrar a reunião.
+   *
+   * Visual do painel lateral do chatPro: fundo #22272b no escuro / #fff no
+   * claro, campos arredondados e o botão verde largo.
+   */
+  function abrirModalCliente(botao, tipoReuniao, continuar) {
+    fecharAgendador();
+    const escuro = temaEscuro();
+    const fundo = escuro ? '#22272b' : '#ffffff';
+    const texto = escuro ? '#E6E5E8' : '#1d2125';
+    const suave = escuro ? '#D1D1D5' : '#5b636b';
+    const borda = escuro ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)';
+    const fundoCampo = escuro ? '#1d2125' : '#F1F0F2';
+
+    const caixa = document.createElement('div');
+    caixa.id = ID_AGENDADOR;
+    caixa.setAttribute('role', 'dialog');
+    caixa.setAttribute('aria-label', 'Dados do cliente');
+    caixa.style.cssText = [
+      'position:fixed',
+      'z-index:2147483647',
+      'top:50%',
+      'left:50%',
+      'transform:translate(-50%,-50%)',
+      'width:min(360px,92vw)',
+      `background:${fundo}`,
+      `color:${texto}`,
+      `border:1px solid ${borda}`,
+      'border-radius:14px',
+      'padding:18px',
+      'box-shadow:0 14px 40px rgba(0,0,0,.35)',
+      'font:400 14px/1.45 system-ui,sans-serif',
+      `color-scheme:${escuro ? 'dark' : 'light'}`,
+    ].join(';');
+
+    const titulo = document.createElement('div');
+    titulo.textContent = 'Dados do cliente';
+    titulo.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:2px';
+    const dica = document.createElement('div');
+    dica.textContent =
+      tipoReuniao === 'migracao'
+        ? 'Preencha o CNPJ: se o cliente estiver no onboarding, o resto vem sozinho.'
+        : 'Esses dados vão junto com a reunião pro painel.';
+    dica.style.cssText = `color:${suave};font-size:12px;margin-bottom:12px`;
+    caixa.append(titulo, dica);
+
+    const estiloCampo = [
+      'width:100%',
+      'box-sizing:border-box',
+      'padding:9px 11px',
+      `border:1px solid ${borda}`,
+      'border-radius:9px',
+      `background:${fundoCampo}`,
+      `color:${texto}`,
+      'font:inherit',
+      'margin-bottom:10px',
+    ].join(';');
+
+    const criarCampo = (rotulo, placeholder) => {
+      const l = document.createElement('label');
+      l.textContent = rotulo;
+      l.style.cssText = `display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:${suave}`;
+      const i = document.createElement('input');
+      i.type = 'text';
+      i.placeholder = placeholder;
+      i.style.cssText = estiloCampo;
+      caixa.append(l, i);
+      return i;
+    };
+
+    const campoNome = criarCampo('Nome do cliente', 'Nome da empresa ou contato');
+    const campoCnpj = criarCampo('CNPJ', '00.000.000/0000-00');
+    campoCnpj.inputMode = 'numeric';
+    const campoInstancia = criarCampo('Código da instância', 'chatpro-xxx');
+    const campoTelefone = criarCampo('Telefone', '(00) 00000-0000');
+    campoTelefone.inputMode = 'numeric';
+
+    const erro = document.createElement('div');
+    erro.style.cssText = 'color:#ff6b6b;font-size:12px;margin:-4px 0 8px;display:none';
+    caixa.appendChild(erro);
+
+    const mostrarErro = (msg) => {
+      erro.textContent = msg;
+      erro.style.display = msg ? 'block' : 'none';
+    };
+
+    /** Preenche só o que está vazio: o que a pessoa já digitou vale mais. */
+    const preencherDoOnboarding = (dados) => {
+      const o =
+        dados && typeof dados === 'object'
+          ? dados.nome || dados.instancia || dados.telefone
+            ? dados
+            : dados.cliente && typeof dados.cliente === 'object'
+              ? dados.cliente
+              : null
+          : null;
+      if (!o) return;
+      if (o.nome && !campoNome.value.trim()) campoNome.value = String(o.nome);
+      if (o.instancia && !campoInstancia.value.trim()) campoInstancia.value = String(o.instancia);
+      if (o.telefone && !campoTelefone.value.trim())
+        campoTelefone.value = mascararTelefone(o.telefone);
+    };
+
+    // Onboarding só na migração: os dados do cliente já existem lá dentro.
+    // Falhou ou veio vazio? Segue manual, sem alarde — a consulta é atalho,
+    // não requisito.
+    let cnpjConsultado = '';
+    const consultarOnboarding = (cnpj) => {
+      chrome.runtime
+        .sendMessage({ tipo: 'CONSULTAR_ONBOARDING', cnpj })
+        .then((r) => {
+          if (!caixa.isConnected) return;
+          if (r && r.ok) preencherDoOnboarding(r.dados);
+        })
+        .catch(() => {});
+    };
+
+    campoCnpj.addEventListener('input', () => {
+      campoCnpj.value = mascararCnpj(campoCnpj.value);
+      const d = soDigitos(campoCnpj.value);
+      // Só reclama com o número completo: apontar erro no meio da digitação
+      // seria gritar antes da hora.
+      mostrarErro(d.length === 14 && !cnpjValido(d) ? 'CNPJ inválido: confira os dígitos.' : '');
+      if (tipoReuniao === 'migracao' && d.length === 14 && cnpjValido(d) && d !== cnpjConsultado) {
+        cnpjConsultado = d;
+        consultarOnboarding(d);
+      }
+    });
+
+    campoTelefone.addEventListener('input', () => {
+      campoTelefone.value = mascararTelefone(campoTelefone.value);
+    });
+
+    const confirmarBtn = document.createElement('button');
+    confirmarBtn.type = 'button';
+    confirmarBtn.textContent = 'Confirmar dados';
+    confirmarBtn.style.cssText = [
+      'display:block',
+      'width:100%',
+      `background:${VERDE}`,
+      'color:#0b1b10',
+      'border:0',
+      'padding:11px 14px',
+      'border-radius:10px',
+      'cursor:pointer',
+      'font:700 14px/1 system-ui,sans-serif',
+    ].join(';');
+    confirmarBtn.addEventListener('mouseenter', () => {
+      confirmarBtn.style.background = VERDE_HOVER;
+    });
+    confirmarBtn.addEventListener('mouseleave', () => {
+      confirmarBtn.style.background = VERDE;
+    });
+
+    const cancelarBtn = document.createElement('button');
+    cancelarBtn.type = 'button';
+    cancelarBtn.textContent = 'Cancelar';
+    cancelarBtn.style.cssText = [
+      'display:block',
+      'width:100%',
+      'background:transparent',
+      `color:${suave}`,
+      'border:0',
+      'padding:9px 14px',
+      'margin-top:6px',
+      'border-radius:10px',
+      'cursor:pointer',
+      'font:inherit',
+    ].join(';');
+
+    caixa.append(confirmarBtn, cancelarBtn);
+
+    const confirmar = () => {
+      const nome = campoNome.value.trim();
+      const cnpj = soDigitos(campoCnpj.value);
+      const instancia = campoInstancia.value.trim();
+      const telefone = soDigitos(campoTelefone.value);
+      let msg = '';
+      if (!nome) msg = 'Informe o nome do cliente.';
+      else if (!cnpjValido(cnpj)) msg = 'CNPJ inválido: confira os dígitos.';
+      else if (!instancia) msg = 'Informe o código da instância.';
+      else if (telefone.length < 10) msg = 'Informe um telefone com DDD.';
+      if (msg) {
+        mostrarErro(msg);
+        return;
+      }
+      fecharAgendador();
+      continuar({ nome, cnpj, instancia, telefone });
+    };
+
+    confirmarBtn.addEventListener('click', confirmar);
+    cancelarBtn.addEventListener('click', fecharAgendador);
+    caixa.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && ev.target !== cancelarBtn) confirmar();
+    });
+
+    document.body.appendChild(caixa);
+    campoNome.focus();
+
+    // Só Esc fecha, de propósito: clique fora aqui jogaria no lixo tudo que a
+    // pessoa já digitou no formulário.
+    const noEsc = (ev) => {
+      if (ev.key === 'Escape') fecharAgendador();
+    };
+    document.addEventListener('keydown', noEsc, true);
+    caixa.addEventListener('cpm-fechou', () => {
+      document.removeEventListener('keydown', noEsc, true);
+    });
+  }
+
+  /** `extras` = { tipo, cliente } vindos dos passos anteriores do comercial. */
+  function abrirAgendador(botao, extras) {
     fecharAgendador();
     const escuro = temaEscuro();
     const fundo = escuro ? '#2c333a' : '#ffffff';
@@ -455,8 +891,70 @@
     titulo.style.cssText = 'font-weight:700;margin-bottom:2px';
 
     const dica = document.createElement('div');
-    dica.textContent = 'O cliente recebe o link com a data e o horário.';
+    // Não é mais "o link vai agora": o envio virou fila no servidor.
+    dica.textContent = 'O convite será enviado ao cliente ~5 minutos antes do horário.';
     dica.style.cssText = `color:${suave};font-size:12px;margin-bottom:10px`;
+
+    // Apresentação agendada tem vendedor escolhido na hora; nos outros tipos a
+    // distribuição é do servidor, então nem mostramos seletor.
+    let rotuloVendedor = null;
+    let seletorVendedor = null;
+    if (extras && extras.tipo === 'apresentacao') {
+      rotuloVendedor = document.createElement('label');
+      rotuloVendedor.textContent = 'Vendedor responsável';
+      rotuloVendedor.style.cssText = `display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:${suave}`;
+      seletorVendedor = document.createElement('select');
+      seletorVendedor.style.cssText = [
+        'width:100%',
+        'box-sizing:border-box',
+        'padding:8px 10px',
+        `border:1px solid ${borda}`,
+        'border-radius:8px',
+        'background:transparent',
+        `color:${texto}`,
+        'font:inherit',
+        'margin-bottom:10px',
+      ].join(';');
+      const carregando = document.createElement('option');
+      carregando.value = '';
+      carregando.textContent = 'Carregando vendedores…';
+      seletorVendedor.appendChild(carregando);
+      seletorVendedor.disabled = true;
+      chrome.runtime
+        .sendMessage({ tipo: 'LISTAR_VENDEDORES' })
+        .then((r) => {
+          if (!seletorVendedor || !seletorVendedor.isConnected) return;
+          const dados = r && r.ok ? r.dados : null;
+          const lista = Array.isArray(dados)
+            ? dados
+            : dados && Array.isArray(dados.vendedores)
+              ? dados.vendedores
+              : [];
+          seletorVendedor.replaceChildren();
+          for (const v of lista) {
+            const email = typeof v === 'string' ? v : String((v && v.email) || '');
+            if (!email) continue;
+            const opt = document.createElement('option');
+            opt.value = email;
+            opt.textContent = typeof v === 'string' ? v : String((v && (v.nome || v.name)) || email);
+            seletorVendedor.appendChild(opt);
+          }
+          if (seletorVendedor.options.length === 0) {
+            // Lista vazia: some o seletor e o agendamento segue — marcar
+            // reunião não pode ficar refém do painel interno.
+            rotuloVendedor.remove();
+            seletorVendedor.remove();
+            seletorVendedor = null;
+            return;
+          }
+          seletorVendedor.disabled = false;
+        })
+        .catch(() => {
+          if (rotuloVendedor) rotuloVendedor.remove();
+          if (seletorVendedor) seletorVendedor.remove();
+          seletorVendedor = null;
+        });
+    }
 
     const campo = document.createElement('input');
     campo.type = 'datetime-local';
@@ -514,7 +1012,9 @@
     });
 
     linha.append(cancelar, marcar);
-    caixa.append(titulo, dica, campo, erro, linha);
+    caixa.append(titulo, dica);
+    if (rotuloVendedor && seletorVendedor) caixa.append(rotuloVendedor, seletorVendedor);
+    caixa.append(campo, erro, linha);
     document.body.appendChild(caixa);
     campo.focus();
 
@@ -533,7 +1033,13 @@
       fecharAgendador();
       // ISO com fuso: o servidor recusa data sem fuso justamente pra "14:00"
       // não virar 11 h da manhã pro cliente.
-      void aoClicar(botao, escolhido.toISOString());
+      void aoClicar(botao, escolhido.toISOString(), {
+        ...(extras || {}),
+        vendedorEmail:
+          seletorVendedor && seletorVendedor.isConnected && seletorVendedor.value
+            ? seletorVendedor.value
+            : null,
+      });
     };
 
     marcar.addEventListener('click', confirmar);
@@ -574,12 +1080,34 @@
     return null;
   }
 
-  /** `quandoIso` presente = reunião marcada; ausente = reunião agora. */
-  async function aoClicar(botao, quandoIso) {
+  /**
+   * `quandoIso` presente = reunião marcada; ausente = reunião agora.
+   * `extras` = { tipo, cliente, vendedorEmail } dos passos do comercial.
+   */
+  async function aoClicar(botao, quandoIso, extras) {
     const sessionId = sessaoAtual();
     if (!sessionId) {
       avisar('Abra uma conversa antes de iniciar a reunião.', 'erro');
       return;
+    }
+
+    // Trava de conversa: o fluxo começou numa conversa e está terminando em
+    // outra. Criar a reunião aqui mandaria o link (e os dados já digitados) pro
+    // cliente errado — melhor recusar e deixar a pessoa recomeçar do lugar
+    // certo do que acertar por sorte.
+    const origem = extras && extras.sessaoOrigem;
+    if (origem && origem !== sessionId) {
+      fecharAgendador();
+      avisar('A conversa mudou no meio do caminho. Abra a conversa certa e comece de novo.', 'erro');
+      return;
+    }
+
+    const atendenteEmail = atendenteAtual();
+    if (!atendenteEmail && !avisouAtendenteNulo) {
+      // Avisa UMA vez e segue: reunião sem atendente vinculado é melhor que
+      // reunião nenhuma.
+      avisouAtendenteNulo = true;
+      avisar('Não identifiquei seu e-mail no chatPro — a reunião segue sem atendente vinculado.');
     }
 
     ocupado(botao, true, quandoIso ? 'Marcando…' : 'Criando reunião…');
@@ -589,6 +1117,11 @@
         sessionId,
         contato: nomeDoContato(),
         quando: quandoIso || null,
+        // "tipoReuniao" pra não colidir com o "tipo" da mensageria.
+        tipoReuniao: (extras && extras.tipo) || null,
+        atendenteEmail,
+        cliente: (extras && extras.cliente) || null,
+        vendedorEmail: (extras && extras.vendedorEmail) || null,
       });
 
       if (!resposta || !resposta.ok) {
@@ -607,7 +1140,7 @@
         // aberta agora só atrapalharia o atendimento em andamento.
         avisar(
           gravando
-            ? `Reunião marcada para ${quandoTexto}. O cliente já recebeu o link.`
+            ? `Reunião marcada para ${quandoTexto}. O convite sai pro cliente uns 5 minutos antes do horário.`
             : `Reunião marcada para ${quandoTexto}, mas ${avisoGravacao || 'a gravação não foi agendada.'}`,
           gravando ? 'ok' : 'erro'
         );
@@ -703,8 +1236,9 @@
       // irreversível (bot na sala, mensagem pro cliente) sem confirmação. Uma
       // tela intermediária custa um clique e resolve os dois problemas.
       //
-      // Shift continua pulando direto pra "agora", pra quem já pegou o ritmo.
-      if (ev.shiftKey) void aoClicar(botao);
+      // Shift continua pulando a escolha Agora/Agendar, pra quem já pegou o
+      // ritmo — mas o TIPO não dá pra pular: é ele que decide os dados pedidos.
+      if (ev.shiftKey) escolherTipoESeguir(botao, null);
       else abrirEscolha(botao);
     });
 

@@ -125,6 +125,22 @@ export interface GoogleAccountRow {
   updated_at: string;
 }
 
+/** Convite agendado: sai perto do horário da reunião, não na hora de marcar. */
+export interface EnvioAgendadoRow {
+  id: number;
+  meeting_id: string;
+  session_id: string;
+  instance_id: string | null;
+  message: string;
+  enviar_em: string;
+  /** Início da reunião — resolve o "hoje/amanhã" no momento do envio. */
+  reuniao_em: string | null;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+}
+
 // ─── Recall.ai ───────────────────────────────────────────────────────────────
 
 /** Ciclo de vida da reunião gravada pelo bot do Recall. */
@@ -164,6 +180,14 @@ export interface MeetingRow {
   chatpro_instance_id: string | null;
   /** Partes do comentário já entregues; o reenvio continua daqui. */
   chatpro_parts_sent: number;
+  /** Quem marcou — e-mail do @chatpro:auth. É a chave de atribuição. */
+  atendente_email: string | null;
+  /** apresentacao | migracao | implantacao | cs */
+  tipo: string | null;
+  /** { nome, cnpj, instancia, telefone } quando o tipo exige. */
+  cliente_json: string | null;
+  /** Palavras-chave achadas na transcrição (JSON de strings). */
+  palavras_json: string | null;
   error: string | null;
   created_at: string;
 }
@@ -426,6 +450,47 @@ export class Db {
     this.garantirColuna('meetings', 'chatpro_instance_id', 'TEXT');
     this.garantirColuna('meetings', 'chatpro_parts_sent', 'INTEGER NOT NULL DEFAULT 0');
     this.garantirColuna('meetings', 'transcript_texto', 'TEXT');
+
+    // ─── Fluxo do time comercial ───
+    // Quem marcou (e-mail lido do @chatpro:auth do localStorage) — é a chave
+    // de atribuição no painel de reuniões.
+    this.garantirColuna('meetings', 'atendente_email', 'TEXT');
+    // apresentacao | migracao | implantacao | cs
+    this.garantirColuna('meetings', 'tipo', 'TEXT');
+    // Dados do cliente exigidos em implantação/CS/migração:
+    // { nome, cnpj, instancia, telefone } — JSON pra não abrir 4 colunas que
+    // ainda podem mudar quando a API interna chegar.
+    this.garantirColuna('meetings', 'cliente_json', 'TEXT');
+    // Palavras-chave detectadas na transcrição (sem IA): ["ia","oficial",…]
+    this.garantirColuna('meetings', 'palavras_json', 'TEXT');
+
+    // Mensagens que só podem sair PERTO do horário (reunião agendada convida o
+    // cliente ~5 min antes, não na hora de marcar). Fila durável: reiniciar o
+    // servidor não pode perder um convite marcado pra amanhã.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS envios_agendados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        meeting_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        instance_id TEXT,
+        message TEXT NOT NULL,
+        enviar_em TEXT NOT NULL,
+        -- Quando a REUNIÃO começa (≠ enviar_em, que é ~5 min antes). É com este
+        -- valor que "hoje/amanhã" é resolvido NA HORA DO ENVIO: a mensagem é
+        -- montada hoje e entregue amanhã, então texto relativo congelado sai
+        -- errado ("amanhã às 10h" chegando no próprio dia da reunião).
+        reuniao_em TEXT,
+        status TEXT NOT NULL DEFAULT 'pendente',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_envios_status_quando
+        ON envios_agendados (status, enviar_em);
+    `);
+    // O CREATE acima só vale pra banco novo; quem já rodou a versão anterior da
+    // tabela precisa do ALTER pra ganhar a coluna.
+    this.garantirColuna('envios_agendados', 'reuniao_em', 'TEXT');
     this.garantirIndiceDeBusca();
   }
 
@@ -1082,6 +1147,9 @@ export class Db {
     meetingCode: string | null;
     botName: string | null;
     chatproInstanceId?: string | null;
+    atendenteEmail?: string | null;
+    tipo?: string | null;
+    clienteJson?: string | null;
     status?: MeetingStatus;
     createdAt?: string;
   }): MeetingRow {
@@ -1089,9 +1157,11 @@ export class Db {
       .prepare(
         `INSERT INTO meetings
            (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name,
-            chatpro_status, chatpro_instance_id, chatpro_parts_sent, created_at)
+            chatpro_status, chatpro_instance_id, chatpro_parts_sent,
+            atendente_email, tipo, cliente_json, created_at)
          VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName,
-            'pending', @chatproInstanceId, 0, @createdAt)`
+            'pending', @chatproInstanceId, 0,
+            @atendenteEmail, @tipo, @clienteJson, @createdAt)`
       )
       .run({
         id: input.id,
@@ -1102,6 +1172,9 @@ export class Db {
         status: input.status ?? 'created',
         botName: input.botName,
         chatproInstanceId: input.chatproInstanceId ?? null,
+        atendenteEmail: input.atendenteEmail ?? null,
+        tipo: input.tipo ?? null,
+        clienteJson: input.clienteJson ?? null,
         createdAt: input.createdAt ?? new Date().toISOString(),
       });
     const row = this.getMeeting(input.id);
@@ -1230,6 +1303,66 @@ export class Db {
           WHERE id = @id`
       )
       .run({ id, status: chatproStatus, parts: partsSent });
+  }
+
+  /** Palavras-chave detectadas na transcrição (uma vez por reunião). */
+  setMeetingPalavras(id: string, palavras: string[]): void {
+    this.db
+      .prepare('UPDATE meetings SET palavras_json = ? WHERE id = ?')
+      .run(JSON.stringify(palavras), id);
+  }
+
+  // ─── envios_agendados (convite que sai perto do horário) ──────────────────
+
+  criarEnvioAgendado(input: {
+    meetingId: string;
+    sessionId: string;
+    instanceId: string | null;
+    message: string;
+    enviarEm: string;
+    reuniaoEm?: string | null;
+  }): number {
+    const r = this.db
+      .prepare(
+        `INSERT INTO envios_agendados
+           (meeting_id, session_id, instance_id, message, enviar_em, reuniao_em,
+            status, attempts, created_at)
+         VALUES (@meetingId, @sessionId, @instanceId, @message, @enviarEm, @reuniaoEm,
+            'pendente', 0, @agora)`
+      )
+      .run({ ...input, reuniaoEm: input.reuniaoEm ?? null, agora: new Date().toISOString() });
+    return Number(r.lastInsertRowid);
+  }
+
+  enviosVencidos(agoraIso: string, limite: number): EnvioAgendadoRow[] {
+    return this.db
+      .prepare<[string, number], EnvioAgendadoRow>(
+        `SELECT * FROM envios_agendados
+          WHERE status = 'pendente' AND enviar_em <= ?
+          ORDER BY enviar_em ASC LIMIT ?`
+      )
+      .all(agoraIso, limite);
+  }
+
+  marcarEnvio(id: number, status: 'enviado' | 'falhou', erro?: string): void {
+    this.db
+      .prepare(
+        `UPDATE envios_agendados
+            SET status = @status, attempts = attempts + 1, last_error = @erro
+          WHERE id = @id`
+      )
+      .run({ id, status, erro: erro ?? null });
+  }
+
+  /** Reunião agendada cancelada leva os convites pendentes junto. */
+  cancelarEnviosDaReuniao(meetingId: string): number {
+    const r = this.db
+      .prepare(
+        `UPDATE envios_agendados SET status = 'cancelado'
+          WHERE meeting_id = ? AND status = 'pendente'`
+      )
+      .run(meetingId);
+    return r.changes;
   }
 
   /** Instância do chatPro da conversa (descoberta pelo webhook). */

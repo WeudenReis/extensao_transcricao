@@ -75,6 +75,16 @@ export interface CriarReuniaoEntrada {
    * isto o bot entra agora, que é o caminho de sempre.
    */
   joinAt?: Date | null;
+  /**
+   * E-mail do RESPONSÁVEL pela reunião — a rota já resolveu quem é
+   * (distribuição do painel interno, vendedor escolhido ou quem marcou).
+   * Fica na coluna de atribuição do painel de reuniões.
+   */
+  atendenteEmail?: string | null;
+  /** apresentacao | migracao | implantacao | cs. */
+  tipo?: string | null;
+  /** { nome, cnpj, instancia, telefone } quando o tipo exige. */
+  clienteJson?: string | null;
 }
 
 export type ResultadoCriacao =
@@ -196,6 +206,16 @@ export async function criarReuniao(
         'ended',
         'sala reaproveitada por outra conversa — bot encerrado'
       );
+      // A sala agora pertence a outra conversa. Convite pendente da reunião
+      // antiga viraria o pior caso possível: dois clientes diferentes entrando
+      // na MESMA chamada, com a transcrição indo pro atendimento errado.
+      // Aqui o cancelamento é ato explícito — o worker não adivinha por status.
+      const cancelados = db.cancelarEnviosDaReuniao(viva.id);
+      if (cancelados > 0) {
+        log.warn(
+          `reunião ${viva.id} perdeu a sala: ${cancelados} convite(s) pendente(s) cancelado(s).`
+        );
+      }
     }
   }
 
@@ -208,6 +228,9 @@ export async function criarReuniao(
     meetingCode,
     botName,
     chatproInstanceId: entrada.chatproInstanceId ?? null,
+    atendenteEmail: entrada.atendenteEmail ?? null,
+    tipo: entrada.tipo ?? null,
+    clienteJson: entrada.clienteJson ?? null,
     status: 'created',
   });
 
