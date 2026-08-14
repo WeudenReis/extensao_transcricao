@@ -109,6 +109,9 @@
         data: null,
         hora: null,
         vendedorEmail: null,
+        /** Faltando painel ou e-mail: a tela roda, mas nada é marcado de verdade. */
+        previa: false,
+        semAtendente: false,
       };
 
       // ── Passo 0: quem é o atendente ──────────────────────────────────────
@@ -118,30 +121,32 @@
 
         const atendente = window.__cpmAtendente.detectar();
         if (!atendente.email) {
-          api.limpar();
-          api.cabecalho('Reunião', null);
-          const p = api.p;
-          api.corpo.appendChild(
-            api.el(
-              'div',
-              `font:500 14px/1.5 system-ui,sans-serif;color:${p.texto};margin-bottom:10px`,
-              'Não consegui identificar seu e-mail no chatPro.'
-            )
-          );
-          api.corpo.appendChild(
-            api.el(
-              'div',
-              `font:400 12px/1.5 system-ui,sans-serif;color:${p.textoFraco}`,
-              'A reunião é atribuída a você pelo e-mail, então preciso dele antes ' +
-                'de continuar. Abra o console (F12) e rode ' +
-                '__cpmAtendente.diagnosticar() — me manda o que aparecer.'
-            )
-          );
+          // Sem e-mail não dá pra ATRIBUIR, mas dá pra conferir a tela. Segue
+          // em prévia com um aviso — travar aqui esconderia o resto do fluxo
+          // de quem só quer ver como ficou.
           console.log('[chatPro reunião] chaves encontradas:', window.__cpmAtendente.diagnosticar());
-          return;
+          estado.semAtendente = true;
+          atendente.email = null;
+        } else {
+          console.log(`[chatPro reunião] atendente: ${atendente.email} (via ${atendente.via})`);
         }
 
-        console.log(`[chatPro reunião] atendente: ${atendente.email} (via ${atendente.via})`);
+        if (!atendente.email) {
+          estado.eu = {
+            email: null,
+            nome: null,
+            papel: null,
+            capacidades: Object.keys(TIPOS).map((t) => ({
+              type: t,
+              allowed: true,
+              assignment: t === 'apresentacao' ? 'self' : 'round_robin',
+              can_choose_assignee: t === 'apresentacao',
+            })),
+          };
+          estado.previa = true;
+          passoModo();
+          return;
+        }
 
         let resposta;
         try {
@@ -150,15 +155,38 @@
           resposta = { erro: String(err) };
         }
 
+        // Painel AINDA NÃO CONFIGURADO (sem PAINEL_API_URL/tokens): seguimos
+        // com as capacidades padrão, marcadas como prévia. É o que permite
+        // conferir a tela inteira antes de os tokens existirem — e o aviso
+        // deixa claro que a distribuição real ainda não está valendo.
+        if (resposta && resposta.configurado === false) {
+          estado.eu = {
+            email: atendente.email,
+            nome: atendente.email.split('@')[0],
+            papel: null,
+            capacidades: Object.keys(TIPOS).map((t) => ({
+              type: t,
+              allowed: true,
+              assignment: t === 'apresentacao' ? 'self' : 'round_robin',
+              can_choose_assignee: t === 'apresentacao',
+            })),
+          };
+          estado.previa = true;
+          passoModo();
+          return;
+        }
+
+        // Painel configurado MAS o e-mail não é usuário ativo lá: aí é erro de
+        // verdade, e insistir só levaria a 403 no fim do formulário.
         if (!resposta || resposta.erro || !resposta.identificado) {
           api.limpar();
           const p = api.p;
-          const motivo =
-            resposta && resposta.configurado === false
-              ? 'O painel de reuniões não está configurado no servidor.'
-              : `O painel não reconheceu ${atendente.email} como usuário ativo.`;
           api.corpo.appendChild(
-            api.el('div', `font:500 14px/1.5 system-ui,sans-serif;margin-bottom:10px`, motivo)
+            api.el(
+              'div',
+              `font:500 14px/1.5 system-ui,sans-serif;margin-bottom:10px`,
+              `O painel não reconheceu ${atendente.email} como usuário ativo.`
+            )
           );
           api.corpo.appendChild(
             api.el(
@@ -181,6 +209,16 @@
         api.limpar();
         api.cabecalho('Reunião', null);
         const p = api.p;
+
+        // A faixa de prévia é permanente enquanto faltar configuração: sem ela
+        // dá pra marcar achando que a distribuição real já está valendo.
+        if (estado.previa) {
+          api.aviso(
+            estado.semAtendente
+              ? 'Prévia — não identifiquei seu e-mail no chatPro, então nada será atribuído.'
+              : 'Prévia — o painel de reuniões ainda não está configurado no servidor.'
+          );
+        }
 
         if (estado.eu && estado.eu.nome) {
           api.corpo.appendChild(
@@ -502,7 +540,18 @@
             clientType: estado.cliente.clientType || null,
           }).catch(() => null);
 
-          const grade = (r && r.grade) || { disponiveis: [], bloqueados: [], maxDate: null };
+          let grade = (r && r.grade) || { disponiveis: [], bloqueados: [], maxDate: null };
+
+          // Em prévia a grade real não existe. Mostramos uma grade comercial
+          // padrão pra dar pra ver a tela — e a faixa de aviso continua no
+          // topo, então ninguém confunde isso com disponibilidade de verdade.
+          if (estado.previa && grade.disponiveis.length === 0) {
+            grade = {
+              disponiveis: ['09:00', '09:30', '10:00', '11:00', '14:00', '14:30', '15:00', '16:30'],
+              bloqueados: ['10:30', '13:30'],
+              maxDate: null,
+            };
+          }
           // max_date: o POST recusa além disso. Não deixar escolher evita o
           // usuário marcar uma data que o servidor vai rejeitar.
           if (grade.maxDate) seletorData.entrada.max = grade.maxDate;
@@ -577,6 +626,49 @@
 
       // ── Passo 5: confirma e cria ─────────────────────────────────────────
       async function confirmar(quandoIso) {
+        // Em prévia paramos aqui, de propósito: o passo seguinte cria bot,
+        // manda mensagem pro cliente e ocupa agenda. Nada disso pode acontecer
+        // enquanto a tela está sendo conferida.
+        if (estado.previa) {
+          api.limpar();
+          api.cabecalho('Reunião', null);
+          const p = api.p;
+          api.corpo.appendChild(
+            api.el('div', 'font:600 15px/1.3 system-ui,sans-serif;margin-bottom:10px', 'Prévia')
+          );
+          const resumo = [
+            `Tipo: ${TIPOS[estado.tipo].rotulo}`,
+            `Cliente: ${estado.cliente.nome} · ${estado.cliente.empresa}`,
+            `Telefone: ${estado.cliente.telefone}`,
+          ];
+          if (estado.cliente.cnpj) resumo.push(`CNPJ: ${estado.cliente.cnpj}`);
+          if (estado.cliente.instancia) resumo.push(`Instância: ${estado.cliente.instancia}`);
+          if (estado.cliente.provedor) resumo.push(`Provedor: ${estado.cliente.provedor}`);
+          resumo.push(
+            quandoIso ? `Quando: ${diaLegivel(estado.data)} às ${estado.hora}` : 'Quando: agora'
+          );
+          for (const linha of resumo) {
+            api.corpo.appendChild(
+              api.el(
+                'div',
+                `font:400 12px/1.7 system-ui,sans-serif;color:${p.textoFraco}`,
+                linha
+              )
+            );
+          }
+          api.corpo.appendChild(
+            api.el(
+              'div',
+              `margin-top:14px;padding:10px 12px;border-radius:10px;background:${p.fundoFraco};` +
+                `font:500 12px/1.5 system-ui,sans-serif;color:${p.textoFraco}`,
+              'Nada foi criado. Com o painel configurado, aqui a reunião seria ' +
+                'marcada, o link gerado e o cliente avisado.'
+            )
+          );
+          api.acao('Fechar', api.fechar);
+          return;
+        }
+
         api.carregando(quandoIso ? 'Marcando a reunião…' : 'Criando a sala…');
         api.cabecalho('Reunião', null);
 
