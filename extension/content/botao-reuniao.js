@@ -33,6 +33,8 @@
 
   let ultimaSessao = null;
   let avisouSemBarra = false;
+  /** Instante do último clique aceito — barra o mesmo clique chegando 2x. */
+  let ultimoClique = 0;
 
   // ─── Utilidades ────────────────────────────────────────────────────────────
 
@@ -198,6 +200,20 @@
 
     // O clone pode trazer handlers do chatPro em atributos inline.
     clone.removeAttribute('onclick');
+
+    // O clone herda as classes do chatPro, e junto pode vir um
+    // `pointer-events: none` (comum em botão que só é clicável por um filho, ou
+    // que estava desabilitado no momento da cópia). O clique então atravessa o
+    // botão e nada acontece — sem erro nenhum no console, que é o pior tipo de
+    // falha. Forçar aqui custa nada e fecha essa porta.
+    clone.style.pointerEvents = 'auto';
+    clone.style.cursor = 'pointer';
+    // Sobe acima de overlay invisível que porventura cubra a barra.
+    if (getComputedStyle(clone).position === 'static') clone.style.position = 'relative';
+    clone.style.zIndex = '10';
+    clone.removeAttribute('disabled');
+    clone.removeAttribute('aria-disabled');
+
     return clone;
   }
 
@@ -350,19 +366,27 @@
 
   function injetar() {
     const sessao = sessaoAtual();
-    const existente = document.getElementById(ID);
+    // TODOS, não só o primeiro: se por algum motivo dois botões nossos
+    // existirem ao mesmo tempo (React remontou a barra entre a checagem e a
+    // inserção), `getElementById` devolveria só um e o outro ficaria órfão na
+    // tela, com listener próprio. Dois listeners para o mesmo clique abrem e
+    // fecham a aba no mesmo instante — que se parece exatamente com "o botão
+    // não faz nada".
+    const existentes = document.querySelectorAll(`#${ID}`);
 
     // Sem conversa aberta, o botão não faz sentido.
     if (!sessao) {
-      if (existente) existente.remove();
+      for (const el of existentes) el.remove();
       if (window.__cpmAba) window.__cpmAba.fechar();
       return;
     }
 
-    if (existente && existente.isConnected) {
+    if (existentes.length === 1 && existentes[0].isConnected) {
       ultimaSessao = sessao;
       return;
     }
+    // Sobrou mais de um (ou o único está solto): limpa e refaz do zero.
+    for (const el of existentes) el.remove();
 
     const vizinhos = acharVizinhos();
     if (vizinhos.size === 0) {
@@ -398,6 +422,22 @@
     botao.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+
+      // Um clique tem que virar UMA ação. Se o mesmo clique chegar aqui duas
+      // vezes (listener duplicado, botão aninhado, evento sintético do React),
+      // a primeira abriria a aba e a segunda fecharia — e o resultado visível
+      // seria "o botão não faz nada", sem erro nenhum pra investigar.
+      const agora = Date.now();
+      if (agora - ultimoClique < 400) {
+        log('clique repetido em menos de 400 ms — ignorado (seria abre-e-fecha).');
+        return;
+      }
+      ultimoClique = agora;
+      // Log em cada etapa do clique. O console do DevTools abre no contexto da
+      // PÁGINA, e content script roda em mundo isolado — então não dá pra pedir
+      // pra pessoa chamar uma função nossa no console sem antes trocar o
+      // contexto no seletor. Logar sozinho evita esse passo.
+      log('1/4 clique recebido');
       // O clique abre a escolha: "Agora" ou "Agendar".
       //
       // Antes, clicar criava a reunião na hora e agendar exigia segurar Shift.
@@ -411,11 +451,15 @@
       // exatamente o que ele precisava ver.
       const sessao = sessaoAtual();
       if (!sessao) {
+        log('2/4 PAROU: nenhuma conversa aberta (a URL não tem /chat/<uuid>).');
         avisar('Abra uma conversa antes de marcar a reunião.', 'erro');
         return;
       }
+      log(`2/4 conversa ${sessao}`);
+
       // Clicar de novo com a aba aberta fecha, como qualquer painel lateral.
       if (window.__cpmAba && window.__cpmAba.estaAberta()) {
+        log('3/4 a aba já estava aberta — fechando (é o toggle).');
         window.__cpmAba.fechar();
         return;
       }
@@ -446,11 +490,35 @@
         return;
       }
 
-      window.__cpmFluxo.iniciar({
-        sessionId: sessao,
-        contato: nomeDoContato(),
-        telefone: telefoneDoContato(),
-      });
+      log('3/4 abrindo a aba…');
+      try {
+        window.__cpmFluxo.iniciar({
+          sessionId: sessao,
+          contato: nomeDoContato(),
+          telefone: telefoneDoContato(),
+        });
+      } catch (err) {
+        // Sem isto, uma exceção aqui morre no listener e o clique parece
+        // simplesmente não fazer nada.
+        console.error('[chatPro reunião] a abertura da aba estourou:', err);
+        avisar('Erro ao abrir a reunião. Veja o console (F12).', 'erro');
+        return;
+      }
+
+      // Confirma que a aba nasceu E onde: aba criada fora da tela produz o
+      // mesmo sintoma de botão quebrado.
+      const criada = document.getElementById('cpm-aba-reuniao');
+      if (!criada) {
+        console.error('[chatPro reunião] 4/4 a aba NÃO foi criada no DOM.');
+        return;
+      }
+      const r = criada.getBoundingClientRect();
+      const naTela = r.width > 0 && r.height > 0 && r.right > 0 && r.left < window.innerWidth;
+      log(
+        `4/4 aba criada (${Math.round(r.width)}x${Math.round(r.height)} em ` +
+          `top:${Math.round(r.top)} left:${Math.round(r.left)}) — ` +
+          (naTela ? 'visível' : 'FORA DA TELA')
+      );
     });
 
     // Entra ANTES do primeiro botão da barra: fica à esquerda de "transferir",
@@ -493,6 +561,71 @@
     conferirTroca();
     injetar();
   });
+
+  /**
+   * `__cpmDiag()` no console: conta tudo que importa quando o botão não abre a
+   * aba. É o que evita mais uma rodada de adivinhação — mostra se os arquivos
+   * carregaram, se o botão está clicável, onde a aba iria parar, e força uma
+   * abertura sem depender do clique.
+   */
+  window.__cpmDiag = function diagnosticar() {
+    const botao = document.getElementById(ID);
+    const todos = document.querySelectorAll(`#${ID}`);
+    const r = botao ? botao.getBoundingClientRect() : null;
+    const estilo = botao ? getComputedStyle(botao) : null;
+
+    // O que estaria por cima do centro do botão — se não for ele mesmo (nem um
+    // filho dele), tem overlay comendo o clique.
+    let porCima = null;
+    if (r && r.width > 0) {
+      const alvo = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      porCima = alvo ? (botao.contains(alvo) ? 'o próprio botão' : alvo.tagName + '.' + (alvo.className || '?')) : 'nada';
+    }
+
+    const info = {
+      versao: chrome.runtime.getManifest().version,
+      scripts: {
+        atendente: Boolean(window.__cpmAtendente),
+        aba: Boolean(window.__cpmAba),
+        fluxo: Boolean(window.__cpmFluxo),
+      },
+      sessao: sessaoAtual(),
+      botao: {
+        achou: Boolean(botao),
+        quantos: todos.length,
+        tamanho: r ? `${Math.round(r.width)}x${Math.round(r.height)}` : null,
+        pointerEvents: estilo ? estilo.pointerEvents : null,
+        visibility: estilo ? estilo.visibility : null,
+        display: estilo ? estilo.display : null,
+        quemRecebeOClique: porCima,
+      },
+      abaAberta: window.__cpmAba ? window.__cpmAba.estaAberta() : null,
+      atendente: window.__cpmAtendente ? window.__cpmAtendente.detectar() : null,
+      chavesDoStorage: window.__cpmAtendente ? window.__cpmAtendente.diagnosticar() : null,
+    };
+    console.log('[chatPro reunião] diagnóstico:', info);
+
+    // Abre sem passar pelo clique: separa "o clique não chega" de "a aba não abre".
+    try {
+      window.__cpmFluxo.iniciar({
+        sessionId: sessaoAtual(),
+        contato: nomeDoContato(),
+        telefone: telefoneDoContato(),
+      });
+      const aba = document.getElementById('cpm-aba-reuniao');
+      const ar = aba ? aba.getBoundingClientRect() : null;
+      console.log(
+        '[chatPro reunião] abertura direta:',
+        aba
+          ? `aba criada em top:${Math.round(ar.top)} right:${Math.round(window.innerWidth - ar.right)} ` +
+              `${Math.round(ar.width)}x${Math.round(ar.height)}`
+          : 'a aba NÃO foi criada'
+      );
+    } catch (err) {
+      console.error('[chatPro reunião] abrir direto estourou:', err);
+    }
+    return info;
+  };
 
   function iniciar() {
     injetar();

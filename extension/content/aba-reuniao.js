@@ -81,10 +81,24 @@
 
   function geometria() {
     const medida = medirColunaDireita();
-    if (medida) return medida;
     // Nada encontrado: gaveta fixa, abaixo de qualquer barra de topo.
-    const topo = 56;
-    return { top: topo, right: 0, width: LARGURA_PADRAO, height: window.innerHeight - topo };
+    const bruta = medida ?? {
+      top: 56,
+      right: 0,
+      width: LARGURA_PADRAO,
+      height: window.innerHeight - 56,
+    };
+
+    // A medida vem de um elemento da página, e elemento de página pode estar
+    // rolado pra fora (top negativo), maior que a janela, ou deslocado. Se
+    // qualquer um desses valores passasse direto, a aba abriria FORA DA TELA —
+    // e o sintoma seria "cliquei e não aconteceu nada", que é indistinguível
+    // de um botão quebrado.
+    const top = Math.max(0, Math.min(bruta.top, window.innerHeight - 200));
+    const width = Math.max(300, Math.min(bruta.width, window.innerWidth - 40));
+    const right = Math.max(0, Math.min(bruta.right, window.innerWidth - width));
+    const height = Math.max(240, Math.min(bruta.height, window.innerHeight - top));
+    return { top, right, width, height };
   }
 
   // ─── Peças de UI ───────────────────────────────────────────────────────────
