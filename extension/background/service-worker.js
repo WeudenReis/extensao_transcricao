@@ -118,8 +118,17 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
           : '';
         responder({
           ok: false,
-          erro: r.corpo?.detail || issues || r.corpo?.error || `Servidor respondeu ${r.status}.`,
+          erro: r.corpo?.error || issues || `Servidor respondeu ${r.status}.`,
+          detalhe: r.corpo?.detail || null,
           precisaConectar: Boolean(r.corpo?.precisaConectar),
+          recarregarHorarios: Boolean(r.corpo?.recarregarHorarios),
+          // Estes três decidem se a tela pode oferecer "tentar de novo":
+          // repetir um POST que talvez tenha criado a reunião duplica um
+          // compromisso real, com e-mail e agenda de gente de verdade.
+          naoRepetir: Boolean(r.corpo?.naoRepetir),
+          incerto: Boolean(r.corpo?.incerto),
+          meetUrl: r.corpo?.meetUrl || null,
+          hint: r.corpo?.hint || null,
         });
         return;
       }
@@ -176,6 +185,21 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
       if (msg?.tipo === 'LISTAR_VENDEDORES') {
         const r = await chamar('/api/painel/vendedores');
         responder({ ok: r.ok, dados: r.corpo });
+        return;
+      }
+
+      if (msg?.tipo === 'PAINEL_STATUS') {
+        const r = await chamar('/api/painel/diagnostico');
+        // 404 é "este servidor é mais antigo que a rota", não "o painel caiu".
+        // O popup precisa distinguir os dois: no primeiro caso ele não sabe de
+        // nada e mantém a conta Google em destaque; no segundo ele acusa o
+        // problema. Um 404 virando erro vermelho mandaria a pessoa caçar um
+        // defeito no painel que não existe.
+        if (r.status === 404) {
+          responder({ ok: false, semRota: true });
+          return;
+        }
+        responder({ ok: r.ok, status: r.status, dados: r.corpo });
         return;
       }
 

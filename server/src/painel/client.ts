@@ -38,6 +38,12 @@ const log = createLogger('painel');
 /** Leitura pode demorar; o clique não fica preso pra sempre. */
 export const PAINEL_TIMEOUT_MS = 15_000;
 /**
+ * Erro de configuração é permanente: repetir a linha a cada chamada de cada aba
+ * aberta enterraria o resto do log. Um lembrete por minuto e por operação já
+ * chega pra quem está com o .env aberto arrumando.
+ */
+export const INTERVALO_AVISO_CONFIG_MS = 60_000;
+/**
  * Teto curto pras chamadas que ficam NA FRENTE do atendente esperando a tela.
  * Um painel que aceita a conexão e não responde (firewall dropando, serviço
  * travado) faria a aba parecer congelada.
@@ -139,6 +145,122 @@ export interface PainelClientOptions {
   timeoutMs?: number;
 }
 
+// ─── Censura de segredos ─────────────────────────────────────────────────────
+//
+// POR QUE ISTO EXISTE: o corpo de erro do painel entra no nosso log. Contra o
+// painel de hoje isso é inofensivo (o 401 responde só "Token inválido."), mas o
+// dia em que houver WAF, API gateway ou proxy de autenticação no caminho, o
+// corpo do erro passa a ser JSON com o request ECOADO — headers inclusive. Aí o
+// `Authorization: Bearer <token compartilhado>` iria parar no arquivo de log,
+// que não tem o cuidado que um segredo merece. O scripts/testar-painel.mjs já
+// tinha essa rede de segurança; o servidor não tinha.
+//
+// O objetivo é o TOKEN, não a mensagem: um log censurado a ponto de não dizer
+// mais o que houve troca um problema por outro. Por isso só cai a máscara em
+// cima do que tem forma de credencial.
+
+/** O que sobra no lugar do segredo. Curto, pra não empurrar a mensagem pra fora. */
+const MASCARA = '***';
+
+/**
+ * Segredo curto demais não é indexado: um token de 3 letras casaria com meio
+ * texto e apagaria o log inteiro. Token de verdade tem dezenas de caracteres.
+ */
+const TAMANHO_MINIMO_SEGREDO = 6;
+
+/** Pedaço de token grande o bastante pra reconhecer um eco truncado ou colado. */
+const TAMANHO_TRECHO = 8;
+
+/** `Bearer <algo>` em texto solto — o formato exato que um proxy ecoa. */
+const RE_BEARER = /\b(bearer)(\s+)([A-Za-z0-9\-._~+/]{8,}={0,2})/gi;
+
+/**
+ * Campo de credencial em JSON: `"token":"…"`, `"authorization":"…"`,
+ * `"access_token":"…"`, `"api_key":"…"`. O nome do campo é que decide — o valor
+ * pode ser qualquer coisa, inclusive já mastigado pelo gateway.
+ */
+const RE_CAMPO_SENSIVEL =
+  /("(?:[\w-]*(?:token|authorization|api[_-]?key|secret|password|senha))"\s*:\s*")((?:[^"\\]|\\.)*)(")/gi;
+
+/** Sequência longa sem espaço: a cara de um token base64/hex jogado solto. */
+const RE_SEQUENCIA_LONGA = /[A-Za-z0-9+/=_-]{24,}/g;
+
+/**
+ * Teto do corpo que a censura varre. Um gateway pode devolver megabytes de HTML;
+ * varrer tudo pra depois cortar em 200 caracteres seria trabalho jogado fora.
+ */
+const LIMITE_LEITURA_CORPO = 4_000;
+
+/**
+ * "Bearer token ausente" não é credencial nenhuma — é a mensagem útil. Só vira
+ * máscara o que tem cara de valor gerado: comprido, ou com dígito/símbolo/
+ * mistura de caixa que palavra de mensagem não costuma ter.
+ */
+function pareceCredencial(valor: string): boolean {
+  if (valor.length >= 20) return true;
+  if (/\d/.test(valor)) return true;
+  if (/[-._~+/]/.test(valor)) return true;
+  return /[a-z]/.test(valor) && /[A-Z]/.test(valor);
+}
+
+/** Todos os pedaços de `TAMANHO_TRECHO` dos segredos, pra pegar eco parcial. */
+function indexarTrechos(segredos: readonly string[]): Set<string> {
+  const trechos = new Set<string>();
+  for (const segredo of segredos) {
+    for (let i = 0; i + TAMANHO_TRECHO <= segredo.length; i++) {
+      trechos.add(segredo.slice(i, i + TAMANHO_TRECHO));
+    }
+  }
+  return trechos;
+}
+
+function casaComAlgumTrecho(candidato: string, trechos: ReadonlySet<string>): boolean {
+  for (let i = 0; i + TAMANHO_TRECHO <= candidato.length; i++) {
+    if (trechos.has(candidato.slice(i, i + TAMANHO_TRECHO))) return true;
+  }
+  return false;
+}
+
+/**
+ * Tira credencial de texto que veio de fora antes de ele virar log ou detalhe
+ * de erro. Recebe os segredos conhecidos porque o valor mora na instância do
+ * cliente; sem eles ainda vale a censura estrutural (Bearer, campos de token).
+ *
+ * Não é sanitização de saída nem substitui não logar: é a última rede antes do
+ * arquivo de log, que costuma ser lido, copiado e colado por muita gente.
+ */
+export function censurar(texto: string, segredos: ReadonlyArray<string | undefined> = []): string {
+  let saida = String(texto);
+
+  // 1. O valor exato, primeiro e do maior pro menor: se um token contiver o
+  //    outro, mascarar o menor antes deixaria o resto do maior visível.
+  const conhecidos = segredos
+    .filter((s): s is string => typeof s === 'string' && s.length >= TAMANHO_MINIMO_SEGREDO)
+    .sort((a, b) => b.length - a.length);
+  for (const segredo of conhecidos) saida = saida.split(segredo).join(MASCARA);
+
+  // 2. `Bearer …` — pega até o token que a gente NÃO conhece (o de um serviço
+  //    intermediário, por exemplo), sem comer a palavra que explica o erro.
+  saida = saida.replace(RE_BEARER, (todo, palavra: string, espaco: string, valor: string) =>
+    pareceCredencial(valor) ? `${palavra}${espaco}${MASCARA}` : todo
+  );
+
+  // 3. Campo cujo NOME diz que ali mora credencial.
+  saida = saida.replace(RE_CAMPO_SENSIVEL, `$1${MASCARA}$3`);
+
+  // 4. Sequência longa que casa com algum pedaço de um token configurado. A
+  //    trava do "casa com" é o que impede a máscara de comer id de reunião,
+  //    CNPJ ou hash de log — texto útil que também é longo e sem espaço.
+  if (conhecidos.length > 0) {
+    const trechos = indexarTrechos(conhecidos);
+    saida = saida.replace(RE_SEQUENCIA_LONGA, (seq) =>
+      casaComAlgumTrecho(seq, trechos) ? MASCARA : seq
+    );
+  }
+
+  return saida;
+}
+
 // ─── Leitura defensiva ───────────────────────────────────────────────────────
 // A resposta vem de fora e o contrato pode evoluir: nada de cast cego.
 
@@ -190,6 +312,138 @@ function lerCapacidades(v: unknown): CapacidadePainel[] {
   return out;
 }
 
+// ─── "isto é uma API ou um site?" ────────────────────────────────────────────
+//
+// Um SPA hospedado com catch-all (Vercel, Netlify, nginx `try_files`) devolve
+// 200 + o HTML da home pra QUALQUER caminho, inclusive /api/naoexiste-xyz. Foi
+// exatamente o que aconteceu com PAINEL_API_URL=https://app.chatpro.com.br:
+// toda chamada "dava certo" (HTTP 200) e só estourava dentro do .json(), com um
+// "Unexpected token '<'" que virava `falha em me: ...` no log. Quem configurou
+// ficava sem saber que o problema era o ENDEREÇO — a única coisa que precisava
+// saber. Por isso o content-type é checado ANTES de tentar interpretar o corpo.
+
+type FormatoResposta = 'json' | 'nao-json' | 'indefinido';
+
+function formatoDaResposta(resposta: Response): FormatoResposta {
+  const bruto = (resposta.headers.get('content-type') ?? '').trim().toLowerCase();
+  // Sem content-type não dá pra acusar ninguém: segue o fluxo antigo e deixa o
+  // parse decidir (204, respostas vazias de proxy).
+  if (bruto === '') return 'indefinido';
+  // Pega application/json, application/problem+json e text/json; text/html não.
+  return bruto.includes('json') ? 'json' : 'nao-json';
+}
+
+function mimeDaResposta(resposta: Response): string {
+  const primeiro = (resposta.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase();
+  return primeiro ? primeiro : 'sem content-type';
+}
+
+/** O caminho sem query: o log não precisa (nem deve) carregar o e-mail. */
+function semQuery(caminho: string): string {
+  const corte = caminho.indexOf('?');
+  return corte === -1 ? caminho : caminho.slice(0, corte);
+}
+
+function mensagemUrlDeSite(caminho: string, resposta: Response): string {
+  const status = resposta.status === 200 ? '' : ` com HTTP ${resposta.status}`;
+  return (
+    'PAINEL_API_URL aponta pra uma página web, não pra a API do painel ' +
+    `(respondeu ${mimeDaResposta(resposta)}${status} em ${semQuery(caminho)}). Confira o endereço.`
+  );
+}
+
+function mensagemRotaInexistente(caminho: string): string {
+  return (
+    `o painel devolveu 404 em JSON para ${semQuery(caminho)}: tem uma API nesse endereço, ` +
+    'mas essa rota não existe nela. Confira o caminho/prefixo de PAINEL_API_URL.'
+  );
+}
+
+/**
+ * Anexa o `error` que o painel mandou, quando mandou. Nunca ecoa credencial:
+ * este texto vai pro navegador dentro do diagnóstico, e quem escreveu o corpo
+ * do erro pode ser um gateway que ecoa o request inteiro.
+ */
+async function motivoDoErro(
+  resposta: Response,
+  limpar: (texto: string) => string
+): Promise<string> {
+  const bruto: unknown = await resposta.json().catch(() => undefined);
+  const erro = texto(objeto(bruto)?.error);
+  // Censura ANTES de cortar: cortar primeiro partiria o token ao meio e a busca
+  // pelo valor exato não o reconheceria mais.
+  return erro ? `: ${limpar(erro).slice(0, 200)}` : '.';
+}
+
+/**
+ * Corpo que não vamos ler precisa ser descartado: no undici a resposta segura a
+ * conexão do pool até alguém consumir ou cancelar o stream.
+ */
+function descartarCorpo(resposta: Response): void {
+  void resposta.body?.cancel().catch(() => undefined);
+}
+
+/** O que `diagnosticar()` sabe distinguir. */
+export type ProblemaPainel =
+  /** PAINEL_API_URL não foi definida — integração desligada de propósito. */
+  | 'sem-url'
+  /** URL definida, mas sem PAINEL_EXT_AGENDA_TOKEN nada de agenda passa. */
+  | 'sem-token'
+  /** O endereço serve um site (o SPA), não a API. É o caso do app.chatpro. */
+  | 'html-em-vez-de-json'
+  /** Existe API ali e ela fala JSON, mas a rota não é essa (prefixo errado). */
+  | 'rota-inexistente'
+  /** Não deu pra falar com o painel: DNS, recusa, timeout, 5xx. */
+  | 'nao-alcancavel'
+  /** 401/403 — token errado, ou trocaram o de agenda pelo de retaguarda. */
+  | 'token-invalido'
+  /** 422 — o painel responde, o token vale, mas o e-mail não é usuário ativo. */
+  | 'usuario-desconhecido';
+
+export interface DiagnosticoPainel {
+  /** `true` = nada errado foi encontrado até onde deu pra checar. */
+  ok: boolean;
+  problema?: ProblemaPainel;
+  /** Frase pronta pra quem está configurando. NUNCA carrega token. */
+  detalhe?: string;
+}
+
+// ─── Entrega da transcrição ──────────────────────────────────────────────────
+
+/**
+ * Como terminou a tentativa de subir a transcrição.
+ *
+ * Por que não é um booleano: o POST /transcript NÃO tem Idempotency-Key. Se ele
+ * estourar o timeout, o painel pode ter salvo o texto e só a resposta ter se
+ * perdido — e aí um "false" faria a gente reenviar e gravar a transcrição do
+ * cliente EM DOBRO no registro da reunião. Quem chama precisa distinguir:
+ *
+ *   'enviado'  → o painel confirmou. Nunca mais mandar.
+ *   'recusado' → o painel respondeu dizendo não (4xx claro), ou nem chegou a
+ *                sair daqui. É CERTEZA de que nada foi salvo: reenviar é seguro.
+ *   'incerto'  → timeout, queda de rede, 5xx. PODE estar lá. Reenvio só com
+ *                confirmação de gente, depois de conferir no painel.
+ */
+export type ResultadoTranscricao =
+  | { estado: 'enviado' }
+  | { estado: 'recusado'; motivo: string }
+  | { estado: 'incerto'; motivo: string };
+
+/**
+ * O painel recebeu, entendeu e disse não? Só aí temos certeza de que ele não
+ * guardou nada: 400 (payload inválido), 401/403 (token), 404 (reunião não
+ * existe lá), 409, 422 (actor_email não é usuário ativo).
+ *
+ * 408, 425 e 429 são 4xx mas NÃO são recusa de conteúdo — e 5xx pode vir de um
+ * proxy que desistiu depois de o painel já ter gravado. Na dúvida, incerto: um
+ * reenvio manual a mais custa um clique; uma transcrição duplicada é dado
+ * sensível de cliente registrado duas vezes, e ninguém desfaz isso daqui.
+ */
+function ehRecusaDefinitiva(status: number): boolean {
+  if (status === 408 || status === 425 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
+
 // ─── CNPJ ────────────────────────────────────────────────────────────────────
 
 export function normalizarCnpj(bruto: string): string {
@@ -223,6 +477,10 @@ export class PainelClient {
   private readonly retaguardaToken: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  /** operação → instante do último aviso de configuração (anti-enxurrada). */
+  private readonly ultimoAviso = new Map<string, number>();
+  /** Os segredos que este cliente manda pra rede — e que não podem voltar no log. */
+  private readonly segredos: readonly string[];
 
   constructor(options: PainelClientOptions) {
     this.baseUrl = options.baseUrl ? options.baseUrl.replace(/\/+$/, '') : undefined;
@@ -230,11 +488,181 @@ export class PainelClient {
     this.retaguardaToken = options.retaguardaToken;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? PAINEL_TIMEOUT_MS;
+    this.segredos = [options.extAgendaToken, options.retaguardaToken].filter(
+      (t): t is string => typeof t === 'string' && t !== ''
+    );
+  }
+
+  /** Nada que veio do outro lado vira log ou mensagem sem passar por aqui. */
+  private censurar(texto: string): string {
+    return censurar(texto, this.segredos);
+  }
+
+  /**
+   * Corpo de resposta pronto pro log: censurado e curto, nessa ordem. Invertido
+   * (cortar e depois censurar) um token que começasse perto do limite ficaria
+   * pela metade no texto — irreconhecível pela censura e ainda assim vazado.
+   *
+   * O corte grosso antes da censura é só pra não varrer um corpo de megabytes.
+   */
+  private resumirCorpo(bruto: string, limite = 200): string {
+    return this.censurar(bruto.slice(0, LIMITE_LEITURA_CORPO)).slice(0, limite);
   }
 
   /** Sem URL ou sem token de agenda o cliente fica inerte, e isso é legítimo. */
   estaConfigurado(): boolean {
     return Boolean(this.baseUrl && this.extAgendaToken);
+  }
+
+  /**
+   * Diz O QUE está errado na configuração do painel, em vez de deixar todo
+   * defeito virar o mesmo sintoma ("nenhum horário, nenhum vendedor, nada").
+   *
+   * Vai em dois passos porque cada um responde uma pergunta diferente:
+   *   1. /api/healthcheck (público) → "tem uma API neste endereço?"
+   *   2. /api/ext/agenda/me         → "o token vale? este e-mail é usuário?"
+   *
+   * Sem `actorEmail` o diagnóstico PARA no passo 1 e diz isso: sem um e-mail
+   * de verdade o /me devolveria 422 e a gente acusaria o token à toa.
+   */
+  async diagnosticar(actorEmail?: string): Promise<DiagnosticoPainel> {
+    if (!this.baseUrl) {
+      return {
+        ok: false,
+        problema: 'sem-url',
+        detalhe: 'PAINEL_API_URL não está definida no .env do servidor — a integração está desligada.',
+      };
+    }
+    // Tem gente esperando esta resposta numa tela: usa o teto curto.
+    const timeoutMs = Math.min(this.timeoutMs, PAINEL_TIMEOUT_CLIQUE_MS);
+
+    const saude = await this.sondar('/api/healthcheck', this.extAgendaToken, timeoutMs);
+    if ('erro' in saude) return saude.erro;
+    if (!saude.resposta.ok) {
+      descartarCorpo(saude.resposta);
+      return {
+        ok: false,
+        problema: 'nao-alcancavel',
+        detalhe: `o endereço respondeu, mas /api/healthcheck deu HTTP ${saude.resposta.status}.`,
+      };
+    }
+    descartarCorpo(saude.resposta);
+
+    if (!this.extAgendaToken) {
+      return {
+        ok: false,
+        problema: 'sem-token',
+        detalhe:
+          'o painel respondeu ao healthcheck, mas PAINEL_EXT_AGENDA_TOKEN não está definida — ' +
+          'nenhuma chamada de agenda passa sem ela.',
+      };
+    }
+
+    const email = (actorEmail ?? '').trim();
+    if (!email.includes('@')) {
+      return {
+        ok: true,
+        detalhe:
+          'só o /api/healthcheck foi verificado: sem um actor_email válido não dá pra testar ' +
+          'o token de agenda nem o cadastro do atendente.',
+      };
+    }
+
+    const caminhoMe = `/api/ext/agenda/me?actor_email=${encodeURIComponent(email)}`;
+    const me = await this.sondar(caminhoMe, this.extAgendaToken, timeoutMs);
+    if ('erro' in me) return me.erro;
+    const resposta = me.resposta;
+
+    if (resposta.status === 401 || resposta.status === 403) {
+      descartarCorpo(resposta);
+      return {
+        ok: false,
+        problema: 'token-invalido',
+        detalhe:
+          `o painel recusou o token de agenda (HTTP ${resposta.status}). Confira ` +
+          'PAINEL_EXT_AGENDA_TOKEN — o token de retaguarda não vale em /api/ext/agenda/*.',
+      };
+    }
+    if (resposta.status === 422) {
+      return {
+        ok: false,
+        problema: 'usuario-desconhecido',
+        detalhe: `o painel respondeu e aceitou o token, mas não reconhece ${email} como usuário ativo${await motivoDoErro(resposta, (t) => this.censurar(t))}`,
+      };
+    }
+    if (!resposta.ok) {
+      descartarCorpo(resposta);
+      return {
+        ok: false,
+        problema: 'nao-alcancavel',
+        detalhe: `/api/ext/agenda/me respondeu HTTP ${resposta.status}.`,
+      };
+    }
+    const dados: unknown = await resposta.json().catch(() => undefined);
+    if (!objeto(dados)) {
+      return {
+        ok: false,
+        problema: 'html-em-vez-de-json',
+        detalhe:
+          'o /api/ext/agenda/me respondeu 200 com content-type de JSON, mas o corpo não é um ' +
+          'objeto — esse endereço provavelmente não é a API do painel.',
+      };
+    }
+    return { ok: true, detalhe: `painel respondendo e ${email} reconhecido.` };
+  }
+
+  /**
+   * GET cru pro diagnóstico: devolve a resposta ou já um veredito. Diferente do
+   * `ler()`, não engole nada — quem chamou o diagnóstico quer o defeito.
+   */
+  private async sondar(
+    caminho: string,
+    token: string | undefined,
+    timeoutMs: number
+  ): Promise<{ resposta: Response } | { erro: DiagnosticoPainel }> {
+    let resposta: Response;
+    try {
+      resposta = await this.pedir('GET', caminho, { token, timeoutMs });
+    } catch (err) {
+      return {
+        erro: {
+          ok: false,
+          problema: 'nao-alcancavel',
+          detalhe: `não deu pra falar com o painel em ${semQuery(caminho)}: ${this.censurar(errorMessage(err))}`,
+        },
+      };
+    }
+    if (formatoDaResposta(resposta) === 'nao-json') {
+      // Serve pro 200 do catch-all e pro 404 de site sem catch-all: nos dois
+      // casos o que está do outro lado é um servidor de páginas.
+      descartarCorpo(resposta);
+      return {
+        erro: {
+          ok: false,
+          problema: 'html-em-vez-de-json',
+          detalhe: mensagemUrlDeSite(caminho, resposta),
+        },
+      };
+    }
+    // 404 do painel NÃO é sempre erro de configuração: o contrato documenta
+    // 404 como resposta NORMAL de negócio em
+    // `GET /api/retaguarda/migracao/status` — "não existe checklist para esse
+    // CNPJ". Gritar "confira PAINEL_API_URL" nesse caso manda a pessoa mexer
+    // numa configuração que está certa.
+    //
+    // A diferença está no corpo: com `error`, quem falou foi o painel; sem
+    // nada, é o 404 do framework e aí sim a rota não existe nessa base.
+    if (resposta.status === 404) {
+      const bruto: unknown = await resposta.json().catch(() => undefined);
+      // Com `error` no corpo, quem respondeu foi o PAINEL — é uma API viva
+      // dizendo "não achei esse recurso", não uma rota inexistente. O
+      // diagnóstico só olha o status, então devolver a resposta basta.
+      if (texto(objeto(bruto)?.error)) return { resposta };
+      return {
+        erro: { ok: false, problema: 'rota-inexistente', detalhe: mensagemRotaInexistente(caminho) },
+      };
+    }
+    return { resposta };
   }
 
   /**
@@ -255,7 +683,9 @@ export class PainelClient {
     // A resposta pode vir embrulhada em `data` — aceitar as duas formas evita
     // uma quebra boba num campo que não muda nada pra gente.
     const raiz = objeto(o.data) ?? o;
-    const usuario = objeto(raiz.user) ?? raiz;
+    // O painel devolve `actor`. Aceitar `user` também não custa nada e cobre
+    // uma renomeação futura sem quebrar a tela do atendente.
+    const usuario = objeto(raiz.actor) ?? objeto(raiz.user) ?? raiz;
     const email = texto(usuario.email) ?? actorEmail;
     return {
       email,
@@ -350,10 +780,44 @@ export class PainelClient {
       timeoutMs: this.timeoutMs,
     });
 
+    const caminho = '/api/ext/agenda/meetings';
+    const formato = formatoDaResposta(resposta);
+    if (formato === 'nao-json') {
+      descartarCorpo(resposta);
+      // Um SPA devolvendo 200 aqui é o pior cenário: PARECE que deu certo e
+      // nenhuma reunião foi criada. Repetir o POST não resolve enquanto a URL
+      // estiver errada, então a mensagem tem que ser sobre a URL.
+      if (resposta.ok) {
+        const mensagem = mensagemUrlDeSite(caminho, resposta);
+        this.avisarConfiguracao('meetings', mensagem);
+        throw new PainelError(mensagem, 0, `HTTP ${resposta.status} ${mimeDaResposta(resposta)}`);
+      }
+      throw new PainelError(
+        `O painel respondeu HTTP ${resposta.status} em ${mimeDaResposta(resposta)}, não JSON.`,
+        resposta.status
+      );
+    }
+
     const bruto: unknown = await resposta.json().catch(() => undefined);
     if (!resposta.ok) {
-      const erro = texto(objeto(bruto)?.error) ?? `HTTP ${resposta.status}`;
-      throw new PainelError(erro, resposta.status, JSON.stringify(bruto ?? '').slice(0, 400));
+      const doPainel = texto(objeto(bruto)?.error);
+      // 404 SEM `error` no corpo é o 404 do framework: a rota não existe nessa
+      // base. Com `error`, quem está falando é o painel (assignee inexistente,
+      // por exemplo) e a mensagem dele vale mais que o nosso palpite.
+      if (resposta.status === 404 && !doPainel) {
+        const mensagem = mensagemRotaInexistente(caminho);
+        this.avisarConfiguracao('meetings', mensagem);
+        throw new PainelError(mensagem, 404);
+      }
+      // A mensagem do painel vai pra tela do atendente e o corpo cru vai pro
+      // `.detalhe`. Se quem respondeu foi um gateway ecoando o request, os dois
+      // carregam o Authorization — então os dois passam pela censura.
+      const erro = doPainel ? this.censurar(doPainel) : `HTTP ${resposta.status}`;
+      throw new PainelError(
+        erro,
+        resposta.status,
+        this.resumirCorpo(JSON.stringify(bruto ?? ''), 400)
+      );
     }
 
     const o = objeto(bruto) ?? {};
@@ -380,46 +844,74 @@ export class PainelClient {
   /**
    * Manda a transcrição pro painel — é lá que ela mora.
    *
-   * Melhor esforço: devolve `false` em vez de lançar. A transcrição continua
-   * salva aqui e o painel tem o botão de reenvio; derrubar a fila do Recall
-   * porque o painel piscou seria pior.
+   * Melhor esforço: nunca lança. A transcrição continua salva aqui e o painel
+   * tem o botão de reenvio; derrubar a fila do Recall porque o painel piscou
+   * seria pior.
+   *
+   * Mas o resultado NÃO é um booleano — ver `ResultadoTranscricao`. Um POST que
+   * estourou o timeout pode ter sido salvo do outro lado, e tratar isso como
+   * "falhou" foi o que duplicou transcrição no registro da reunião.
    */
   async enviarTranscricao(options: {
     meetingId: string;
     actorEmail: string;
     texto: string;
     idioma?: string;
-  }): Promise<boolean> {
-    if (!this.baseUrl || !this.extAgendaToken) return false;
+  }): Promise<ResultadoTranscricao> {
+    if (!this.baseUrl || !this.extAgendaToken) {
+      // Nada chegou a sair daqui: é certeza de que o painel não guardou nada.
+      return { estado: 'recusado', motivo: 'painel não configurado no servidor' };
+    }
+    const caminho = `/api/ext/agenda/meetings/${encodeURIComponent(options.meetingId)}/transcript`;
+
+    let resposta: Response;
     try {
-      const resposta = await this.pedir(
-        'POST',
-        `/api/ext/agenda/meetings/${encodeURIComponent(options.meetingId)}/transcript`,
-        {
-          corpo: {
-            actor_email: options.actorEmail,
-            language_code: options.idioma ?? 'pt-BR',
-            text: options.texto,
-          },
-          token: this.extAgendaToken,
-          timeoutMs: this.timeoutMs,
-        }
+      resposta = await this.pedir('POST', caminho, {
+        corpo: {
+          actor_email: options.actorEmail,
+          language_code: options.idioma ?? 'pt-BR',
+          text: options.texto,
+        },
+        token: this.extAgendaToken,
+        timeoutMs: this.timeoutMs,
+      });
+    } catch (err) {
+      // Timeout do abort e falha de rede caem aqui, e os dois são AMBÍGUOS: o
+      // corpo pode ter chegado inteiro e só a resposta ter se perdido — o
+      // painel grava primeiro e responde depois. Ninguém retenta isto sozinho.
+      const motivo = this.censurar(errorMessage(err));
+      log.error(
+        `não deu pra confirmar a entrega da transcrição da reunião ${options.meetingId} ao ` +
+          `painel (${motivo}). Estado INCERTO: ela PODE já estar lá — não reenvie sem conferir.`
       );
-      if (!resposta.ok) {
-        const detalhe = await resposta.text().catch(() => '');
-        log.warn(
-          `painel recusou a transcrição da reunião ${options.meetingId}: ` +
-            `HTTP ${resposta.status} ${detalhe.slice(0, 200)}`
-        );
-        return false;
-      }
+      return { estado: 'incerto', motivo };
+    }
+
+    // 200 com HTML é o SPA no lugar da API: o painel nem chegou a ver isto.
+    if (resposta.ok && formatoDaResposta(resposta) === 'nao-json') {
+      descartarCorpo(resposta);
+      const mensagem = mensagemUrlDeSite(caminho, resposta);
+      this.avisarConfiguracao('transcript', mensagem);
+      return { estado: 'recusado', motivo: mensagem };
+    }
+    if (resposta.ok) {
+      descartarCorpo(resposta);
       // Nunca logamos o texto — transcrição é dado sensível de cliente (LGPD).
       log.info(`transcrição da reunião ${options.meetingId} entregue ao painel.`);
-      return true;
-    } catch (err) {
-      log.warn(`falha ao entregar transcrição ao painel: ${errorMessage(err)}`);
-      return false;
+      return { estado: 'enviado' };
     }
+
+    const detalhe = await resposta.text().catch(() => '');
+    const motivo = `HTTP ${resposta.status} ${this.resumirCorpo(detalhe)}`.trim();
+    if (ehRecusaDefinitiva(resposta.status)) {
+      log.warn(`painel recusou a transcrição da reunião ${options.meetingId}: ${motivo}`);
+      return { estado: 'recusado', motivo };
+    }
+    log.error(
+      `entrega da transcrição da reunião ${options.meetingId} ficou INCERTA (${motivo}) — ` +
+        'o painel pode ter salvo antes de a resposta se perder; não reenvie sem conferir.'
+    );
+    return { estado: 'incerto', motivo };
   }
 
   /** Vendedores pro seletor da apresentação. `[]` = sem token de retaguarda. */
@@ -431,8 +923,21 @@ export class PainelClient {
       PAINEL_TIMEOUT_CLIQUE_MS,
       this.retaguardaToken
     );
+    // O painel responde `{ success, data: { vendedores: [...] } }` — dois
+    // níveis, não um. Medido contra o painel de verdade; a suposição anterior
+    // (`data` sendo o array) devolvia lista vazia em silêncio, e o seletor de
+    // vendedor apareceria sempre vazio sem ninguém entender por quê.
     const o = objeto(dados);
-    const lista = Array.isArray(dados) ? dados : Array.isArray(o?.data) ? o.data : [];
+    const dentro = objeto(o?.data);
+    const lista = Array.isArray(dados)
+      ? dados
+      : Array.isArray(dentro?.vendedores)
+        ? dentro.vendedores
+        : Array.isArray(o?.vendedores)
+          ? o.vendedores
+          : Array.isArray(o?.data)
+            ? o.data
+            : [];
     return lista.map(lerPessoa).filter((p): p is PessoaPainel => p !== null);
   }
 
@@ -476,30 +981,81 @@ export class PainelClient {
         token: usar,
         timeoutMs: timeoutMs ?? this.timeoutMs,
       });
+      const formato = formatoDaResposta(resposta);
+      // 200 + HTML é o sinal mais claro de endereço errado: nenhum painel
+      // responde a grade de horários com uma página. Nem tenta o .json().
+      if (resposta.ok && formato === 'nao-json') {
+        descartarCorpo(resposta);
+        this.avisarConfiguracao(operacao, mensagemUrlDeSite(caminho, resposta));
+        return undefined;
+      }
       if (!resposta.ok) {
+        // 404 EM JSON é outra história: existe API ali. Mas nem todo 404 é rota
+        // errada — o contrato do painel usa 404 como resposta NORMAL de
+        // negócio em `GET /api/retaguarda/migracao/status` ("não existe
+        // checklist para esse CNPJ"). Gritar "confira PAINEL_API_URL" nesse
+        // caso manda a pessoa mexer numa configuração que está certa, e todo
+        // CNPJ sem checklist viraria um alarme falso.
+        //
+        // A diferença está no corpo: com `error`, quem falou foi o painel.
+        if (resposta.status === 404 && formato !== 'nao-json') {
+          const bruto: unknown = await resposta.json().catch(() => undefined);
+          const doPainel = texto(objeto(bruto)?.error);
+          if (doPainel) {
+            log.debug(`painel respondeu 404 em ${operacao}: ${this.censurar(doPainel)}`);
+            return undefined;
+          }
+          this.avisarConfiguracao(operacao, mensagemRotaInexistente(caminho));
+          return undefined;
+        }
+        if (formato === 'nao-json') {
+          // Página de erro de proxy/gateway: despejar 200 caracteres de HTML no
+          // log não ajuda; o status e o mime já contam a história.
+          descartarCorpo(resposta);
+          log.warn(
+            `painel respondeu HTTP ${resposta.status} em ${operacao} com ${mimeDaResposta(resposta)}, não JSON.`
+          );
+          return undefined;
+        }
         const detalhe = await resposta.text().catch(() => '');
-        log.warn(`painel respondeu HTTP ${resposta.status} em ${operacao}: ${detalhe.slice(0, 200)}`);
+        log.warn(
+          `painel respondeu HTTP ${resposta.status} em ${operacao}: ${this.resumirCorpo(detalhe)}`
+        );
         return undefined;
       }
       return (await resposta.json()) as unknown;
     } catch (err) {
-      log.warn(`falha em ${operacao}: ${errorMessage(err)}`);
+      log.warn(`falha em ${operacao}: ${this.censurar(errorMessage(err))}`);
       return undefined;
     }
+  }
+
+  /**
+   * Erro de CONFIGURAÇÃO (não de disponibilidade): grita alto, mas no máximo
+   * uma vez por minuto por operação. Sem a trava, uma aba aberta faria dezenas
+   * de linhas idênticas por minuto e o operador pararia de ler o log.
+   */
+  private avisarConfiguracao(operacao: string, mensagem: string): void {
+    const agora = Date.now();
+    const anterior = this.ultimoAviso.get(operacao);
+    if (anterior !== undefined && agora - anterior < INTERVALO_AVISO_CONFIG_MS) return;
+    this.ultimoAviso.set(operacao, agora);
+    log.error(`${mensagem} (visto em ${operacao})`);
   }
 
   private async pedir(
     metodo: 'GET' | 'POST',
     caminho: string,
-    options: { corpo?: unknown; token: string; timeoutMs: number }
+    options: { corpo?: unknown; token: string | undefined; timeoutMs: number }
   ): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);
     try {
-      const headers: Record<string, string> = {
-        // O token vai no header e NUNCA no log — é credencial compartilhada.
-        Authorization: `Bearer ${options.token}`,
-      };
+      const headers: Record<string, string> = {};
+      // O token vai no header e NUNCA no log — é credencial compartilhada.
+      // Sem token o header some: /api/healthcheck é público e o diagnóstico
+      // precisa poder bater nele antes de ter credencial nenhuma.
+      if (options.token) headers.Authorization = `Bearer ${options.token}`;
       if (options.corpo !== undefined) headers['Content-Type'] = 'application/json';
       return await this.fetchImpl(`${this.baseUrl}${caminho}`, {
         method: metodo,

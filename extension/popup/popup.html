@@ -12,15 +12,35 @@
     </header>
 
     <main>
-      <section class="bloco">
-        <h2>Conta Google</h2>
-        <p class="ajuda">
-          É com ela que o link da reunião é criado. Funciona com conta pessoal.
-        </p>
-        <div id="google-estado" class="estado" role="status">Verificando…</div>
-        <button id="conectar" class="botao primario" type="button">Conectar conta Google</button>
-        <button id="desconectar" class="botao secundario oculto" type="button">Desconectar</button>
-      </section>
+      <!-- Lugar de honra: quem cria o link da reunião hoje é o painel. Era a
+           conta Google que ficava aqui, e cada atendente achava que precisava
+           conectar a dele. -->
+      <div id="painel-linha" class="painel neutro" role="status">
+        <span class="ponto" aria-hidden="true"></span>
+        <span class="painel-texto">
+          <span class="painel-rotulo">Painel de reuniões</span>
+          <strong id="painel-valor" class="painel-valor">verificando…</strong>
+        </span>
+      </div>
+      <p id="painel-detalhe" class="painel-detalhe oculto"></p>
+
+      <!-- Um <details> só, em duas apresentações: recolhido quando o painel
+           responde (a conta Google é reserva) e aberto em destaque quando ele
+           não responde, porque aí ela é o caminho. -->
+      <details id="google-bloco" class="google">
+        <summary id="google-titulo">
+          <span>Conta Google</span>
+          <span id="google-tag" class="tag oculto">reserva</span>
+        </summary>
+        <div class="google-corpo">
+          <p class="ajuda" id="google-ajuda">
+            É com ela que o link da reunião é criado. Funciona com conta pessoal.
+          </p>
+          <div id="google-estado" class="estado" role="status">Verificando…</div>
+          <button id="conectar" class="botao primario" type="button">Conectar conta Google</button>
+          <button id="desconectar" class="botao secundario oculto" type="button">Desconectar</button>
+        </div>
+      </details>
 
       <section class="bloco">
         <h2>Servidor</h2>

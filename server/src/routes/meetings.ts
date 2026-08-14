@@ -5,7 +5,14 @@ import type { Db, MeetingRow } from '../db.js';
 import { RecallApiError, type RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
 import { normalizeMeetingCode } from '../google/meet.js';
-import { entregarAoChatproComTrava, lerTranscriptSalvo } from '../pipeline/recallQueue.js';
+import {
+  AVISO_PAINEL_INCERTO,
+  entregarAoChatproComTrava,
+  entregarAoPainel,
+  lerTranscriptSalvo,
+  painelPrecisaConfirmacao,
+  type OpcoesEntrega,
+} from '../pipeline/recallQueue.js';
 import { criarReuniao } from '../recall/criarReuniao.js';
 import { createLogger } from '../log.js';
 
@@ -59,6 +66,10 @@ export interface ResumoReuniao {
   atendenteEmail: string | null;
   tipo: string | null;
   palavras: string[];
+  /** pendente | enviado | falhou | incerto — entrega ao painel de reuniões. */
+  painelStatus: string | null;
+  /** A reunião nasceu no painel? Sem isso não há pra onde mandar. */
+  temPainel: boolean;
   error: string | null;
   createdAt: string;
   temTranscript: boolean;
@@ -93,6 +104,12 @@ export function resumirReuniao(row: MeetingRow): ResumoReuniao {
     atendenteEmail: row.atendente_email,
     tipo: row.tipo,
     palavras: lerPalavras(row.palavras_json),
+    // Entrega da transcrição ao painel. Precisa aparecer na tela: 'incerto'
+    // (timeout no POST, sem saber se chegou) não se resolve sozinho e o único
+    // sinal era um log.warn — o supervisor via "enviado ao chatPro ✓" e
+    // concluía que estava tudo entregue, com a transcrição pendurada.
+    painelStatus: row.painel_status,
+    temPainel: Boolean(row.painel_meeting_id),
     error: row.error,
     createdAt: row.created_at,
     temTranscript: Boolean(row.transcript_json),
@@ -106,6 +123,11 @@ export interface MeetingsRouterDeps {
   chatpro: ChatproClient;
   /** RECALL_BOT_NAME — como o bot aparece na lista de participantes. */
   botName: string;
+  /**
+   * O que a entrega manual usa (resumo por IA, link, painel de reuniões).
+   * Ausente = entrega só o comentário no chatPro, sem subir nada pro painel.
+   */
+  entrega?: OpcoesEntrega | undefined;
 }
 
 const SEM_API_KEY = {
@@ -134,6 +156,7 @@ type ParamsId = { id: string };
 
 export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
   const { db, recall, chatpro, botName } = deps;
+  const opcoesEntrega = deps.entrega ?? {};
   const router = Router();
 
   // Sem CORS de propósito. O painel é servido por este mesmo servidor (mesma
@@ -241,6 +264,61 @@ export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
   );
 
   router.post(
+    // Reenvio SÓ pro painel, sem passar pelo chatPro.
+    //
+    // Existe porque o caminho anterior era inalcançável no caso mais comum: se
+    // o comentário no chatPro já saiu (chatpro_status='sent') e o POST do
+    // painel deu timeout, o botão de envio fica desabilitado — e a transcrição,
+    // que é o entregável do produto lá, nunca subia. O único sinal era um
+    // log.warn a cada passada do worker.
+    '/api/meetings/:id/send-painel',
+    assincrono<ParamsId>(async (req, res) => {
+      const meeting = db.getMeeting(req.params.id);
+      if (!meeting) {
+        res.status(404).json({ error: 'Reunião não encontrada.' });
+        return;
+      }
+      if (!meeting.painel_meeting_id) {
+        res.status(409).json({
+          error: 'Essa reunião não nasceu no painel — não há pra onde mandar a transcrição.',
+        });
+        return;
+      }
+      const salvo = lerTranscriptSalvo(meeting.transcript_json);
+      if (!salvo || salvo.falas.length === 0) {
+        res.status(409).json({ error: 'Reunião ainda sem transcrição.' });
+        return;
+      }
+
+      // A confirmação explícita é o que separa "reenviar o que falhou" de
+      // "gravar a transcrição do cliente em dobro". Só o operador que conferiu
+      // no painel pode mandar `forcar=true`.
+      const forcar = req.query.forcar === 'true';
+      if (painelPrecisaConfirmacao(meeting) && !forcar) {
+        res.status(409).json({
+          error: 'A entrega anterior ficou incerta.',
+          detail:
+            'O painel pode já ter salvo esta transcrição e só a resposta ter se perdido. ' +
+            'Confira lá; se não estiver, repita com ?forcar=true.',
+          precisaConfirmar: true,
+        });
+        return;
+      }
+
+      const estado = await entregarAoPainel(db, meeting, salvo, {
+        ...opcoesEntrega,
+        forcarPainel: forcar,
+      });
+      log.info(`reenvio ao painel da reunião ${meeting.id}: ${estado}`);
+      const depois = db.getMeeting(meeting.id);
+      res.status(estado === 'falhou' ? 502 : 200).json({
+        estado,
+        painelStatus: depois?.painel_status ?? null,
+      });
+    })
+  );
+
+  router.post(
     '/api/meetings/:id/send-chatpro',
     assincrono<ParamsId>(async (req, res) => {
       const meeting = db.getMeeting(req.params.id);
@@ -254,10 +332,38 @@ export function createMeetingsRouter(deps: MeetingsRouterDeps): Router {
         });
         return;
       }
-      const resultado = await entregarAoChatproComTrava(db, chatpro, meeting);
+      // Reenvio CONSCIENTE ao painel. Quando a entrega anterior ficou 'incerto'
+      // (timeout: o painel pode ter salvo e só a resposta ter se perdido),
+      // repetir o POST grava a transcrição do cliente em dobro lá — a API do
+      // painel não tem Idempotency-Key e não dá pra desfazer daqui. Então o
+      // reenvio ao painel só acontece com `?forcar=true`, que é o operador
+      // dizendo "conferi no painel, pode mandar". Sem isso, o botão continua
+      // reenviando o comentário ao chatPro e o painel fica de fora.
+      const forcar = req.query.forcar === 'true';
+      if (forcar && painelPrecisaConfirmacao(meeting)) {
+        log.warn(
+          `reenvio FORÇADO da transcrição da reunião ${meeting.id} ao painel — ` +
+            'estava incerta e alguém confirmou pela interface.'
+        );
+      }
+      const resultado = await entregarAoChatproComTrava(db, chatpro, meeting, {
+        ...opcoesEntrega,
+        forcarPainel: forcar,
+      });
       log.info(`envio manual ao chatPro da reunião ${meeting.id}: ${resultado.status}`);
+
+      // O estado do painel é lido DEPOIS da entrega: é o que diz se a
+      // transcrição está confirmada lá, se ficou em dúvida ou se nem foi.
+      const depois = db.getMeeting(meeting.id);
+      const incerto = depois !== undefined && painelPrecisaConfirmacao(depois);
       // 'skipped-no-url' não é erro: é o modo dev, sem CHATPRO_API_URL.
-      res.status(resultado.status === 'failed' ? 502 : 200).json(resultado);
+      res.status(resultado.status === 'failed' ? 502 : 200).json({
+        ...resultado,
+        painelStatus: depois?.painel_status ?? null,
+        // O aviso é o que impede o clique automático de virar duplicidade:
+        // quem for reenviar precisa ler que ela PODE já estar no painel.
+        ...(incerto ? { aviso: AVISO_PAINEL_INCERTO, painelPrecisaConfirmacao: true } : {}),
+      });
     })
   );
 

@@ -182,7 +182,18 @@ function main(): void {
   app.use(createReviewRouter({ db, captureDir, pipeline: audioPipeline }));
   app.use(createOAuthRouter(auth));
   app.use(createApiRouter({ db, meet, auth, voreo, eventQueue }));
-  app.use(createMeetingsRouter({ db, recall, chatpro, botName: config.recallBotName }));
+  app.use(
+    createMeetingsRouter({
+      db,
+      recall,
+      chatpro,
+      botName: config.recallBotName,
+      // O botão de reenvio precisa do painel pra completar a entrega que ficou
+      // pelo caminho — e é o único lugar de onde sai um reenvio FORÇADO de uma
+      // entrega incerta, com quem clicou avisado de que ela pode já estar lá.
+      entrega: { painel },
+    })
+  );
   // Gatilho automático: link do Meet numa conversa do chatPro → bot na sala.
   // Fica depois do json() (precisa do corpo parseado) e passa livre pela
   // tranca do painel, porque /webhooks/ está na lista de caminhos livres.

@@ -384,6 +384,29 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         } catch (err) {
           const status = err instanceof PainelError ? err.status : 502;
           log.error('painel recusou a criação da reunião', err);
+
+          // TIMEOUT (status 0) É DIFERENTE DE RECUSA, e confundir os dois custa
+          // caro aqui. Abortar do nosso lado NÃO cancela o processamento do
+          // lado de lá: o painel pode ter criado a reunião, gerado o Meet,
+          // mandado o e-mail e avisado no Slack — e só a resposta se perdeu.
+          //
+          // A API não tem Idempotency-Key, então "tentar de novo" nesse estado
+          // duplica um compromisso real na agenda de gente de verdade. A única
+          // saída honesta é dizer que não sabemos e mandar conferir no painel.
+          const incerto = status === 0;
+          if (incerto) {
+            res.status(504).json({
+              error: 'Não sei dizer se a reunião foi marcada.',
+              detail:
+                `${errorMessage(err)} O painel pode tê-la criado e só a resposta se perdeu. ` +
+                'Confira no painel ANTES de marcar de novo — repetir criaria uma reunião duplicada.',
+              incerto: true,
+              // A tela usa isto pra NÃO oferecer "tentar de novo".
+              naoRepetir: true,
+            });
+            return;
+          }
+
           // 409 = horário ocupado entre consultar a grade e confirmar. É
           // esperado, e a tela precisa saber pra recarregar os horários.
           res.status(status === 409 ? 409 : 502).json({
@@ -455,16 +478,35 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const enviarEm = quando
         ? new Date(Math.max(Date.now(), quando.getTime() - ANTECEDENCIA_CONVITE_MS))
         : null;
+      // Falha no envio quando a reunião JÁ EXISTE no painel é o caso mais
+      // delicado deste arquivo. A reunião foi criada de verdade: link gerado,
+      // agenda do responsável ocupada, Slack avisado. Voltar um erro seco faz o
+      // atendente clicar de novo — e o segundo clique cria uma SEGUNDA reunião
+      // real, porque a API do painel não tem chave de idempotência.
+      //
+      // Então aqui a gente não desiste: registra a reunião, arma o bot e devolve
+      // o link pra colar na mão. Se o atendente colar, o cliente entra e a
+      // gravação acontece igual. O que não pode é refazer tudo.
+      let mensagemFalhou: string | null = null;
       if (!quando) {
         const envio = await chatpro.enviarMensagem({ sessionId, message: texto, instanceId });
         if (!envio.ok) {
-          res.status(502).json({
-            error: 'O link foi criado, mas não deu pra enviar pro cliente.',
-            detail: envio.motivo,
-            meetUrl: meet.meetUrl,
-            hint: 'Você pode colar o link na conversa manualmente.',
-          });
-          return;
+          mensagemFalhou = envio.motivo;
+          if (!painelMeetingId) {
+            // Sem reunião no painel (plano B), nada foi criado fora daqui:
+            // parar é seguro e evita bot numa sala que o cliente não conhece.
+            res.status(502).json({
+              error: 'O link foi criado, mas não deu pra enviar pro cliente.',
+              detail: envio.motivo,
+              meetUrl: meet.meetUrl,
+              hint: 'Você pode colar o link na conversa manualmente.',
+            });
+            return;
+          }
+          log.warn(
+            `reunião ${painelMeetingId} existe no painel mas a mensagem não saiu ` +
+              `(${envio.motivo}). Seguindo pra armar o bot — o atendente cola o link.`
+          );
         }
       }
 
@@ -521,7 +563,18 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         meetUrl: meet.meetUrl,
         meetingCode: meet.meetingCode,
         // Agendada: a mensagem NÃO saiu agora — sai perto do horário.
-        mensagemEnviada: !quando,
+        mensagemEnviada: !quando && mensagemFalhou === null,
+        // A reunião EXISTE no painel. É o que impede a tela de oferecer
+        // "tentar de novo" e duplicar um compromisso real.
+        ...(painelMeetingId ? { painelMeetingId, naoRepetir: true } : {}),
+        ...(mensagemFalhou
+          ? {
+              avisoMensagem:
+                `A reunião está marcada, mas a mensagem não chegou ao cliente ` +
+                `(${mensagemFalhou}). Cole o link na conversa — não marque de novo, ` +
+                'senão vira reunião duplicada.',
+            }
+          : {}),
         gravando: r.ok,
         // A extensão usa isto pra não abrir a sala de uma reunião que é depois.
         agendadaPara: quando ? quando.toISOString() : null,

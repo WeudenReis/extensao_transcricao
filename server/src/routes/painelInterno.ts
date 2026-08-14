@@ -9,6 +9,7 @@ import { createLogger } from '../log.js';
  *
  *   GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada)
  *   GET /api/painel/onboarding?cnpj=  → dados do cliente na migração
+ *   GET /api/painel/diagnostico       → por que o painel não está respondendo
  *
  * São só repasses pro PainelClient — o contrato da plataforma interna mora lá,
  * num lugar só. Aqui fica o que é responsabilidade de borda: validar o CNPJ
@@ -70,6 +71,25 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
       // Grade nula (painel fora) vira lista vazia com aviso: a tela mostra
       // "sem horário" em vez de estourar.
       res.json({ disponivel: grade !== null, grade: grade ?? { disponiveis: [], bloqueados: [], maxDate: null } });
+    })
+  );
+
+  // Rota de CONSERTO, não de produto: sem ela, "PAINEL_API_URL aponta pro site
+  // em vez da API", "token trocado" e "painel fora do ar" chegam na tela com o
+  // mesmo sintoma — tudo vazio, sem explicação. Aqui a pessoa que instalou o
+  // servidor lê a diferença em uma frase.
+  router.get(
+    '/api/painel/diagnostico',
+    assincrono(async (req, res) => {
+      const email = String(req.query.email ?? '').trim();
+      const resultado = await painel.diagnosticar(email || undefined);
+      if (resultado.problema) {
+        log.warn(`diagnóstico do painel: ${resultado.problema} — ${resultado.detalhe ?? ''}`);
+      }
+      // 200 mesmo com problema: o corpo É o diagnóstico, e um 5xx faria a
+      // ferramenta de diagnóstico parecer o defeito. O corpo leva só a
+      // classificação e a frase — nunca token nem credencial.
+      res.json({ configurado: painel.estaConfigurado(), ...resultado });
     })
   );
 

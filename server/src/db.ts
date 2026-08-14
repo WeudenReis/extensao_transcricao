@@ -153,6 +153,20 @@ export type MeetingStatus =
   | 'done'
   | 'failed';
 
+/**
+ * Estado da entrega da transcrição ao PAINEL DE REUNIÕES.
+ *
+ * 'incerto' existe por um motivo específico: o POST /transcript do painel não
+ * tem Idempotency-Key. Quando ele estoura o timeout, o painel pode ter salvo o
+ * texto e só a resposta ter se perdido. Marcar isso como 'falhou' fazia a
+ * próxima passada (reentrega do transcript.done, botão de reenvio) postar a
+ * transcrição inteira DE NOVO — dado sensível de cliente gravado em dobro.
+ *
+ * Quem reenvia sozinho: 'pendente' e 'falhou' (certeza de que não chegou).
+ * Quem NÃO reenvia sozinho: 'enviado' (já está lá) e 'incerto' (pode estar).
+ */
+export type PainelStatus = 'pendente' | 'enviado' | 'falhou' | 'incerto';
+
 export type ChatproStatus =
   | 'pending'
   | 'sent'
@@ -190,8 +204,10 @@ export interface MeetingRow {
   palavras_json: string | null;
   /** Id da reunião no painel — destino da transcrição. */
   painel_meeting_id: string | null;
-  /** pendente | enviado | falhou — entrega da transcrição ao painel. */
+  /** pendente | enviado | falhou | incerto — ver `PainelStatus`. */
   painel_status: string | null;
+  /** Por que a última entrega ao painel terminou assim. Nunca o texto da fala. */
+  painel_detalhe: string | null;
   /** Id do atendente no chatPro — autor do comentário na conversa. */
   atendente_user_id: string | null;
   error: string | null;
@@ -474,6 +490,10 @@ export class Db {
     // grava e a transcrição não tem pra onde ir.
     this.garantirColuna('meetings', 'painel_meeting_id', 'TEXT');
     this.garantirColuna('meetings', 'painel_status', 'TEXT');
+    // Por que a última entrega ao painel terminou naquele estado. Vale sobretudo
+    // pro 'incerto': quem for reenviar na mão precisa saber que o motivo foi
+    // timeout/rede, e não uma recusa — é a diferença entre reenviar e duplicar.
+    this.garantirColuna('meetings', 'painel_detalhe', 'TEXT');
     // Id do atendente no chatPro (vem do JWT). O comentário da reunião sai no
     // nome dele em vez do usuário fixo do .env.
     this.garantirColuna('meetings', 'atendente_user_id', 'TEXT');
@@ -1325,9 +1345,19 @@ export class Db {
       .run({ id, status: chatproStatus, parts: partsSent });
   }
 
-  /** Marca como a entrega da transcrição ao painel terminou. */
-  setPainelStatus(id: string, status: 'pendente' | 'enviado' | 'falhou'): void {
-    this.db.prepare('UPDATE meetings SET painel_status = ? WHERE id = ?').run(status, id);
+  /**
+   * Marca como a entrega da transcrição ao painel terminou.
+   *
+   * O `detalhe` é o motivo em uma linha (timeout, HTTP 422 do painel…). Cortado
+   * em 300 caracteres porque é log, não prova: corpo de gateway vem em página
+   * inteira. NUNCA recebe o texto da transcrição.
+   */
+  setPainelStatus(id: string, status: PainelStatus, detalhe: string | null = null): void {
+    this.db
+      .prepare(
+        'UPDATE meetings SET painel_status = @status, painel_detalhe = @detalhe WHERE id = @id'
+      )
+      .run({ id, status, detalhe: detalhe === null ? null : detalhe.slice(0, 300) });
   }
 
   /** Palavras-chave detectadas na transcrição (uma vez por reunião). */

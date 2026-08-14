@@ -163,6 +163,14 @@ export interface OpcoesEntrega {
   painelUrl?: string | undefined;
   /** Painel de reuniões — destino da transcrição completa. */
   painel?: PainelClient | undefined;
+  /**
+   * Confirmação HUMANA pra reenviar ao painel uma entrega que ficou 'incerto'.
+   *
+   * O caminho automático (worker, reentrega do Recall, reconciliação) nunca
+   * manda isto: só o botão de reenvio, com quem clicou sabendo que a
+   * transcrição pode já estar lá. Ver `AVISO_PAINEL_INCERTO`.
+   */
+  forcarPainel?: boolean | undefined;
   /** Injetável nos testes. */
   gerarResumoImpl?: typeof gerarResumo;
 }
@@ -274,42 +282,99 @@ export async function entregarAoChatpro(
 }
 
 /**
+ * Texto que acompanha todo reenvio ao painel de uma entrega INCERTA. Vai pra
+ * tela de quem clica: a decisão de duplicar (ou não) é dele, com a informação
+ * na mão. O painel não avisa duplicidade e não dá pra apagar de fora.
+ */
+export const AVISO_PAINEL_INCERTO =
+  'A transcrição PODE já estar no painel: a primeira tentativa não teve resposta ' +
+  '(timeout ou queda de rede) e o painel salva antes de responder. Confira o registro ' +
+  'da reunião no painel — reenviar sem conferir grava a transcrição duas vezes.';
+
+/** Como terminou a subida da transcrição pro painel. */
+export type EstadoEntregaPainel =
+  /** Reunião não nasceu no painel (ou o painel não está configurado). */
+  | 'sem-destino'
+  /** Já confirmada lá antes — não se mexe. */
+  | 'ja-enviado'
+  /** Ficou incerta e ninguém confirmou o reenvio. Nada foi mandado. */
+  | 'aguardando-confirmacao'
+  /** Nada de útil pra mandar (transcrição vazia). */
+  | 'sem-texto'
+  | 'enviado'
+  | 'falhou'
+  | 'incerto';
+
+/** A entrega ao painel ficou pendurada num "não sei se chegou"? */
+export function painelPrecisaConfirmacao(meeting: MeetingRow): boolean {
+  return meeting.painel_status === 'incerto';
+}
+
+/**
  * Sobe a transcrição pro painel (POST /meetings/{id}/transcript).
  *
  * Só acontece quando a reunião nasceu lá (tem `painel_meeting_id`): reunião
  * criada pelo plano B do Google Calendar não tem destino no painel.
  *
- * Nunca lança e nunca repete uma entrega que já deu certo — o `painel_status`
- * é o que impede a transcrição de subir duas vezes quando o Recall reentrega
- * o mesmo `transcript.done`.
+ * Nunca lança. E nunca reenvia por conta própria o que PODE já estar lá — é
+ * `painel_status` que segura isso, com dois freios diferentes:
+ *
+ *   'enviado' → confirmado pelo painel. Fim, em qualquer caminho.
+ *   'incerto' → o POST anterior não teve resposta (timeout, rede, 5xx). O
+ *               painel não tem Idempotency-Key: repetir cria um SEGUNDO
+ *               registro da mesma transcrição. Só sai daqui com `forcarPainel`,
+ *               que só o botão de reenvio manda, depois do aviso.
+ *
+ * 'falhou' (o painel respondeu recusando) não é freio nenhum: aí sabemos que
+ * nada foi salvo, e retentar é o certo.
  */
-async function entregarAoPainel(
+export async function entregarAoPainel(
   db: Db,
   meeting: MeetingRow,
   salvo: TranscriptSalvo,
   opcoes: OpcoesEntrega
-): Promise<void> {
+): Promise<EstadoEntregaPainel> {
   const painel = opcoes.painel;
   const idNoPainel = meeting.painel_meeting_id;
-  if (!painel || !idNoPainel) return;
-  if (meeting.painel_status === 'enviado') return;
-  if (salvo.falas.length === 0) return;
+  if (!painel || !idNoPainel) return 'sem-destino';
+  if (meeting.painel_status === 'enviado') return 'ja-enviado';
+  if (painelPrecisaConfirmacao(meeting) && opcoes.forcarPainel !== true) {
+    log.warn(
+      `reunião ${meeting.id}: entrega ao painel está INCERTA ` +
+        `(${meeting.painel_detalhe ?? 'sem detalhe'}) — não reenvio sozinho, porque a ` +
+        'transcrição pode já estar lá. Reenvio manual exige confirmação.'
+    );
+    return 'aguardando-confirmacao';
+  }
+  if (salvo.falas.length === 0) return 'sem-texto';
 
   // O painel quer texto corrido com quem falou, não o nosso JSON.
   const texto = salvo.falas
     .map((f) => `${f.speaker ?? 'Participante'}: ${f.text ?? ''}`.trim())
     .filter((l) => l.length > 1)
     .join('\n\n');
-  if (texto === '') return;
+  if (texto === '') return 'sem-texto';
 
-  const ok = await painel.enviarTranscricao({
+  const resultado = await painel.enviarTranscricao({
     meetingId: idNoPainel,
     // O painel exige um usuário ATIVO em actor_email; quem responde pela
     // reunião é o certo, e é quem já está registrado na atribuição.
     actorEmail: meeting.atendente_email ?? '',
     texto,
   });
-  db.setPainelStatus(meeting.id, ok ? 'enviado' : 'falhou');
+
+  if (resultado.estado === 'enviado') {
+    db.setPainelStatus(meeting.id, 'enviado');
+    return 'enviado';
+  }
+  if (resultado.estado === 'incerto') {
+    // O carimbo é o que impede a próxima passada de duplicar. Sem ele, o
+    // 'falhou' antigo autorizava o reenvio automático — a origem do defeito.
+    db.setPainelStatus(meeting.id, 'incerto', resultado.motivo);
+    return 'incerto';
+  }
+  db.setPainelStatus(meeting.id, 'falhou', resultado.motivo);
+  return 'falhou';
 }
 
 /**

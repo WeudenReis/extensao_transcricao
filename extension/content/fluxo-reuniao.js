@@ -707,18 +707,45 @@
               String(msg)
             )
           );
-          if (resposta && resposta.detail) {
+          const detalhe = resposta.detalhe || resposta.detail;
+          if (detalhe) {
             api.corpo.appendChild(
               api.el(
                 'div',
                 `font:400 12px/1.5 system-ui,sans-serif;color:${p.textoFraco}`,
-                String(resposta.detail)
+                String(detalhe)
               )
             );
           }
+
+          // "Tentar de novo" NÃO pode aparecer quando o servidor avisa que
+          // repetir é perigoso. O POST pode ter criado a reunião no painel
+          // (link gerado, agenda ocupada, Slack avisado) e só a resposta ter se
+          // perdido — a API não tem chave de idempotência, então o segundo
+          // clique vira um segundo compromisso real na agenda de alguém.
+          if (resposta.naoRepetir || resposta.incerto) {
+            api.corpo.appendChild(
+              api.el(
+                'div',
+                `margin-top:12px;padding:10px 12px;border-radius:10px;background:${p.fundoFraco};` +
+                  `font:500 12px/1.5 system-ui,sans-serif;color:${p.texto}`,
+                'Confira no painel de reuniões antes de marcar de novo — se ela já ' +
+                  'estiver lá, marcar outra vez cria uma reunião duplicada.'
+              )
+            );
+            if (resposta.meetUrl) {
+              api.acao('Copiar o link mesmo assim', () => {
+                void navigator.clipboard.writeText(resposta.meetUrl).catch(() => {});
+              });
+            } else {
+              api.acao('Fechar', api.fechar);
+            }
+            return;
+          }
+
           // 409 no horário: a grade é uma fotografia e alguém ocupou entre
           // consultar e confirmar. Voltar pra grade é a saída certa.
-          if (resposta && resposta.recarregarHorarios) {
+          if (resposta.recarregarHorarios) {
             api.acao('Escolher outro horário', passoHorario);
           } else {
             api.acao('Tentar de novo', passoDados);
@@ -733,11 +760,26 @@
             quandoIso ? 'Reunião marcada' : 'Reunião criada'
           )
         );
+        // A reunião existe, mas o cliente NÃO foi avisado — e isso precisa ficar
+        // na cara, senão o atendente fecha a aba achando que acabou e ninguém
+        // aparece na sala.
+        if (resposta.avisoMensagem) {
+          api.corpo.appendChild(
+            api.el(
+              'div',
+              `margin-bottom:12px;padding:10px 12px;border-radius:10px;` +
+                `background:${p.fundoFraco};border-left:3px solid ${p.perigo};` +
+                `font:500 12px/1.5 system-ui,sans-serif;color:${p.texto}`,
+              String(resposta.avisoMensagem)
+            )
+          );
+        }
+
         const detalhes = [];
         if (resposta.responsavel) detalhes.push(`Responsável: ${resposta.responsavel}`);
         if (quandoIso && resposta.quandoTexto) detalhes.push(`Quando: ${resposta.quandoTexto}`);
         if (quandoIso) detalhes.push('O convite vai pro cliente 5 minutos antes.');
-        else detalhes.push('O link já foi enviado pro cliente.');
+        else if (resposta.mensagemEnviada) detalhes.push('O link já foi enviado pro cliente.');
         for (const linha of detalhes) {
           api.corpo.appendChild(
             api.el(

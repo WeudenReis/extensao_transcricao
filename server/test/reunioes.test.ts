@@ -58,6 +58,8 @@ async function montarApp(
     painelIndisponivel?: boolean;
     /** Liga o painel: aí é ELE quem cria a reunião e gera o link do Meet. */
     comPainel?: boolean;
+    /** O POST do painel nunca responde — simula o timeout de 15 s. */
+    painelTravaNoPost?: boolean;
   } = {}
 ): Promise<App> {
   const db = new Db(':memory:');
@@ -72,6 +74,16 @@ async function montarApp(
         return Promise.resolve(new Response('fora do ar', { status: 503 }));
       }
       if (u.includes('/api/ext/agenda/meetings')) {
+        if (options.painelTravaNoPost) {
+          // Nunca responde — e respeita o abort, como o fetch de verdade faz.
+          // Um stub que ignora o signal deixaria o teste pendurado em vez de
+          // exercitar o caminho do timeout.
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+          });
+        }
         return Promise.resolve(
           jsonResponse(
             {
@@ -659,6 +671,96 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     expect(reuniao?.atendente_email).toBe('distribuido@time.com');
     // E o elo com o painel, sem o qual a transcrição não teria pra onde voltar.
     expect(reuniao?.painel_meeting_id).toBe('reuniao-no-painel-1');
+  });
+
+  it('mensagem falhando com a reunião JÁ criada no painel NÃO oferece repetir', async () => {
+    // O pior caminho deste arquivo: o painel criou a reunião de verdade (link
+    // gerado, agenda do responsável ocupada, Slack avisado) e o envio ao cliente
+    // falhou. Devolver um erro seco faria o atendente clicar de novo — e o
+    // segundo clique cria uma SEGUNDA reunião real, porque a API do painel não
+    // tem chave de idempotência.
+    const app = await montarApp({
+      comPainel: true,
+      respostaChatpro: new Response('token vencido', { status: 401 }),
+    });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    // 201, não 502: a reunião EXISTE. Chamar isso de erro é o que leva a repetir.
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as {
+      naoRepetir?: boolean;
+      painelMeetingId?: string;
+      avisoMensagem?: string;
+      mensagemEnviada?: boolean;
+      meetUrl?: string;
+    };
+    expect(corpo.naoRepetir).toBe(true);
+    expect(corpo.painelMeetingId).toBe('reuniao-no-painel-1');
+    expect(corpo.mensagemEnviada).toBe(false);
+    expect(corpo.avisoMensagem).toContain('duplicada');
+    // O link volta pro atendente colar na mão.
+    expect(corpo.meetUrl).toBe(MEET_URL);
+
+    // E o bot foi armado mesmo assim: se o atendente colar o link, o cliente
+    // entra e a gravação acontece igual. Nada se perde.
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(true);
+    expect(app.db.listMeetings()).toHaveLength(1);
+  });
+
+  it('sem painel, mensagem falhando ainda PARA — nada foi criado fora daqui', async () => {
+    // No plano B o link é nosso e nada existe fora do servidor: parar é seguro
+    // e evita bot numa sala que o cliente nunca vai conhecer.
+    const app = await montarApp({
+      respostaChatpro: new Response('erro', { status: 500 }),
+    });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(502);
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(false);
+  });
+
+  it('timeout do painel vira "não sei", nunca "não marcou"', async () => {
+    // Abortar do nosso lado NÃO cancela o processamento do lado de lá: o painel
+    // pode ter criado tudo e só a resposta se perdeu. Dizer "não marcou" seria
+    // uma afirmação que o cliente HTTP não tem como provar — e levaria a repetir.
+    const app = await montarApp({ comPainel: true, painelTravaNoPost: true });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(504);
+    const corpo = (await res.json()) as {
+      incerto?: boolean;
+      naoRepetir?: boolean;
+      error?: string;
+      detail?: string;
+    };
+    expect(corpo.incerto).toBe(true);
+    expect(corpo.naoRepetir).toBe(true);
+    expect(corpo.error).toContain('Não sei dizer');
+    expect(corpo.detail).toContain('Confira no painel');
+
+    // Nada foi gravado como se tivesse dado certo.
+    expect(app.db.listMeetings()).toHaveLength(0);
   });
 
   it('painel interno fora do ar NÃO trava: o responsável cai em quem marcou', async () => {

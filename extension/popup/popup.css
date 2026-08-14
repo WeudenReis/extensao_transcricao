@@ -5,6 +5,10 @@
 :root {
   --verde: #25d066;
   --verde-hover: #1bad53;
+  /* O verde da marca é claro demais pra virar TEXTO sobre branco. Só no tema
+     claro ele escurece; o da marca segue mandando em botão, borda e ponto. */
+  --verde-texto: #148a45;
+  --vermelho: #d0342c;
   --fundo: #ffffff;
   --fundo-2: #f1f0f2;
   --borda: #e6e5e8;
@@ -14,6 +18,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --verde-texto: #3ddb7a;
+    --vermelho: #ff6b6b;
     --fundo: #1d2125;
     --fundo-2: #22272b;
     --borda: #2c333a;
@@ -78,10 +84,171 @@ h2 {
   color: var(--texto-2);
 }
 
+/* ─── Estado do painel de reuniões ─────────────────────────────────────── */
+
+.painel {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--borda);
+  background: var(--fundo-2);
+  margin-bottom: 10px;
+}
+
+.ponto {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--texto-2);
+}
+
+.painel-texto {
+  min-width: 0;
+}
+
+.painel-rotulo {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--texto-2);
+}
+
+.painel-valor {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.painel.ok {
+  border-color: var(--verde);
+}
+
+.painel.ok .ponto {
+  background: var(--verde);
+}
+
+.painel.ok .painel-valor {
+  color: var(--verde-texto);
+}
+
+.painel.erro {
+  border-color: var(--vermelho);
+}
+
+.painel.erro .ponto {
+  background: var(--vermelho);
+}
+
+.painel.erro .painel-valor {
+  color: var(--vermelho);
+}
+
+.painel-detalhe {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--texto-2);
+}
+
+/* ─── Conta Google (reserva ou caminho, conforme o painel) ─────────────── */
+
+.google {
+  margin-bottom: 18px;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  background: var(--fundo-2);
+}
+
+.google > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--texto-2);
+}
+
+.google > summary::-webkit-details-marker {
+  display: none;
+}
+
+.google > summary:focus-visible {
+  outline: 2px solid var(--verde);
+  outline-offset: -2px;
+  border-radius: 9px;
+}
+
+/* Seta do recolhe/expande, desenhada em CSS (nada de imagem externa). */
+.google > summary::after {
+  content: '';
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 0.15s;
+}
+
+.google[open] > summary::after {
+  transform: rotate(-135deg) translate(-2px, -2px);
+}
+
+.google-corpo {
+  padding: 0 12px 12px;
+}
+
+.tag {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--borda);
+  color: var(--texto-2);
+}
+
+/* Sem painel, a conta Google É o caminho: perde a moldura de "detalhe" e volta
+   a parecer a seção que sempre foi. A seta some porque recolher aqui esconderia
+   a única forma de criar o link. */
+.google.destaque {
+  border-color: transparent;
+  background: transparent;
+}
+
+.google.destaque > summary {
+  padding-left: 0;
+  padding-right: 0;
+  cursor: default;
+}
+
+.google.destaque > summary::after {
+  display: none;
+}
+
+.google.destaque .google-corpo {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* ─── Genéricos ────────────────────────────────────────────────────────── */
+
 .estado {
   padding: 9px 11px;
   border-radius: 8px;
-  background: var(--fundo-2);
+  background: var(--fundo);
   border: 1px solid var(--borda);
   font-size: 13px;
   margin-bottom: 10px;
@@ -90,12 +257,12 @@ h2 {
 
 .estado.ok {
   border-color: var(--verde);
-  color: var(--verde);
+  color: var(--verde-texto);
 }
 
 .estado.erro {
-  border-color: #ff6b6b;
-  color: #ff6b6b;
+  border-color: var(--vermelho);
+  color: var(--vermelho);
 }
 
 .campo {
@@ -156,8 +323,8 @@ h2 {
 }
 
 .botao.secundario:hover {
-  border-color: #ff6b6b;
-  color: #ff6b6b;
+  border-color: var(--vermelho);
+  color: var(--vermelho);
 }
 
 .botao:disabled {
@@ -178,7 +345,8 @@ h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .botao {
+  .botao,
+  .google > summary::after {
     transition: none;
   }
 }

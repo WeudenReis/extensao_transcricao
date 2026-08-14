@@ -9,6 +9,46 @@ import { PROVEDORES_RESUMO, type ProvedorResumo } from './resumo/index.js';
  * Falha cedo (throw com mensagem clara em PT-BR) se algo obrigatório faltar.
  */
 
+/**
+ * Um host é "local" quando o pacote não atravessa rede de terceiros: loopback
+ * (localhost, 127.0.0.0/8, ::1) e o mDNS *.local do ambiente de desenvolvimento.
+ * Só nesses casos http:// não expõe nada — o tráfego não sai da máquina/rede.
+ */
+export function ehHostLocal(hostname: string): boolean {
+  // `new URL('http://[::1]').hostname` devolve os colchetes junto.
+  const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (host === 'localhost' || host === '::1') return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return host.endsWith('.local') || host.endsWith('.localhost');
+}
+
+/**
+ * POR QUE esta checagem existe: toda chamada ao painel (GET /me, GET
+ * /available-slots, POST /meetings) leva `Authorization: Bearer <token>`. Em
+ * http:// esse token sai em texto claro a CADA clique de CADA atendente — não é
+ * um vazamento pontual, é exposição contínua na rede corporativa. E z.string()
+ * .url() aceita http:// sem reclamar, então a exigência tem que ser explícita.
+ *
+ * Falha de boot em vez de log.warn: aviso de boot ninguém lê, e o servidor
+ * subiria vazando token o dia inteiro.
+ */
+export function painelUrlProtegeOToken(valor: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(valor);
+  } catch {
+    // URL quebrada já é reprovada pelo .url(); não duplicar a queixa.
+    return true;
+  }
+  if (u.protocol === 'https:') return true;
+  return u.protocol === 'http:' && ehHostLocal(u.hostname);
+}
+
+const MSG_PAINEL_HTTPS =
+  'PAINEL_API_URL precisa ser https:// — o token do painel viajaria em texto ' +
+  'claro em toda chamada. Só host local (localhost, 127.0.0.1, ::1, *.local) ' +
+  'pode usar http://.';
+
 const envSchema = z.object({
   // Opcionais: só o caminho Meet REST API v2 (conta Workspace) precisa deles.
   // O caminho de captura de áudio (conta pessoal) funciona sem GCP nenhum.
@@ -132,7 +172,11 @@ const envSchema = z.object({
   // cai em quem marcou, lista de vendedores volta vazia e o onboarding por
   // CNPJ não acha ninguém. O contrato real ainda não foi passado — ver o
   // "CONTRATO PROVISÓRIO" em src/painel/client.ts.
-  PAINEL_API_URL: z.string().url('PAINEL_API_URL deve ser uma URL válida.').optional(),
+  PAINEL_API_URL: z
+    .string()
+    .url('PAINEL_API_URL deve ser uma URL válida.')
+    .refine(painelUrlProtegeOToken, MSG_PAINEL_HTTPS)
+    .optional(),
   // Duas credenciais diferentes, e trocar uma pela outra dá 401:
   // ext/agenda é o que a extensão usa pra marcar; retaguarda lê vendedores e o
   // checklist de migração.

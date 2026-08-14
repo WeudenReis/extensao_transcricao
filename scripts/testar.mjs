@@ -2,12 +2,25 @@
 /**
  * Diagnóstico e teste da integração, em camadas.
  *
- *   node scripts/testar.mjs                          → só diagnóstico (não toca nada)
- *   node scripts/testar.mjs --sessao=UUID            → + comentário de teste (interno)
- *   node scripts/testar.mjs --sessao=UUID --mensagem → + mensagem PRO CLIENTE (cuidado)
- *   node scripts/testar.mjs --recall                 → + cria e remove um bot de teste
+ *   node scripts/testar.mjs                          → só diagnóstico (não toca em nada)
+ *   node scripts/testar.mjs --sessao=UUID            → confere a sessão SÓ LENDO
+ *   node scripts/testar.mjs --sessao=UUID --comentar → + comentário interno na conversa
+ *   node scripts/testar.mjs --sessao=UUID --mensagem → + mensagem PRO CLIENTE (ele recebe)
+ *   node scripts/testar.mjs --recall --meet=URL      → cria e remove um bot na sala que VOCÊ passar
  *
- * Nada aqui é destrutivo por padrão: sem flag, só lê.
+ * O que este script escreve, escreve em PRODUÇÃO: não existe sparks de teste,
+ * nem sala de reunião de mentira. Por isso duas regras moldam o arquivo:
+ *
+ *   • `--sessao` é ALVO de diagnóstico, não ordem de escrever. Sozinho ele só
+ *     lê — o token vale? a sessão existe? qual o canal dela? — e mostra o que
+ *     faria. Escrever exige a flag de ação `--comentar` ou `--mensagem`.
+ *   • `--recall` não tem sala padrão. Um código como `abc-defg-hij` é um código
+ *     de Meet perfeitamente válido e pode ser a reunião de outra empresa: o bot
+ *     "chatPro (gravando)" bateria na porta de gente desconhecida — e cada bot
+ *     ainda consome crédito do Recall.
+ *
+ * Comentário postado no atendimento não dá pra desfazer pela API. É por isso
+ * que o padrão de tudo aqui é ler, e escrever é sempre pedido em voz alta.
  */
 
 import { readFileSync } from 'node:fs';
@@ -77,13 +90,29 @@ for (const [pronto, nome, oQueFazer] of passos) {
 
 const BASE_CP = V('CHATPRO_BASE_URL') || 'https://sparks.chatpro.com.br';
 
+/** Rede de segurança: corpo de erro que devolva um segredo do .env não chega ao
+ *  terminal nem ao histórico do shell. */
+const segredos = Object.entries(env)
+  .filter(([chave, valorEnv]) => /TOKEN|SECRET|KEY|PASSWORD/.test(chave) && valorEnv.length >= 8)
+  .map(([, valorEnv]) => valorEnv);
+const censurar = (texto) => {
+  let saida = String(texto);
+  for (const segredo of segredos) saida = saida.split(segredo).join('«oculto»');
+  return saida;
+};
+
 async function chatpro(caminho, corpo) {
   const r = await fetch(`${BASE_CP}${caminho}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'instance-token': V('CHATPRO_INSTANCE_TOKEN') },
     body: JSON.stringify(corpo),
   });
-  return { status: r.status, texto: (await r.text()).slice(0, 300) };
+  const bruto = await r.text();
+  let json = null;
+  try {
+    json = JSON.parse(bruto);
+  } catch { /* nem toda resposta é JSON; pro diagnóstico o status já basta */ }
+  return { status: r.status, texto: censurar(bruto).slice(0, 300), json };
 }
 
 let falhou = false;
@@ -121,16 +150,56 @@ if (temChatpro) {
 }
 
 const sessao = valor('sessao');
+// Flags de AÇÃO: escrever na conversa de um cliente real nunca sai de um valor
+// de diagnóstico. `--sessao` diz ONDE olhar; estas duas dizem PRA ESCREVER.
+const querComentar = flag('comentar');
+const querMensagem = flag('mensagem');
+
+const COMENTARIO_DE_TESTE =
+  '🧪 Teste da integração de reuniões.\n' +
+  'Se você está lendo isto no chatPro, a transcrição vai chegar por aqui.';
+
+/** Canal lido da própria sessão no TESTE 2 — o envio real usa este valor. */
+let providerDaSessao = null;
 
 if (sessao && temChatpro) {
-  console.log('\n\x1b[1mTESTE 2 — comentário na conversa\x1b[0m (interno, o cliente NÃO vê)\n');
+  console.log('\n\x1b[1mTESTE 2 — a sessão existe? qual é o canal dela?\x1b[0m (só leitura)\n');
+  // No sparks tudo é POST, inclusive consulta. getSessionById só lê: não posta
+  // nada na conversa, não notifica ninguém.
+  const r = await chatpro('/sessions/getSessionById', {
+    instanceId: V('CHATPRO_INSTANCE_ID'),
+    sessionId: sessao,
+  });
+  if (r.status >= 200 && r.status < 300) {
+    console.log('  ' + ok(`HTTP ${r.status} — sessão encontrada nesta instância`));
+    // O corpo às vezes vem embrulhado (session/data) — mesma leitura que o
+    // ChatproClient.providerDaSessao() faz no servidor.
+    const raizJson = r.json && typeof r.json === 'object' ? r.json : {};
+    const dados = raizJson.session ?? raizJson.data ?? raizJson;
+    const p = dados && typeof dados.provider === 'string' ? dados.provider : '';
+    if (p) {
+      providerDaSessao = p;
+      console.log('  ' + ok(`canal '${p}' — é o provider que o envio pro cliente vai usar`));
+    } else {
+      console.log('  ' + meio(
+        `a sessão não informou 'provider' — o envio cairia em ` +
+        `'${V('CHATPRO_PROVIDER') || 'whatsapp'}' (CHATPRO_PROVIDER)`
+      ));
+    }
+  } else {
+    falhou = true;
+    console.log('  ' + nao(`HTTP ${r.status} — ${r.texto}`));
+    console.log('    Confira se o id da sessão é desta instância (CHATPRO_INSTANCE_ID).');
+  }
+}
+
+if (sessao && querComentar && temChatpro) {
+  console.log('\n\x1b[1mTESTE 3 — comentário na conversa\x1b[0m \x1b[31m(escreve de verdade)\x1b[0m \x1b[1m(interno, o cliente NÃO vê)\x1b[0m\n');
   const r = await chatpro('/messages/addComments', {
     instanceId: V('CHATPRO_INSTANCE_ID'),
     sessionId: sessao,
     userId: V('CHATPRO_USER_ID'),
-    message:
-      '🧪 Teste da integração de reuniões.\n' +
-      'Se você está lendo isto no chatPro, a transcrição vai chegar por aqui.',
+    message: COMENTARIO_DE_TESTE,
   });
   if (r.status >= 200 && r.status < 300) {
     console.log('  ' + ok(`HTTP ${r.status} — abra a conversa no chatPro e veja o comentário`));
@@ -138,14 +207,22 @@ if (sessao && temChatpro) {
     falhou = true;
     console.log('  ' + nao(`HTTP ${r.status} — ${r.texto}`));
   }
+} else if (sessao && temChatpro) {
+  console.log('\n  ' + meio('Nada foi escrito na conversa — até aqui o script só leu.'));
+  console.log('    Com \x1b[1m--comentar\x1b[0m eu postaria este comentário interno:');
+  for (const linha of COMENTARIO_DE_TESTE.split('\n')) console.log(`      \x1b[2m${linha}\x1b[0m`);
+  console.log(`    \x1b[1mnode scripts/testar.mjs --sessao=${sessao} --comentar\x1b[0m`);
+  console.log('    Pense antes: comentário no atendimento não dá pra apagar pela API.');
 }
 
-if (sessao && flag('mensagem') && temChatpro) {
-  console.log('\n\x1b[1mTESTE 3 — mensagem PRO CLIENTE\x1b[0m \x1b[31m(ele vai receber de verdade)\x1b[0m\n');
+if (sessao && querMensagem && temChatpro) {
+  console.log('\n\x1b[1mTESTE 4 — mensagem PRO CLIENTE\x1b[0m \x1b[31m(ele vai receber de verdade)\x1b[0m\n');
   const r = await chatpro('/messages/sendMessage', {
     instanceId: V('CHATPRO_INSTANCE_ID'),
     sessionId: sessao,
-    provider: V('CHATPRO_PROVIDER') || 'whatsapp',
+    // Preferimos o canal lido da sessão: provider fixo do .env dá "Provider está
+    // errado!" (HTTP 400) nas conversas que não são do canal do palpite.
+    provider: providerDaSessao || V('CHATPRO_PROVIDER') || 'whatsapp',
     userId: V('CHATPRO_USER_ID'),
     message: 'Teste de integração — pode ignorar esta mensagem.',
   });
@@ -157,14 +234,35 @@ if (sessao && flag('mensagem') && temChatpro) {
     console.log('    (se reclamar de "provider", confira CHATPRO_PROVIDER no .env)');
   }
 } else if (sessao && temChatpro) {
-  console.log('\n  ' + meio('Teste 3 (mensagem pro cliente) pulado — use --mensagem pra rodar'));
+  console.log('\n  ' + meio('Teste 4 (mensagem pro cliente) pulado — use --mensagem pra rodar'));
+}
+
+if (!sessao && (querComentar || querMensagem)) {
+  console.log('\n  ' + meio('--comentar/--mensagem só valem com --sessao=UUID — nada foi feito.'));
 }
 
 if (flag('recall')) {
-  console.log('\n\x1b[1mTESTE 4 — criar e remover um bot no Recall\x1b[0m\n');
+  console.log('\n\x1b[1mTESTE 5 — criar e remover um bot no Recall\x1b[0m\n');
+  const meet = valor('meet');
   if (!temRecall) {
     console.log('  ' + nao('RECALL_API_KEY vazia'));
     console.log('    Pegue em: https://us-west-2.recall.ai/dashboard/developers/api-keys');
+  } else if (!meet) {
+    // Aqui já existiu um padrão 'https://meet.google.com/abc-defg-hij'. Aquilo
+    // não é um placeholder: é um código de sala VÁLIDO, que pode estar em uso.
+    falhou = true;
+    console.log('  ' + nao('--recall exige --meet=<link da sala>. Não existe sala padrão aqui.'));
+    console.log('    Um código de Meet inventado é um código de Meet VÁLIDO: a sala pode');
+    console.log('    ser a reunião de outra empresa, e o bot "chatPro (gravando)" ia');
+    console.log('    aparecer na sala de espera de gente desconhecida.');
+    console.log('    Cada bot também gasta crédito do Recall (US$ 0,65/h depois das 5 h iniciais).');
+    console.log('');
+    console.log('    Abra uma sala SUA em https://meet.new, copie o link e rode:');
+    console.log('      \x1b[1mnode scripts/testar.mjs --recall --meet=https://meet.google.com/SEU-CODIGO\x1b[0m');
+  } else if (!/^https?:\/\//i.test(meet)) {
+    falhou = true;
+    console.log('  ' + nao(`--meet precisa ser o link inteiro da sala, não "${meet}".`));
+    console.log('    Exemplo: --meet=https://meet.google.com/SEU-CODIGO');
   } else {
     const regiao = V('RECALL_REGION') || 'us-west-2';
     const base = `https://${regiao}.recall.ai/api/v1`;
@@ -172,7 +270,7 @@ if (flag('recall')) {
       method: 'POST',
       headers: { Authorization: `Token ${V('RECALL_API_KEY')}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        meeting_url: valor('meet') || 'https://meet.google.com/abc-defg-hij',
+        meeting_url: meet,
         bot_name: V('RECALL_BOT_NAME') || 'chatPro (gravando)',
         metadata: { teste: '1' },
       }),
@@ -188,7 +286,7 @@ if (flag('recall')) {
       console.log('  ' + ok(`bot removido (HTTP ${sai.status}) — sem custo relevante`));
     } else {
       falhou = true;
-      console.log('  ' + nao(`HTTP ${cria.status} — ${JSON.stringify(corpo).slice(0, 200)}`));
+      console.log('  ' + nao(`HTTP ${cria.status} — ${censurar(JSON.stringify(corpo)).slice(0, 200)}`));
     }
   }
 }
@@ -201,6 +299,7 @@ if (!sessao) {
   console.log('    app.chatpro.com.br/chat/\x1b[1m00a6e78d-020a-401f-98b3-544e05b830b3\x1b[0m');
   console.log('                            └── é este pedaço\n');
   console.log('  E rode:  node scripts/testar.mjs --sessao=SEU_ID_AQUI');
+  console.log('  Isso só LÊ a sessão. Escrever na conversa é outra rodada, com --comentar.');
 } else if (!temGoogle) {
   console.log('  chatPro OK. O próximo bloqueio é o Google — sem ele o botão não');
   console.log('  consegue criar o link do Meet. Veja o item 6 do PENDENCIAS-RECALL.md.');

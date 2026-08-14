@@ -1022,6 +1022,30 @@ export function reviewPageHtml(): string {
         ? 'Enviado ao chatPro ✓'
         : (st === 'skipped-no-url' ? 'chatPro não configurado' : 'Falhou — tentar de novo');
       btnEnviar.disabled = st === 'sent';
+      // O PAINEL DE REUNIÕES é outra entrega, e ela pode ter ficado em dúvida
+      // mesmo com o comentário entregue: o POST estourou o timeout e o painel
+      // pode ter salvo a transcrição antes de a resposta se perder. O servidor
+      // não reenvia sozinho nesse caso (reenviar duplicaria a transcrição do
+      // cliente lá), então quem decide é quem está olhando esta tela.
+      if (corpo && corpo.painelPrecisaConfirmacao && typeof corpo.aviso === 'string') {
+        mostrarAviso(corpo.aviso);
+        if (window.confirm(corpo.aviso + '\\n\\nReenviar mesmo assim ao painel?')) {
+          try {
+            const rf = await fetch('/api/meetings/' + encodeURIComponent(m.id)
+              + '/send-chatpro?forcar=true', { method: 'POST' });
+            const cf = await rf.json().catch(() => null);
+            if (cf && cf.painelStatus === 'enviado') {
+              mostrarOk('Transcrição reenviada e confirmada pelo painel.');
+            } else if (cf && typeof cf.aviso === 'string') {
+              mostrarAviso(cf.aviso);
+            } else {
+              mostrarErro('Não foi possível confirmar o reenvio ao painel.');
+            }
+          } catch (_) {
+            mostrarErro('Não foi possível falar com o servidor no reenvio ao painel.');
+          }
+        }
+      }
       // Força o redesenho: o chatpro_status mudou no servidor.
       assinaturaRenderizada = '';
       carregarReunioes();
