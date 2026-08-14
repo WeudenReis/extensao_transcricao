@@ -56,6 +56,8 @@ async function montarApp(
     linkFalha?: Error;
     /** Painel interno comercial fora do ar: TODAS as chamadas dele falham. */
     painelIndisponivel?: boolean;
+    /** Liga o painel: aí é ELE quem cria a reunião e gera o link do Meet. */
+    comPainel?: boolean;
   } = {}
 ): Promise<App> {
   const db = new Db(':memory:');
@@ -69,8 +71,18 @@ async function montarApp(
       if (options.painelIndisponivel) {
         return Promise.resolve(new Response('fora do ar', { status: 503 }));
       }
-      if (u.includes('/distribuicao')) {
-        return Promise.resolve(jsonResponse({ email: 'distribuido@time.com', nome: 'Distribuído' }));
+      if (u.includes('/api/ext/agenda/meetings')) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              id: 'reuniao-no-painel-1',
+              meet_link: MEET_URL,
+              assignment_mode: 'round_robin',
+              responsavel: { email: 'distribuido@time.com', name: 'Distribuído' },
+            },
+            201
+          )
+        );
       }
       return Promise.resolve(jsonResponse({ ok: true }, 201));
     }
@@ -80,9 +92,11 @@ async function montarApp(
     return Promise.resolve(jsonResponse({ id: 'bot-1' }));
   }) as typeof fetch;
 
+  // Por padrão o painel fica DESLIGADO: a maioria destes testes cobre o plano
+  // B (link pelo Google Calendar), que é o caminho quando não há painel.
   const painel = new PainelClient({
-    baseUrl: 'https://painel.exemplo',
-    apiToken: 'token-painel',
+    baseUrl: options.comPainel || options.painelIndisponivel ? 'https://painel.exemplo' : undefined,
+    extAgendaToken: options.comPainel || options.painelIndisponivel ? 'token-agenda' : undefined,
     fetchImpl,
     timeoutMs: 200,
   });
@@ -614,8 +628,8 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     });
   });
 
-  it('AGENDADA de migração pega o responsável da distribuição do painel', async () => {
-    const app = await montarApp();
+  it('com painel ligado, é ELE quem cria a reunião, distribui e dá o link', async () => {
+    const app = await montarApp({ comPainel: true });
 
     const res = await iniciar(app.baseUrl, {
       sessionId: SESSION,
@@ -630,10 +644,21 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     const corpo = (await res.json()) as { responsavel: string };
     expect(corpo.responsavel).toBe('distribuido@time.com');
 
-    const distribuicao = app.chamadas.find((c) => c.url.includes('/distribuicao'));
-    expect(distribuicao?.body).toEqual({ tipo: 'migracao' });
+    // Uma chamada só: o painel resolve disponibilidade, distribuição e link.
+    const criacao = app.chamadas.find((c) => c.url.includes('/api/ext/agenda/meetings'));
+    expect(criacao?.body).toMatchObject({
+      type: 'migracao',
+      actor_email: 'quem@marcou.com',
+      // Data e hora separadas e locais — nunca um instante UTC.
+      scheduled_date: expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/),
+      scheduled_time: expect.stringMatching(/^[0-9]{2}:[0-9]{2}$/),
+    });
+
+    const reuniao = app.db.listMeetings()[0];
     // A coluna de atribuição leva o RESPONSÁVEL, não quem clicou.
-    expect(app.db.listMeetings()[0]?.atendente_email).toBe('distribuido@time.com');
+    expect(reuniao?.atendente_email).toBe('distribuido@time.com');
+    // E o elo com o painel, sem o qual a transcrição não teria pra onde voltar.
+    expect(reuniao?.painel_meeting_id).toBe('reuniao-no-painel-1');
   });
 
   it('painel interno fora do ar NÃO trava: o responsável cai em quem marcou', async () => {
@@ -682,7 +707,9 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     expect(app.db.listMeetings()[0]?.atendente_email).toBeNull();
   });
 
-  it('a reunião criada é registrada no painel interno em melhor esforço', async () => {
+  it('sem painel configurado, o plano B assume e não há id de painel', async () => {
+    // Ambiente de teste (ou painel não configurado): o link sai do Google
+    // Calendar e a reunião existe só aqui. É o que mantém o botão útil.
     const app = await montarApp();
 
     await iniciar(app.baseUrl, {
@@ -693,21 +720,10 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
       cliente,
     });
 
-    // O registro é disparado FORA do caminho da resposta (fire-and-forget) —
-    // dá um tick pra ele acontecer antes de olhar.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const registro = app.chamadas.find(
-      (c) => c.url.includes('painel.exemplo') && c.url.includes('/reunioes')
-    );
-    expect(registro?.body).toMatchObject({
-      sessionId: SESSION,
-      tipo: 'cs',
-      atendenteEmail: 'quem@marcou.com',
-      responsavelEmail: 'quem@marcou.com',
-      meetUrl: MEET_URL,
-      // O CNPJ viaja normalizado pro painel interno.
-      cliente: { cnpj: '11222333000181' },
-    });
+    const reuniao = app.db.listMeetings()[0];
+    expect(reuniao?.painel_meeting_id).toBeNull();
+    expect(reuniao?.atendente_email).toBe('quem@marcou.com');
+    expect(app.chamadas.some((c) => c.url.includes('painel.exemplo'))).toBe(false);
   });
 });
 

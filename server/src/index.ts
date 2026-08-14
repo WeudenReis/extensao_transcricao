@@ -133,7 +133,8 @@ function main(): void {
   // continua funcionando com o adapter desligado.
   const painel = new PainelClient({
     baseUrl: config.painelApiUrl,
-    apiToken: config.painelApiToken,
+    extAgendaToken: config.painelExtAgendaToken,
+    retaguardaToken: config.painelRetaguardaToken,
   });
 
   // Convite da reunião AGENDADA: sai ~5 min antes do horário, não na hora de
@@ -153,6 +154,8 @@ function main(): void {
       // Aponta pra onde está a transcrição completa — o comentário só leva o
       // resumo, então o link é o que fecha o caminho.
       painelUrl: config.publicBaseUrl ?? `http://localhost:${config.port}`,
+      // A transcrição completa sobe pro painel de reuniões no fim.
+      painel,
     },
   });
 

@@ -4,7 +4,13 @@ import { z } from 'zod';
 import type { Db } from '../db.js';
 import type { RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
-import { validarCnpj, PainelClient } from '../painel/client.js';
+import {
+  validarCnpj,
+  ehTipoReuniao,
+  PainelClient,
+  PainelError,
+  type DadosNovaReuniao,
+} from '../painel/client.js';
 import { ContasGoogle, ContaNaoConectada, ContaGoogleExpirada } from '../google/contas.js';
 import { criarLinkDoMeet, MeetLinkError } from '../google/meetLink.js';
 import { criarReuniao } from '../recall/criarReuniao.js';
@@ -74,7 +80,19 @@ export const clienteSchema = z.object({
   /** Código da instância, formato chatpro-xxx. */
   instancia: z.string().min(1, 'instância do cliente é obrigatória.').max(80),
   telefone: z.string().min(8, 'telefone do cliente é obrigatório.').max(30),
+  /** Razão social. O painel pede separado do nome de quem atende. */
+  empresa: z.string().max(200).optional(),
+  /**
+   * `base` (já é cliente) ou `prospect`. Só a migração muda de verdade com
+   * isso — base e prospect caem em pools diferentes de condutores, e mandar o
+   * errado devolve a grade da outra fila.
+   */
+  clientType: z.enum(['base', 'prospect']).optional(),
+  /** Implantação e CS não sobem sem isto — o painel devolve 422. */
+  provedor: z.enum(['starter', 'cloud_api', 'api_disparos']).optional(),
 });
+
+export type DadosCliente = z.infer<typeof clienteSchema>;
 
 export const iniciarSchema = z.object({
   sessionId: z.string().uuid('sessionId deve ser o UUID da conversa do chatPro.'),
@@ -214,7 +232,9 @@ export interface ReunioesRouterDeps {
 
 export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
   const { db, contas, chatpro, recall, botName } = deps;
-  const painel = deps.painel ?? new PainelClient({ baseUrl: undefined, apiToken: undefined });
+  const painel =
+    deps.painel ??
+    new PainelClient({ baseUrl: undefined, extAgendaToken: undefined });
   const criarLink = deps.criarLink ?? criarLinkDoMeet;
   const router = Router();
 
@@ -304,56 +324,107 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const vendedorEmail = parsed.data.vendedorEmail ?? null;
       const cliente = parsed.data.cliente ?? null;
 
-      // Quem responde pela reunião:
-      // - AGORA: quem está marcando já está com o cliente na linha — é dele.
-      //   Não consultamos nada.
-      // - AGENDADA de implantação/CS/migração: a distribuição do painel
-      //   interno decide; painel fora do ar cai em quem marcou (o fluxo do
-      //   atendente nunca trava por causa da plataforma interna).
-      // - AGENDADA de apresentação: o vendedor escolhido no seletor.
+      // ─── 1. A reunião nasce NO PAINEL ────────────────────────────────
+      //
+      // Mudança importante de desenho: quem gera o link do Meet é o PAINEL, não
+      // a gente. O POST /api/ext/agenda/meetings cria a reunião, sorteia o
+      // responsável pela regra de distribuição de lá, gera o Meet, põe na
+      // agenda de quem vai conduzir, manda o .ics e avisa no Slack.
+      //
+      // Isso resolve de uma vez a distribuição, a disponibilidade e a
+      // atribuição: são regras de negócio que já existem no painel e que
+      // duplicar aqui só criaria duas verdades.
+      //
+      // O caminho do Google Calendar continua vivo como PLANO B, pra quando o
+      // painel não está configurado (ou a reunião não tem os dados que ele
+      // exige) — é o que mantém o botão útil em ambiente de teste.
+      let meet: { meetUrl: string; eventId: string; meetingCode: string | null };
+      let painelMeetingId: string | null = null;
       let responsavel = atendenteEmail;
-      if (quando) {
-        if (tipo === 'migracao' || tipo === 'implantacao' || tipo === 'cs') {
-          responsavel = (await painel.distribuirResponsavel(tipo))?.email ?? atendenteEmail;
-        } else if (tipo === 'apresentacao') {
-          responsavel = vendedorEmail ?? atendenteEmail;
-        }
-      }
 
-      // 1. Link do Meet, na agenda de quem clicou.
-      let meet;
-      try {
-        const accessToken = await contas.accessToken(deviceId);
-        meet = await criarLink({
-          accessToken,
-          titulo: contato ? `Atendimento chatPro — ${contato}` : 'Atendimento chatPro',
-          // Marcada: o evento cai no horário combinado, não em cima do clique.
-          ...(quando ? { inicio: quando } : {}),
-        });
-      } catch (err) {
-        if (err instanceof ContaNaoConectada) {
-          // Cobre os dois casos: nunca conectou, e conectou mas o token venceu
-          // (ContaGoogleExpirada herda desta). A saída é a mesma; o texto muda.
-          res.status(409).json({
+      const dadosDoPainel = montarDadosDoPainel({
+        tipo,
+        atendenteEmail,
+        vendedorEmail,
+        cliente,
+        contato,
+        quando,
+      });
+
+      if (painel?.estaConfigurado() && dadosDoPainel) {
+        try {
+          const criada = await painel.criarReuniao(dadosDoPainel);
+          if (!criada.meetLink) {
+            // Reunião criada mas sem link: repetir o POST duplicaria. Melhor
+            // avisar e deixar a pessoa resolver no painel.
+            res.status(502).json({
+              error: 'O painel criou a reunião mas não gerou o link do Meet.',
+              detail: `Reunião ${criada.id} — confira no painel antes de marcar de novo.`,
+            });
+            return;
+          }
+          meet = {
+            meetUrl: criada.meetLink,
+            eventId: criada.id,
+            meetingCode: codigoDoMeet(criada.meetLink),
+          };
+          painelMeetingId = criada.id;
+          responsavel = criada.responsavelEmail ?? atendenteEmail;
+          log.info(
+            `reunião ${criada.id} criada no painel (${criada.assignmentMode ?? 'modo?'}) ` +
+              `para ${criada.responsavelNome ?? responsavel ?? '?'}.`
+          );
+        } catch (err) {
+          const status = err instanceof PainelError ? err.status : 502;
+          log.error('painel recusou a criação da reunião', err);
+          // 409 = horário ocupado entre consultar a grade e confirmar. É
+          // esperado, e a tela precisa saber pra recarregar os horários.
+          res.status(status === 409 ? 409 : 502).json({
             error:
-              err instanceof ContaGoogleExpirada
-                ? 'Conexão com o Google expirou.'
-                : 'Conta Google não conectada.',
-            detail: `${err.message} Abra a extensão e clique em "Conectar conta Google".`,
-            precisaConectar: true,
+              status === 409
+                ? 'Esse horário acabou de ser ocupado.'
+                : 'O painel não conseguiu marcar a reunião.',
+            detail: errorMessage(err),
+            recarregarHorarios: status === 409,
           });
           return;
         }
-        const status = err instanceof MeetLinkError ? err.status : 0;
-        log.error('falha ao criar o link do Meet', err);
-        res.status(502).json({
-          error: 'Não foi possível criar o link da reunião.',
-          detail: errorMessage(err),
-          ...(status === 401 || status === 403
-            ? { detalheExtra: 'Reconecte a conta Google pela extensão.', precisaConectar: true }
-            : {}),
-        });
-        return;
+      } else {
+        // PLANO B: link na agenda de quem clicou, via Google Calendar.
+        if (quando && tipo === 'apresentacao') responsavel = vendedorEmail ?? atendenteEmail;
+        try {
+          const accessToken = await contas.accessToken(deviceId);
+          meet = await criarLink({
+            accessToken,
+            titulo: contato ? `Atendimento chatPro — ${contato}` : 'Atendimento chatPro',
+            // Marcada: o evento cai no horário combinado, não em cima do clique.
+            ...(quando ? { inicio: quando } : {}),
+          });
+        } catch (err) {
+          if (err instanceof ContaNaoConectada) {
+            // Cobre os dois casos: nunca conectou, e conectou mas o token
+            // venceu (ContaGoogleExpirada herda desta). A saída é a mesma.
+            res.status(409).json({
+              error:
+                err instanceof ContaGoogleExpirada
+                  ? 'Conexão com o Google expirou.'
+                  : 'Conta Google não conectada.',
+              detail: `${err.message} Abra a extensão e clique em "Conectar conta Google".`,
+              precisaConectar: true,
+            });
+            return;
+          }
+          const status = err instanceof MeetLinkError ? err.status : 0;
+          log.error('falha ao criar o link do Meet', err);
+          res.status(502).json({
+            error: 'Não foi possível criar o link da reunião.',
+            detail: errorMessage(err),
+            ...(status === 401 || status === 403
+              ? { detalheExtra: 'Reconecte a conta Google pela extensão.', precisaConectar: true }
+              : {}),
+          });
+          return;
+        }
       }
 
       // 2. A mensagem pro cliente.
@@ -405,6 +476,9 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
           atendenteEmail: responsavel,
           tipo,
           clienteJson: cliente ? JSON.stringify(cliente) : null,
+          // O elo com o painel: é por ele que a transcrição volta pra lá no
+          // fim da reunião. Sem isto, grava e não tem pra onde ir.
+          painelMeetingId,
         }
       );
 
@@ -425,21 +499,9 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         });
       }
 
-      // 5. Registro no painel interno — melhor esforço, fora do caminho da
-      //    resposta (o painel tem 15 s de timeout; o clique não espera isso).
-      //    registrarReuniao nunca lança: falha só loga.
-      if (r.meeting) {
-        void painel.registrarReuniao({
-          meetingId: r.meeting.id,
-          sessionId,
-          tipo,
-          atendenteEmail,
-          responsavelEmail: responsavel,
-          meetUrl: meet.meetUrl,
-          quando: quando ? quando.toISOString() : null,
-          cliente,
-        });
-      }
+      // A reunião já nasceu registrada no painel (foi ele que a criou), então
+      // não há um "registrar depois". O que fica pendente é a transcrição, que
+      // sobe no fim da reunião via painel_meeting_id.
 
       log.info(
         `reunião ${quando ? `marcada pra ${quando.toISOString()}` : 'iniciada'} pela sessão ` +
@@ -499,3 +561,91 @@ function escapar(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+/** Código `abc-defg-hij` do link — é ele que casa a reunião com o bot. */
+export function codigoDoMeet(url: string): string | null {
+  const m = /meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i.exec(url);
+  return m ? (m[1] ?? '').toLowerCase() : null;
+}
+
+/**
+ * Traduz o que a extensão mandou pro corpo que o painel espera.
+ *
+ * Devolve `null` quando falta algo que o painel EXIGE — aí o fluxo cai no
+ * plano B (Google Calendar) em vez de levar 422 com o formulário cheio.
+ *
+ * Regras que moram aqui, todas vindas do contrato da API:
+ * - data e hora vão SEPARADAS e em horário local BR (o servidor deriva o UTC);
+ *   mandar instante UTC de um navegador em outro fuso marcaria na hora errada
+ * - migração distingue `base` de `prospect`: são pools diferentes
+ * - apresentação sempre vira `prospect` no banco do painel
+ * - implantação e CS exigem `provedor`
+ */
+export function montarDadosDoPainel(entrada: {
+  tipo: string | null;
+  atendenteEmail: string | null;
+  vendedorEmail: string | null;
+  cliente: DadosCliente | null;
+  contato: string | null;
+  quando: Date | null;
+}): DadosNovaReuniao | null {
+  const { tipo, atendenteEmail, cliente } = entrada;
+  if (!ehTipoReuniao(tipo) || !atendenteEmail) return null;
+
+  // Nome e telefone do cliente: o formulário manda; sem ele, o que dá pra
+  // aproveitar da conversa é o nome do contato.
+  const nome = cliente?.nome ?? entrada.contato;
+  const telefone = cliente?.telefone;
+  const empresa = cliente?.empresa ?? nome;
+  if (!nome || !telefone || !empresa) return null;
+
+  // "Agora" é a reunião deste instante — a mesma data e hora locais.
+  const inicio = entrada.quando ?? new Date();
+  const { data, hora } = dataHoraLocal(inicio);
+
+  const base: DadosNovaReuniao = {
+    type: tipo,
+    actorEmail: atendenteEmail,
+    clientName: nome,
+    companyName: empresa,
+    phone: telefone,
+    clientType: tipo === 'apresentacao' ? 'prospect' : (cliente?.clientType ?? 'base'),
+    scheduledDate: data,
+    scheduledTime: hora,
+    ...(cliente?.cnpj ? { cnpj: cliente.cnpj } : {}),
+    ...(cliente?.instancia ? { instanceCode: cliente.instancia } : {}),
+    ...(cliente?.provedor ? { provedor: cliente.provedor } : {}),
+    ...(entrada.vendedorEmail ? { vendedorEmail: entrada.vendedorEmail } : {}),
+  };
+
+  // Implantação e CS não sobem sem provedor — o painel devolve 422.
+  if ((tipo === 'implantacao' || tipo === 'cs') && !base.provedor) return null;
+
+  return base;
+}
+
+/**
+ * Data e hora LOCAIS (America/Sao_Paulo) no formato que o painel espera.
+ * Usar getFullYear()/getHours() daria o fuso do servidor, que pode não ser o
+ * do time comercial — e a reunião cairia na hora errada.
+ */
+export function dataHoraLocal(quando: Date): { data: string; hora: string } {
+  const partes: Record<string, string> = {};
+  for (const p of FORMATO_LOCAL.formatToParts(quando)) {
+    if (p.type !== 'literal') partes[p.type] = p.value;
+  }
+  return {
+    data: `${partes.year}-${partes.month}-${partes.day}`,
+    hora: `${partes.hour}:${partes.minute}`,
+  };
+}
+
+const FORMATO_LOCAL = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});

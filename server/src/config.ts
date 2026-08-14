@@ -133,7 +133,11 @@ const envSchema = z.object({
   // CNPJ não acha ninguém. O contrato real ainda não foi passado — ver o
   // "CONTRATO PROVISÓRIO" em src/painel/client.ts.
   PAINEL_API_URL: z.string().url('PAINEL_API_URL deve ser uma URL válida.').optional(),
-  PAINEL_API_TOKEN: z.string().optional(),
+  // Duas credenciais diferentes, e trocar uma pela outra dá 401:
+  // ext/agenda é o que a extensão usa pra marcar; retaguarda lê vendedores e o
+  // checklist de migração.
+  PAINEL_EXT_AGENDA_TOKEN: z.string().optional(),
+  PAINEL_RETAGUARDA_TOKEN: z.string().optional(),
   // Tranca do painel e das rotas de leitura. Vazio = tudo aberto (dev em
   // localhost). Vira obrigatório na prática assim que o servidor é exposto.
   PANEL_TOKEN: z
@@ -187,7 +191,10 @@ export interface Config {
   resumoProvedor: ProvedorResumo;
   resumoModelo: string;
   painelApiUrl: string | undefined;
-  painelApiToken: string | undefined;
+  /** Token de /api/ext/agenda/* — o que a extensão usa pra marcar. */
+  painelExtAgendaToken: string | undefined;
+  /** Token de /api/retaguarda/* — vendedores e checklist de migração. */
+  painelRetaguardaToken: string | undefined;
   panelToken: string | undefined;
 }
 
@@ -319,7 +326,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     resumoProvedor: e.RESUMO_PROVEDOR,
     resumoModelo: e.RESUMO_MODELO,
     painelApiUrl: e.PAINEL_API_URL,
-    painelApiToken: e.PAINEL_API_TOKEN,
+    painelExtAgendaToken: e.PAINEL_EXT_AGENDA_TOKEN,
+    painelRetaguardaToken: e.PAINEL_RETAGUARDA_TOKEN,
     panelToken: e.PANEL_TOKEN,
   };
 }

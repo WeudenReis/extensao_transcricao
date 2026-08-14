@@ -1,0 +1,734 @@
+{
+  "info": {
+    "_postman_id": "b7a42e95-4c1a-4f0e-9a3d-1c2e5f8a0d31",
+    "name": "Painel Implantação & CS — Agendamento",
+    "description": "# Agendamento pelo painel — todas as APIs\n\nDuas famílias de rota, com **portas de entrada diferentes**. Escolha a sua antes de sair disparando:\n\n| Pasta | Quem usa | Como autentica |\n|---|---|---|\n| **1. Extensão** (`/api/ext/agenda`) | extensão de navegador, rodando na máquina de cada pessoa | token compartilhado + `actor_email`, **ou** token pessoal `cpx_…` |\n| **2. Retaguarda** (`/api/retaguarda`) | o CRM chamando servidor-a-servidor | token fixo + allowlist de IP |\n\n---\n\n## Como usar em 4 passos\n\n1. **Importe** este arquivo e o environment (`painel-local.postman_environment.json`) no Postman.\n2. Selecione o environment no canto superior direito e **preencha os segredos**: `extAgendaToken` e/ou `retaguardaToken`. Eles ficam no `.env.local` do painel (`EXT_AGENDA_TOKEN` e `RETAGUARDA_INBOUND_TOKEN`).\n3. Coloque em `actorEmail` **o e-mail de um usuário real e ativo** do painel — é ele quem \"está agendando\", e o papel dele decide o que a API deixa fazer.\n4. Rode a pasta **0. Comece por aqui** de cima para baixo. Se os três passarem, o resto funciona.\n\n## Coisas que a collection faz sozinha\n\n- **`{{dataUtil}}`** é calculado a cada request: o próximo dia útil (pula sábado e domingo). Você nunca precisa digitar data.\n- **`{{meetingId}}`** é preenchido automaticamente quando um `POST /meetings` dá certo — então o request de transcrição já sai apontando para a reunião que você acabou de criar.\n- Cada request tem um teste que confere o status e escreve no console do Postman o que aconteceu.\n\n## Aviso antes de sair criando\n\nEstes endpoints criam **reunião de verdade**: geram link do Meet, mandam e-mail para o cliente, avisam o responsável no Slack e ocupam agenda. Para testar sem incomodar ninguém: use `\"skip_email\": true`, aponte `baseUrl` para o ambiente local, e apague as reuniões de teste depois.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Calcula o próximo DIA ÚTIL e guarda em {{dataUtil}}.",
+          "//",
+          "// Existe porque a API recusa fim de semana e data no passado, e ninguém",
+          "// merece editar a data à mão em dez requests toda vez que vira o dia.",
+          "const d = new Date(Date.now() + 24 * 60 * 60 * 1000);",
+          "while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {",
+          "  d.setUTCDate(d.getUTCDate() + 1);",
+          "}",
+          "pm.collectionVariables.set('dataUtil', d.toISOString().slice(0, 10));",
+          "",
+          "// Uma data no PASSADO, para o exemplo de registro retroativo.",
+          "const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000);",
+          "pm.collectionVariables.set('dataOntem', ontem.toISOString().slice(0, 10));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "description": "URL do painel. Em produção: https://app.chatpro.com.br"
+    },
+    {
+      "key": "extAgendaToken",
+      "value": "",
+      "description": "EXT_AGENDA_TOKEN do painel (token COMPARTILHADO da extensão). Ou cole aqui um token pessoal cpx_… gerado em Perfil → Extensão de navegador — nesse caso o actor_email é ignorado."
+    },
+    {
+      "key": "retaguardaToken",
+      "value": "",
+      "description": "RETAGUARDA_INBOUND_TOKEN do painel. Só para a pasta 2."
+    },
+    {
+      "key": "actorEmail",
+      "value": "",
+      "description": "E-mail do usuário do painel em nome de quem a extensão agenda. TEM que existir e estar ativo. O papel dele decide o que a API permite."
+    },
+    {
+      "key": "vendedorEmail",
+      "value": "",
+      "description": "E-mail do vendedor dono da venda. Obrigatório em migração."
+    },
+    {
+      "key": "assigneeEmail",
+      "value": "",
+      "description": "Responsável escolhido a dedo. SÓ funciona se actorEmail for de um supervisor."
+    },
+    {
+      "key": "clienteEmail",
+      "value": "",
+      "description": "E-mail do cliente. Deixe vazio para não disparar e-mail de confirmação de teste."
+    },
+    {
+      "key": "cnpj",
+      "value": "11.222.333/0001-81",
+      "description": "CNPJ de teste (dígitos verificadores válidos). Aceita com ou sem máscara."
+    },
+    {
+      "key": "instanceCode",
+      "value": "chatpro-teste01",
+      "description": "Código da instância do cliente."
+    },
+    { "key": "hora", "value": "14:00", "description": "Horário BR, formato HH:MM." },
+    { "key": "dataUtil", "value": "", "description": "Preenchido automaticamente: próximo dia útil." },
+    { "key": "dataOntem", "value": "", "description": "Preenchido automaticamente: ontem (registro retroativo)." },
+    { "key": "meetingId", "value": "", "description": "Preenchido automaticamente pelo último POST /meetings bem-sucedido." },
+    { "key": "intakeId", "value": "", "description": "Preenchido automaticamente pelo POST /migracao/link." }
+  ],
+  "item": [
+    {
+      "name": "0. Comece por aqui",
+      "description": "Três requests em ordem. Se os três passarem, sua configuração está certa e o resto da collection funciona. Se um falhar, a descrição dele diz exatamente o que conferir.",
+      "item": [
+        {
+          "name": "1) O painel está no ar?",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/healthcheck", "host": ["{{baseUrl}}"], "path": ["api", "healthcheck"] },
+            "description": "Rota pública, sem token. Serve só para provar que `{{baseUrl}}` está certo e o servidor responde.\n\n**Se falhar:** o painel não está rodando, ou `baseUrl` está errado. Nada mais vai funcionar até isto passar."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('painel respondeu', () => pm.response.to.have.status(200));",
+                  "console.log('baseUrl OK:', pm.collectionVariables.get('baseUrl'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2) Meu token vale? Quem eu sou?",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/me?actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "me"],
+              "query": [{ "key": "actor_email", "value": "{{actorEmail}}" }]
+            },
+            "description": "Responde **quem** o painel entende que está usando a extensão e **o que esse papel pode agendar**.\n\nÉ o request mais importante da collection: a extensão deve chamá-lo uma vez ao abrir e desenhar o formulário a partir da resposta, em vez de oferecer tudo a todo mundo e deixar o usuário descobrir o que não pode ao levar 403 com o formulário preenchido.\n\n### O que olhar na resposta\n\n- `identity_source`: `\"email\"` = você entrou pelo token compartilhado (identidade **alegada**); `\"token\"` = token pessoal (identidade **provada**).\n- `capabilities[].allowed`: se esse tipo aparece no formulário.\n- `capabilities[].assignment`: o que vai acontecer com a reunião — muda o texto do botão.\n  - `self` → fica com você (\"Marcar para mim\")\n  - `round_robin` → entra na distribuição (\"Marcar\")\n  - `explicit` → você escolhe o responsável\n- `capabilities[].can_choose_assignee`: mostrar ou não o seletor de pessoa (só supervisor).\n\n### Se falhar\n\n| Status | O que é |\n|---|---|\n| **401** | Token errado ou vazio. Confira `extAgendaToken` contra o `EXT_AGENDA_TOKEN` do painel. |\n| **422** | O token está certo, mas `actor_email` não bate com nenhum usuário **ativo** do painel. |\n| **503** | O painel está sem `EXT_AGENDA_TOKEN` configurado. Não é problema seu — é do servidor. |"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('identificou o usuário', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const j = pm.response.json();",
+                  "  console.log(`Você é ${j.actor.name} (${j.actor.role}) — identidade: ${j.identity_source}`);",
+                  "  j.capabilities.forEach(c => console.log(",
+                  "    `  ${c.allowed ? '✔' : '✘'} ${c.type}` + (c.allowed ? ` → ${c.assignment}` : ` — ${c.reason}`)",
+                  "  ));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3) Tem horário livre amanhã?",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/available-slots?type=apresentacao&date={{dataUtil}}&actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "available-slots"],
+              "query": [
+                { "key": "type", "value": "apresentacao" },
+                { "key": "date", "value": "{{dataUtil}}" },
+                { "key": "actor_email", "value": "{{actorEmail}}" }
+              ]
+            },
+            "description": "Grade do próximo dia útil. Se vier `available_slots` com horários, está tudo funcionando.\n\n**Lista vazia não é erro.** Pode ser feriado, fim de semana (a collection já evita) ou simplesmente ninguém disponível naquele dia."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('grade respondeu', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const j = pm.response.json();",
+                  "  console.log(`${j.date}: ${j.available_slots.length} horários livres`, j.available_slots.join(', '));",
+                  "  if (j.available_slots.length) pm.collectionVariables.set('hora', j.available_slots[0]);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Extensão — /api/ext/agenda",
+      "description": "As rotas que a extensão de navegador usa.\n\n**Autenticação da pasta:** `Bearer {{extAgendaToken}}`, herdado por todos os requests. Se você colar um token pessoal (`cpx_…`) na mesma variável, funciona igual — e aí o `actor_email` do corpo passa a ser ignorado, porque identidade provada vence identidade alegada.",
+      "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+      "item": [
+        {
+          "name": "GET me — quem sou eu e o que posso",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/me?actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "me"],
+              "query": [{ "key": "actor_email", "value": "{{actorEmail}}" }]
+            },
+            "description": "Mesmo request do passo 2 da pasta 0. Está repetido aqui para a pasta ficar completa por conta própria."
+          }
+        },
+        {
+          "name": "GET available-slots — apresentação",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/available-slots?type=apresentacao&date={{dataUtil}}&actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "available-slots"],
+              "query": [
+                { "key": "type", "value": "apresentacao" },
+                { "key": "date", "value": "{{dataUtil}}" },
+                { "key": "actor_email", "value": "{{actorEmail}}" }
+              ]
+            },
+            "description": "A grade de **apresentação** sai da agenda dos vendedores, com a regra de **folga de 1h por vendedor**: um horário só some da lista quando nenhum vendedor está livre nele.\n\n### Campos da resposta\n\n- `available_slots` — o que você pode oferecer.\n- `blocked_slots` — horários que existem na grade mas estão indisponíveis. Serve para desenhar cinza em vez de sumir, o que ajuda o usuário a entender que o dia tem grade.\n- `max_date` — até que dia o `POST` aceita agendar. **Não desenhe calendário além disso**, senão o usuário escolhe uma data que o servidor vai recusar.\n\n### A grade é uma fotografia\n\nEntre você consultar e o usuário confirmar, alguém pode ocupar o horário. Por isso o `POST` pode responder **409** num horário que veio nesta lista. Isso é esperado: trate recarregando a grade, não como erro fatal."
+          }
+        },
+        {
+          "name": "GET available-slots — migração (exige client_type)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/available-slots?type=migracao&client_type=base&date={{dataUtil}}&actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "available-slots"],
+              "query": [
+                { "key": "type", "value": "migracao" },
+                { "key": "client_type", "value": "base", "description": "base = já é cliente | prospect = ainda não é" },
+                { "key": "date", "value": "{{dataUtil}}" },
+                { "key": "actor_email", "value": "{{actorEmail}}" }
+              ]
+            },
+            "description": "**Migração é o único tipo que exige `client_type`**, e não é detalhe burocrático: cliente da base e prospect são atendidos por pools diferentes de condutores. Mandar o errado devolve a grade de outra fila.\n\nSem o parâmetro, a resposta é **422** dizendo isso.\n\nPara `implantacao` e `cs`, troque só o `type` — não precisa de `client_type`."
+          }
+        },
+        {
+          "name": "POST meetings — apresentação",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"apresentacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"João Silva (TESTE)\",\n  \"company_name\": \"Silva Comércio\",\n  \"phone\": \"(11) 99999-9999\",\n  \"client_type\": \"prospect\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "Cria uma apresentação comercial.\n\n### Quem pode\n\n- **Vendedor** → marca **para si mesmo**, sem trava de horário (pode empilhar, encaixar, adiantar — a mesma liberdade que ele tem na tela do painel).\n- **Supervisor** → pode mandar `assignee_email` para escolher o vendedor (aí vale a folga de 1h → **409** se conflitar), ou omitir e deixar a distribuição sortear.\n- **Qualquer outro papel** → **403**. Implantador e CS não vendem.\n\n### Campos\n\n| Campo | Obrigatório | Nota |\n|---|---|---|\n| `type` | sim | `apresentacao` |\n| `actor_email` | sim (no modo token compartilhado) | quem está agendando |\n| `client_name` | sim | |\n| `company_name` | sim | |\n| `phone` | sim | aceita máscara; valida DDD + número |\n| `client_type` | sim | em apresentação sempre vira `prospect` no banco |\n| `scheduled_date` | sim | `YYYY-MM-DD`, **horário local BR** |\n| `scheduled_time` | sim | `HH:MM` 24h, **horário local BR** |\n| `client_email` | não | sem ele **não sai** e-mail de confirmação nem convite `.ics` |\n| `skip_email` | não | `true` não manda e-mail mesmo tendo `client_email`. **Use em teste.** |\n| `assignee_email` | não | só supervisor |\n\n**Data e hora vão separadas e locais.** Você nunca manda `scheduled_at` — o servidor deriva o instante UTC. Isso é de propósito: um navegador em outro fuso mandaria um instante que não é o horário combinado.\n\n### Depois do 201\n\nO painel gera o link do Meet, manda e-mail com `.ics`, cria o evento na agenda do vendedor e avisa no Slack. **Tudo isso é best-effort**: se o e-mail falhar, a reunião continua criada e o status continua 201. Um e-mail que não saiu **não é motivo para repetir o POST** — isso criaria uma reunião duplicada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reunião criada (201)', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  pm.collectionVariables.set('meetingId', j.id);",
+                  "  console.log(`Criada ${j.id} — ficou com ${j.responsavel.name} (${j.assignment_mode}); Meet: ${j.meet_link || 'não gerado'}`);",
+                  "  console.log('meetingId salvo — o request de transcrição já aponta pra ela.');",
+                  "} else {",
+                  "  console.log('Erro:', pm.response.json().error);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST meetings — implantação (cai na distribuição)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"implantacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Maria Souza (TESTE)\",\n  \"company_name\": \"Souza Ltda\",\n  \"phone\": \"(11) 98888-7777\",\n  \"client_type\": \"prospect\",\n  \"provedor\": \"starter\",\n  \"cnpj\": \"{{cnpj}}\",\n  \"instance_code\": \"{{instanceCode}}\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"vendedor_email\": \"{{vendedorEmail}}\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "Reunião de implantação.\n\n### Quem fica com ela\n\n- **Vendedor agendando** → entra na **distribuição** (round-robin entre implantadores disponíveis). Ele não conduz, ele vende.\n- **Implantador agendando** → fica **com ele mesmo**.\n- **CS ou N2 agendando** → fica com ele **se** tiver a flag `can_receive_implantacao` ligada no painel; senão **403**.\n- **Supervisor** → `assignee_email` para escolher, ou omite e distribui.\n\nOlhe `assignment_mode` na resposta para saber qual dos caminhos aconteceu.\n\n### Campos próprios da implantação\n\n| Campo | Obrigatório | Valores |\n|---|---|---|\n| `provedor` | **sim** | `starter` · `cloud_api` · `api_disparos` |\n| `cnpj` | não | com ou sem máscara |\n| `instance_code` | não | código da instância |\n| `test_status` | não | padrão `em_teste`. Outros: `teste_encerrado`, `teste_estendido`, `aguardando_pagamento`, `pago`, `sem_conta` |\n\n### `vendedor_email`\n\nÉ o dono da venda — quem recebe crédito no dashboard comercial. Se você omitir e quem está agendando **for** vendedor, ele entra como dono. Se omitir e não for, o dono acaba sendo o próprio responsável sorteado (melhor que ninguém: assim a reunião aparece em algum dashboard em vez de sumir de todos)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reunião criada (201)', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  pm.collectionVariables.set('meetingId', j.id);",
+                  "  console.log(`Criada ${j.id} — ${j.assignment_mode} → ${j.responsavel.name}`);",
+                  "} else { console.log('Erro:', pm.response.json().error); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST meetings — CS",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"cs\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Carlos Lima (TESTE)\",\n  \"company_name\": \"Lima Serviços\",\n  \"phone\": \"(11) 97777-6666\",\n  \"client_type\": \"base\",\n  \"provedor\": \"cloud_api\",\n  \"cs_reason\": \"duvidas\",\n  \"cs_plan\": \"mensal\",\n  \"cnpj\": \"{{cnpj}}\",\n  \"instance_code\": \"{{instanceCode}}\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "Reunião de Customer Success.\n\n### Campos próprios\n\n| Campo | Obrigatório | Valores |\n|---|---|---|\n| `provedor` | **sim** | `starter` · `cloud_api` · `api_disparos` |\n| `cs_reason` | **sim** | `treinamento_ia` · `treinamento_chat` · `treinamento_oficial` · `retencao` · `duvidas` |\n| `cs_plan` | não | `mensal` · `trimestral` · `semestral` · `anual` |\n\n### Quem fica com ela\n\nMesma lógica da implantação, com os papéis trocados: **CS e N2** marcam para si; **implantador** só pega CS com a flag `can_receive_cs`; **vendedor** cai na distribuição."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reunião criada (201)', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) { pm.collectionVariables.set('meetingId', pm.response.json().id); }",
+                  "else { console.log('Erro:', pm.response.json().error); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST meetings — migração (exige checklist ativo)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"migracao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Ana Costa (TESTE)\",\n  \"company_name\": \"Costa Distribuidora\",\n  \"phone\": \"(11) 96666-5555\",\n  \"client_type\": \"base\",\n  \"cnpj\": \"{{cnpj}}\",\n  \"instance_code\": \"{{instanceCode}}\",\n  \"vendedor_email\": \"{{vendedorEmail}}\",\n  \"oficial_plan\": \"oficial_1\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "Migração de instância.\n\n### ⚠️ Precisa de checklist de onboarding ATIVO para o CNPJ\n\nSem ele a resposta é **422** pedindo que o link seja gerado antes. **Não é burocracia**: o checklist é o que o implantador lê para conduzir a migração — sem ele, a reunião acontece às cegas.\n\nComo resolver: gere o link em `POST /api/retaguarda/migracao/link` (pasta 2 desta collection) para o mesmo CNPJ, e repita este request. O painel encontra o checklist ativo sozinho pelo CNPJ; você **não** precisa mandar `migration_intake_id`.\n\n### Campos próprios\n\n| Campo | Obrigatório | Valores |\n|---|---|---|\n| `cnpj` | **sim** | identifica o cliente e acha o checklist |\n| `instance_code` | **sim** | instância de origem |\n| `vendedor_email` | **sim** | migração sempre tem dono da venda |\n| `oficial_plan` | não | `oficial_1` · `oficial_2` · `oficial_3` · `base_sem_creditos` |\n| `migration_intake_id` | não | vincular a um checklist específico em vez de deixar achar pelo CNPJ |\n\n`base_sem_creditos` só vale com `client_type: \"base\"` — é a migração de cliente da base sem adição de créditos. Mandar com `prospect` dá **422**.\n\n**`provedor` não é aceito aqui:** migração é sempre `cloud_api`, o servidor grava sozinho.\n\n### O que acontece com o checklist\n\nAo criar a reunião, o checklist passa para a etapa **agendado**, aponta para ela e o vendedor da venda é notificado."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  pm.collectionVariables.set('meetingId', j.id);",
+                  "  pm.test('reunião criada (201)', () => true);",
+                  "  console.log(`Criada ${j.id}, vinculada ao checklist ${j.migration_intake_id}`);",
+                  "} else if (pm.response.code === 422 && /checklist/i.test(pm.response.json().error || '')) {",
+                  "  console.log('⚠ Esperado se o CNPJ não tem checklist ativo. Rode \"POST migracao/link\" na pasta 2 e tente de novo.');",
+                  "  pm.test('422 explicando o checklist faltando', () => true);",
+                  "} else {",
+                  "  console.log('Erro:', pm.response.json().error);",
+                  "  pm.test('reunião criada (201)', () => pm.response.to.have.status(201));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST transcript — texto da reunião que acabou",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"actor_email\": \"{{actorEmail}}\",\n  \"language_code\": \"pt-BR\",\n  \"text\": \"Vendedor: Bom dia, tudo bem? Obrigado por separar esse tempo.\\n\\nCliente: Bom dia! Tudo certo. Vim entender melhor o preço, porque a gente já usa outra ferramenta hoje.\\n\\nVendedor: Perfeito. Deixa eu te mostrar como funciona e aí a gente compara.\\n\\nCliente: Fechado. Meu receio é o prazo de migração.\\n\\nVendedor: Combinado então: te mando a proposta hoje e marcamos o próximo passo pra sexta.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/meetings/{{meetingId}}/transcript",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "meetings", "{{meetingId}}", "transcript"]
+            },
+            "description": "É isto que a extensão chama **quando a reunião termina**.\n\n`{{meetingId}}` já está preenchido pelo último `POST /meetings` que deu certo — não precisa copiar id à mão.\n\n### Formato do texto (leia isto)\n\nMande `Falante: fala`, com **linha em branco entre as falas** — exatamente como está no exemplo. Nesse formato o painel extrai sozinho, sem nenhuma IA:\n\n- participação por falante (quem falou quanto);\n- perguntas feitas;\n- menções a **preço**, **risco**, **concorrência** e **próximos passos**, cada uma com a fala inteira ao lado.\n\nSe mandar um parágrafo corrido, o texto ainda é guardado e pesquisável — só perde a separação por participante. Vale o esforço de formatar.\n\n### Regras\n\n| | |\n|---|---|\n| Tamanho máximo | 500 mil caracteres. Acima disso, **422** — o texto não é truncado, porque meia conversa com cara de conversa inteira é pior que erro. |\n| Reenviar | **Substitui**. Uma transcrição de integração por reunião. Se a primeira tentativa morreu no meio da rede, é só repetir. |\n| Quem pode | Supervisor, ou quem é parte da reunião (responsável ou vendedor). Outro qualquer → **403**. |\n| `language_code` | Opcional, formato `pt-BR`. Se vier diferente de `pt-*`, o painel destaca em âmbar — quase sempre é configuração errada na captura. |\n| `started_at` / `ended_at` | Opcionais, ISO 8601 com fuso. Servem para o painel mostrar a duração. |\n\n### Onde isso aparece\n\nNa aba **Transcrição** da reunião, com busca, copiar e baixar, marcada como *\"Enviada pela integração\"* para não se confundir com a transcrição nativa do Google Meet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcrição salva (201)', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  console.log(`Salvos ${j.chars} caracteres na reunião de ${j.client_name}. Abra a aba Transcrição no painel.`);",
+                  "} else { console.log('Erro:', pm.response.json().error); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST meetings — retroativo, com transcrição junto",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"apresentacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Pedro Alves (TESTE RETROATIVO)\",\n  \"company_name\": \"Alves e Filhos\",\n  \"phone\": \"(11) 95555-4444\",\n  \"client_type\": \"prospect\",\n  \"scheduled_date\": \"{{dataOntem}}\",\n  \"scheduled_time\": \"10:00\",\n  \"skip_email\": true,\n  \"transcript_language\": \"pt-BR\",\n  \"transcript\": \"Vendedor: Oi Pedro, conseguiu ver a proposta?\\n\\nCliente: Vi sim, achei o valor um pouco acima do que a gente paga hoje.\\n\\nVendedor: Entendo. Deixa eu te mostrar o que entra nesse valor.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "**O único caso em que faz sentido mandar `transcript` no POST de criação.**\n\nNo fluxo normal a reunião ainda vai acontecer quando é criada — não existe texto nenhum. Aqui é o contrário: a reunião **já aconteceu** (data no passado) e está sendo lançada agora, com o texto na mão. É o \"registro retroativo\" do painel.\n\n### Quem pode registrar no passado\n\n| Papel | Pode? |\n|---|---|\n| Supervisor | sempre |\n| Condutor (implantador/CS/N2) | só na **própria** reunião |\n| Vendedor | apresentação própria sim; implantação/CS/migração **não** |\n| Qualquer um, via distribuição | **não** — sortear responsável para algo que já aconteceu atribuiria a reunião a quem não estava lá |\n\nSem esse direito, a resposta é **422**.\n\n### Confira `transcript_saved` na resposta\n\nSe vier `false`, a reunião foi criada mas o texto não salvou — mande de novo pelo endpoint de transcrição. Isso é de propósito: uma transcrição que falhou não pode virar 500, porque aí a extensão reenviaria o POST e criaria uma reunião duplicada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const j = pm.response.json();",
+                  "  pm.collectionVariables.set('meetingId', j.id);",
+                  "  pm.test('criada com transcrição', () => pm.expect(j.transcript_saved).to.be.true);",
+                  "  console.log(`Retroativa ${j.id} criada; transcrição salva: ${j.transcript_saved}`);",
+                  "} else if (pm.response.code === 422) {",
+                  "  console.log('⚠ 422 esperado se o actor_email não tem direito a registro retroativo:', pm.response.json().error);",
+                  "  pm.test('422 explicado', () => true);",
+                  "} else { console.log('Erro:', pm.response.json().error); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Retaguarda (CRM → painel) — /api/retaguarda",
+      "description": "A API que o CRM da Retaguarda consome, **servidor a servidor**. Já existia antes da extensão.\n\n**Diferenças em relação à pasta 1:**\n\n- Autentica com `Bearer {{retaguardaToken}}` (`RETAGUARDA_INBOUND_TOKEN`), **mais** allowlist de IP (`RETAGUARDA_ALLOWED_IPS`). Se a allowlist estiver preenchida e seu IP não estiver nela, você leva **403** antes de qualquer coisa.\n- **Não tem `actor_email`** e não tem noção de \"quem está agendando\": é sempre a Retaguarda. Por isso também não tem apresentação — só implantação, CS e migração.\n\nDoc completo do contrato: `docs/api-retaguarda-inbound.md`.",
+      "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{retaguardaToken}}", "type": "string" }] },
+      "item": [
+        {
+          "name": "GET vendedores — para popular o dropdown",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/retaguarda/vendedores", "host": ["{{baseUrl}}"], "path": ["api", "retaguarda", "vendedores"] },
+            "description": "Lista os vendedores ativos (`id`, `name`, `email`). A Retaguarda cacheia isso para montar o dropdown de vendedor.\n\nUse para descobrir um `vendedor_email` válido antes de agendar migração, que o exige."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('listou vendedores', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const l = pm.response.json().data || [];",
+                  "  console.log(`${l.length} vendedores ativos:`, l.map(v => v.email).join(', '));",
+                  "  if (l.length && !pm.collectionVariables.get('vendedorEmail')) {",
+                  "    pm.collectionVariables.set('vendedorEmail', l[0].email);",
+                  "    console.log('vendedorEmail preenchido com', l[0].email);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET available-slots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/retaguarda/available-slots?type=implantacao&date={{dataUtil}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "retaguarda", "available-slots"],
+              "query": [
+                { "key": "type", "value": "implantacao", "description": "implantacao | cs | migracao — NÃO tem apresentacao aqui" },
+                { "key": "date", "value": "{{dataUtil}}" },
+                { "key": "client_type", "value": "base", "disabled": true, "description": "Obrigatório quando type=migracao" }
+              ]
+            },
+            "description": "Mesma ideia da grade da extensão, com duas diferenças: **não aceita `apresentacao`** e a resposta vem embrulhada em `{ success, data: { ... } }`.\n\nPara migração, habilite o parâmetro `client_type` (o ícone de check ao lado dele)."
+          }
+        },
+        {
+          "name": "POST migracao/link — gera o checklist do cliente",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cnpj\": \"{{cnpj}}\",\n  \"vendedor_email\": \"{{vendedorEmail}}\",\n  \"instance_code\": \"{{instanceCode}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/retaguarda/migracao/link", "host": ["{{baseUrl}}"], "path": ["api", "retaguarda", "migracao", "link"] },
+            "description": "Gera (ou reaproveita) o link de onboarding que o **cliente** preenche antes da migração.\n\n**Rode este request antes de tentar agendar migração** — é ele que cria o checklist que o `POST /meetings` exige.\n\n### Respostas\n\n| Status | Significa |\n|---|---|\n| **201** | Link novo criado |\n| **200** | Já existia um ativo para esse CNPJ e foi reaproveitado (`reused: true`). Um CNPJ tem no máximo um checklist ativo, com validade de 30 dias. |\n| **409** | Existe um checklist do CNPJ em outro estado (já agendado, já migrado, desistiu…). É o painel dizendo \"esse cliente já está no fluxo, decida o que fazer\" em vez de duplicar o cadastro em silêncio. |\n\nO `public_url` da resposta é o link que vai para o cliente."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([200, 201].includes(pm.response.code)) {",
+                  "  const d = pm.response.json().data || pm.response.json();",
+                  "  if (d.id) pm.collectionVariables.set('intakeId', d.id);",
+                  "  pm.test('link gerado ou reaproveitado', () => true);",
+                  "  console.log(`${pm.response.code === 201 ? 'Novo' : 'Reaproveitado'}: ${d.public_url}`);",
+                  "  console.log('Agora o POST de migração da pasta 1 deve funcionar para esse CNPJ.');",
+                  "} else {",
+                  "  console.log('Resposta:', pm.response.code, JSON.stringify(pm.response.json()));",
+                  "  pm.test('link gerado', () => pm.expect([200, 201]).to.include(pm.response.code));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET migracao/status — em que pé está o checklist",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/retaguarda/migracao/status?cnpj={{cnpj}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "retaguarda", "migracao", "status"],
+              "query": [{ "key": "cnpj", "value": "{{cnpj}}", "description": "Ou use ?token=<token do link>" }]
+            },
+            "description": "Estado do checklist: etapa atual, o que o cliente já respondeu, se o link ainda abre e a qual reunião está vinculado.\n\n**404** quando não existe checklist para esse CNPJ."
+          }
+        },
+        {
+          "name": "POST meetings — implantação",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"implantacao\",\n  \"client_name\": \"Cliente Retaguarda (TESTE)\",\n  \"company_name\": \"Empresa Teste\",\n  \"phone\": \"(11) 94444-3333\",\n  \"client_type\": \"prospect\",\n  \"provedor\": \"starter\",\n  \"cnpj\": \"{{cnpj}}\",\n  \"instance_code\": \"{{instanceCode}}\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"vendedor_email\": \"{{vendedorEmail}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/retaguarda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "retaguarda", "meetings"] },
+            "description": "Cria a reunião a partir do CRM. **Sempre cai na distribuição** — não existe \"marcar para si\" aqui, porque a Retaguarda não é uma pessoa.\n\nA resposta vem embrulhada em `{ success: true, data: { ... } }`.\n\n**Sem `client_email` não sai e-mail de confirmação.** Este exemplo omite de propósito, para o teste não incomodar ninguém."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reunião criada (201)', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const d = pm.response.json().data;",
+                  "  console.log(`Criada ${d.id} com ${d.responsavel.name}`);",
+                  "} else { console.log('Erro:', JSON.stringify(pm.response.json())); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST meetings — migração com transcrição junto",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"migracao\",\n  \"client_name\": \"Cliente Migração (TESTE)\",\n  \"company_name\": \"Empresa Migração\",\n  \"phone\": \"(11) 93333-2222\",\n  \"client_type\": \"base\",\n  \"cnpj\": \"{{cnpj}}\",\n  \"instance_code\": \"{{instanceCode}}\",\n  \"vendedor_email\": \"{{vendedorEmail}}\",\n  \"oficial_plan\": \"oficial_1\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"transcript_language\": \"pt-BR\",\n  \"transcript\": \"Atendente: Confirmando os dados da migração com o senhor.\\n\\nCliente: Pode confirmar.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/retaguarda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "retaguarda", "meetings"] },
+            "description": "Mesma coisa da pasta 1: `transcript` + `transcript_language` são aceitos aqui também, e valem para reunião **que já aconteceu**.\n\nConfira `data.transcript_saved` na resposta — se vier `false`, o texto não salvou (a reunião, sim).\n\nLembre que migração exige checklist ativo: rode o `POST migracao/link` antes se levar **422**."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const d = pm.response.json().data;",
+                  "  console.log(`Criada ${d.id}; transcrição salva: ${d.transcript_saved}`);",
+                  "  pm.test('criada', () => true);",
+                  "} else {",
+                  "  console.log('Resposta:', pm.response.code, JSON.stringify(pm.response.json()));",
+                  "  pm.test('criada (201)', () => pm.response.to.have.status(201));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Erros de propósito — o que cada um significa",
+      "description": "Requests feitos para **falhar**, cada um mostrando um erro que você vai encontrar de verdade. Rode e leia a resposta: é mais rápido que descobrir em produção.\n\nOs testes destes requests passam quando o erro esperado acontece.",
+      "item": [
+        {
+          "name": "401 — token errado",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "token-que-nao-existe", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/me?actor_email={{actorEmail}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "me"],
+              "query": [{ "key": "actor_email", "value": "{{actorEmail}}" }]
+            },
+            "description": "**401 = a porta.** O token não confere.\n\nA resposta é sempre a mesma (`Token inválido.`) para token inexistente e para segredo errado — distinguir os dois só ajudaria quem está tentando adivinhar.\n\nNão confunda com **503**, que é o painel sem `EXT_AGENDA_TOKEN` configurado: aí o problema é do servidor, não do seu token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('401 como esperado', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 — actor_email que não existe",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ext/agenda/me?actor_email=ninguem@exemplo.com",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ext", "agenda", "me"],
+              "query": [{ "key": "actor_email", "value": "ninguem@exemplo.com" }]
+            },
+            "description": "**422 = o token está certo, mas o painel não sabe quem é você.**\n\nAcontece quando o e-mail não existe no painel **ou** o usuário está desativado. Um usuário desligado perde o acesso pela extensão junto — sem isso, ele continuaria agendando depois de sair.\n\nÉ o erro que a extensão vai encontrar se o e-mail do localStorage estiver desatualizado ou for de outro sistema."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 como esperado', () => pm.response.to.have.status(422));",
+                  "console.log(pm.response.json().error);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — escolher responsável sem ser supervisor",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"implantacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"assignee_email\": \"{{assigneeEmail}}\",\n  \"client_name\": \"Teste 403\",\n  \"company_name\": \"Empresa\",\n  \"phone\": \"(11) 99999-9999\",\n  \"client_type\": \"prospect\",\n  \"provedor\": \"starter\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"{{hora}}\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "**403 = você não pode escolher quem conduz.** Só supervisor manda `assignee_email`.\n\nRepare no que a API **não** faz: ela não ignora o campo e distribui em silêncio. Se fizesse isso, a reunião iria para outra pessoa e o usuário nunca saberia por quê.\n\n**Se o seu `actor_email` for de um supervisor, este request dá 201** — e aí o erro que você vê é outro (`422`, se `assigneeEmail` estiver vazio ou não puder receber esse tipo)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "console.log(pm.response.code, j.error || 'criada — seu actor_email deve ser supervisor');",
+                  "pm.test('403 (ou 201/422 se você for supervisor)', () => {",
+                  "  pm.expect([403, 201, 422]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 — nenhum responsável livre / horário ocupado",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"implantacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Teste 409\",\n  \"company_name\": \"Empresa\",\n  \"phone\": \"(11) 99999-9999\",\n  \"client_type\": \"prospect\",\n  \"provedor\": \"starter\",\n  \"scheduled_date\": \"{{dataUtil}}\",\n  \"scheduled_time\": \"03:00\",\n  \"skip_email\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "**409 = o horário não deu.** Três causas, todas normais:\n\n1. **Ninguém disponível** — como aqui, às 3 da manhã. Nenhum condutor tem disponibilidade nesse horário.\n2. **O slot foi ocupado agora mesmo**, entre a sua consulta da grade e este POST.\n3. **Apresentação a menos de 1h de outra** do mesmo vendedor (folga obrigatória).\n\n**Como a extensão deve tratar:** recarregar a grade e pedir outro horário. Nunca como erro fatal, e nunca repetindo o mesmo POST — a resposta seria a mesma."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "console.log(pm.response.code, JSON.stringify(pm.response.json()));",
+                  "pm.test('409 como esperado', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 — payload com campo errado",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{extAgendaToken}}", "type": "string" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"apresentacao\",\n  \"actor_email\": \"{{actorEmail}}\",\n  \"client_name\": \"Teste 422\",\n  \"company_name\": \"Empresa\",\n  \"phone\": \"123\",\n  \"client_type\": \"prospect\",\n  \"scheduled_date\": \"20/08/2026\",\n  \"scheduled_time\": \"14h\",\n  \"vendedorEmail\": \"errado@exemplo.com\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/api/ext/agenda/meetings", "host": ["{{baseUrl}}"], "path": ["api", "ext", "agenda", "meetings"] },
+            "description": "**422 = o corpo não passou na validação.** Este exemplo erra quatro coisas de uma vez, de propósito:\n\n- `phone: \"123\"` — não é telefone brasileiro válido;\n- `scheduled_date: \"20/08/2026\"` — o formato é `YYYY-MM-DD`, não o brasileiro;\n- `scheduled_time: \"14h\"` — o formato é `HH:MM`;\n- `vendedorEmail` — o campo se chama `vendedor_email`. **Chave desconhecida é recusada, não ignorada**: assim o erro de digitação aparece agora, em vez de virar um campo silenciosamente perdido.\n\n**Olhe o `details` da resposta**: ele nomeia campo por campo o que está errado. É por ali que se depura payload."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 como esperado', () => pm.response.to.have.status(422));",
+                  "console.log('Campos com erro:', JSON.stringify(pm.response.json().details, null, 2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

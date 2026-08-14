@@ -188,6 +188,10 @@ export interface MeetingRow {
   cliente_json: string | null;
   /** Palavras-chave achadas na transcrição (JSON de strings). */
   palavras_json: string | null;
+  /** Id da reunião no painel — destino da transcrição. */
+  painel_meeting_id: string | null;
+  /** pendente | enviado | falhou — entrega da transcrição ao painel. */
+  painel_status: string | null;
   error: string | null;
   created_at: string;
 }
@@ -463,6 +467,11 @@ export class Db {
     this.garantirColuna('meetings', 'cliente_json', 'TEXT');
     // Palavras-chave detectadas na transcrição (sem IA): ["ia","oficial",…]
     this.garantirColuna('meetings', 'palavras_json', 'TEXT');
+    // Id da reunião NO PAINEL. É por ele que a transcrição volta pra lá
+    // (POST /api/ext/agenda/meetings/{id}/transcript) — sem isso a reunião
+    // grava e a transcrição não tem pra onde ir.
+    this.garantirColuna('meetings', 'painel_meeting_id', 'TEXT');
+    this.garantirColuna('meetings', 'painel_status', 'TEXT');
 
     // Mensagens que só podem sair PERTO do horário (reunião agendada convida o
     // cliente ~5 min antes, não na hora de marcar). Fila durável: reiniciar o
@@ -1150,6 +1159,7 @@ export class Db {
     atendenteEmail?: string | null;
     tipo?: string | null;
     clienteJson?: string | null;
+    painelMeetingId?: string | null;
     status?: MeetingStatus;
     createdAt?: string;
   }): MeetingRow {
@@ -1158,10 +1168,10 @@ export class Db {
         `INSERT INTO meetings
            (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name,
             chatpro_status, chatpro_instance_id, chatpro_parts_sent,
-            atendente_email, tipo, cliente_json, created_at)
+            atendente_email, tipo, cliente_json, painel_meeting_id, created_at)
          VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName,
             'pending', @chatproInstanceId, 0,
-            @atendenteEmail, @tipo, @clienteJson, @createdAt)`
+            @atendenteEmail, @tipo, @clienteJson, @painelMeetingId, @createdAt)`
       )
       .run({
         id: input.id,
@@ -1175,6 +1185,7 @@ export class Db {
         atendenteEmail: input.atendenteEmail ?? null,
         tipo: input.tipo ?? null,
         clienteJson: input.clienteJson ?? null,
+        painelMeetingId: input.painelMeetingId ?? null,
         createdAt: input.createdAt ?? new Date().toISOString(),
       });
     const row = this.getMeeting(input.id);
@@ -1303,6 +1314,11 @@ export class Db {
           WHERE id = @id`
       )
       .run({ id, status: chatproStatus, parts: partsSent });
+  }
+
+  /** Marca como a entrega da transcrição ao painel terminou. */
+  setPainelStatus(id: string, status: 'pendente' | 'enviado' | 'falhou'): void {
+    this.db.prepare('UPDATE meetings SET painel_status = ? WHERE id = ?').run(status, id);
   }
 
   /** Palavras-chave detectadas na transcrição (uma vez por reunião). */

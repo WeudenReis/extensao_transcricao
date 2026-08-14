@@ -1081,6 +1081,31 @@
   }
 
   /**
+   * O telefone do cliente, pra já entrar preenchido no formulário — o painel
+   * exige e ele está bem ali, na própria conversa.
+   *
+   * A conversa do chatPro é de WhatsApp: o número aparece no cabeçalho ou no
+   * `href` de algum link. Não achando, o atendente digita — por isso null é um
+   * resultado aceitável, não uma falha.
+   */
+  function telefoneDoContato() {
+    const RE = /(?:\+?55)?\s*\(?(\d{2})\)?\s*(\d{4,5})[-\s]?(\d{4})/;
+    for (const el of document.querySelectorAll('a[href*="wa.me"], a[href^="tel:"]')) {
+      const m = RE.exec(el.getAttribute('href') || '');
+      if (m) return `${m[1]}${m[2]}${m[3]}`;
+    }
+    // Cabeçalho da conversa: mesma faixa onde o nome aparece.
+    for (const el of document.querySelectorAll('span,div,p')) {
+      const r = el.getBoundingClientRect();
+      if (r.top > 130 || r.top < 40 || r.left < 380) continue;
+      if (el.children.length > 0) continue;
+      const m = RE.exec((el.textContent || '').trim());
+      if (m) return `${m[1]}${m[2]}${m[3]}`;
+    }
+    return null;
+  }
+
+  /**
    * `quandoIso` presente = reunião marcada; ausente = reunião agora.
    * `extras` = { tipo, cliente, vendedorEmail } dos passos do comercial.
    */
@@ -1236,10 +1261,25 @@
       // irreversível (bot na sala, mensagem pro cliente) sem confirmação. Uma
       // tela intermediária custa um clique e resolve os dois problemas.
       //
-      // Shift continua pulando a escolha Agora/Agendar, pra quem já pegou o
-      // ritmo — mas o TIPO não dá pra pular: é ele que decide os dados pedidos.
-      if (ev.shiftKey) escolherTipoESeguir(botao, null);
-      else abrirEscolha(botao);
+      // O fluxo inteiro mora numa ABA LATERAL, no mesmo lugar do Copiloto: são
+      // quatro passos e o atendente precisa continuar lendo a conversa pra
+      // preencher nome, empresa e telefone. Um cartão flutuante tapava
+      // exatamente o que ele precisava ver.
+      const sessao = sessaoAtual();
+      if (!sessao) {
+        avisar('Abra uma conversa antes de marcar a reunião.', 'erro');
+        return;
+      }
+      // Clicar de novo com a aba aberta fecha, como qualquer painel lateral.
+      if (window.__cpmAba && window.__cpmAba.estaAberta()) {
+        window.__cpmAba.fechar();
+        return;
+      }
+      window.__cpmFluxo.iniciar({
+        sessionId: sessao,
+        contato: nomeDoContato(),
+        telefone: telefoneDoContato(),
+      });
     });
 
     // Entra ANTES do primeiro botão da barra: fica à esquerda de "transferir",
@@ -1252,20 +1292,45 @@
   // O chatPro é SPA: troca de conversa não recarrega a página, e o React pode
   // recriar a barra a qualquer momento. Observer + varredura periódica cobrem
   // os dois casos sem custo perceptível.
-  const observer = new MutationObserver(() => {
-    if (sessaoAtual() !== ultimaSessao) {
-      const antigo = document.getElementById(ID);
-      if (antigo) antigo.remove();
-      // Trocou de conversa: um agendador aberto marcaria pro cliente errado.
-      fecharAgendador();
+  /**
+   * A conversa que estava aberta na última verificação.
+   *
+   * Fica SEPARADA de `ultimaSessao` de propósito: aquela é atualizada dentro de
+   * `injetar()`, e `injetar()` roda tanto pelo observer quanto pelo tick de
+   * 1,5 s. Quem chegasse primeiro apagaria a evidência da troca, e o outro
+   * nunca veria — a aba ficaria aberta com os dados de um cliente e o
+   * sessionId de outro. Com um marcador próprio, os dois caminhos concordam.
+   */
+  let sessaoVigiada = sessaoAtual();
+
+  function conferirTroca() {
+    const agora = sessaoAtual();
+    if (agora === sessaoVigiada) return;
+    sessaoVigiada = agora;
+    const antigo = document.getElementById(ID);
+    if (antigo) antigo.remove();
+    // Trocou de conversa: qualquer tela aberta marcaria pro cliente errado.
+    fecharAgendador();
+    if (window.__cpmAba && window.__cpmAba.estaAberta()) {
+      window.__cpmAba.fechar();
+      avisar('A conversa mudou — fechei a tela de reunião pra não marcar pro cliente errado.');
     }
+    // Usuário pode ter trocado junto (outro login na mesma aba).
+    if (window.__cpmAtendente) window.__cpmAtendente.esquecer();
+  }
+
+  const observer = new MutationObserver(() => {
+    conferirTroca();
     injetar();
   });
 
   function iniciar() {
     injetar();
     observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(injetar, INTERVALO_MS);
+    setInterval(() => {
+      conferirTroca();
+      injetar();
+    }, INTERVALO_MS);
   }
 
   if (document.readyState === 'loading') {

@@ -123,6 +123,46 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      // ─── Painel de reuniões ────────────────────────────────────────────
+      // Estes três desenham a aba: quem é a pessoa, o que ela pode marcar e
+      // quais horários existem. Todos devolvem o corpo do painel achatado —
+      // a aba não deveria precisar saber que houve um servidor no meio.
+
+      if (msg?.tipo === 'PAINEL_ME') {
+        const r = await chamar(`/api/painel/me?email=${encodeURIComponent(msg.email || '')}`);
+        responder(
+          r.ok
+            ? r.corpo
+            : { identificado: false, erro: r.corpo?.error || `Servidor respondeu ${r.status}.` }
+        );
+        return;
+      }
+
+      if (msg?.tipo === 'PAINEL_HORARIOS') {
+        const params = new URLSearchParams({
+          tipo: msg.tipoReuniao || '',
+          data: msg.data || '',
+          email: msg.email || '',
+        });
+        if (msg.clientType) params.set('clientType', msg.clientType);
+        const r = await chamar(`/api/painel/horarios?${params.toString()}`);
+        responder(r.ok ? r.corpo : { disponivel: false, grade: null });
+        return;
+      }
+
+      if (msg?.tipo === 'PAINEL_VENDEDORES') {
+        const r = await chamar('/api/painel/vendedores');
+        responder(r.ok ? r.corpo : { vendedores: [] });
+        return;
+      }
+
+      if (msg?.tipo === 'PAINEL_MIGRACAO_STATUS') {
+        const cnpj = String(msg.cnpj || '').replace(/\D/g, '');
+        const r = await chamar(`/api/painel/onboarding?cnpj=${encodeURIComponent(cnpj)}`);
+        responder(r.ok ? r.corpo : { encontrado: false });
+        return;
+      }
+
       if (msg?.tipo === 'CONSULTAR_ONBOARDING') {
         // Migração: o painel interno pode já ter os dados do cliente pelo CNPJ.
         // Erro aqui não é fatal — o content script segue com digitação manual.

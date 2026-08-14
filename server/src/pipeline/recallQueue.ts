@@ -5,6 +5,7 @@ import { normalizarTranscript, type Fala } from '../recall/transcript.js';
 import { gerarResumo, formatarResumo, resumoExtrativo } from '../resumo/index.js';
 import { createLogger, errorMessage } from '../log.js';
 import { detectarTopicos, formatarComentarioPalavras } from '../palavras/motor.js';
+import type { PainelClient } from '../painel/client.js';
 
 /**
  * Fila DURÁVEL dos webhooks do Recall.ai (tabela recall_events).
@@ -160,6 +161,8 @@ export interface OpcoesEntrega {
   resumoModelo?: string | undefined;
   /** Link do painel, pra apontar onde está a transcrição completa. */
   painelUrl?: string | undefined;
+  /** Painel de reuniões — destino da transcrição completa. */
+  painel?: PainelClient | undefined;
   /** Injetável nos testes. */
   gerarResumoImpl?: typeof gerarResumo;
 }
@@ -258,7 +261,52 @@ export async function entregarAoChatpro(
     },
   });
   db.setMeetingChatproStatus(meeting.id, resultado.status, resultado.partesEnviadas);
+
+  // A transcrição COMPLETA mora no painel de reuniões — a conversa do cliente
+  // só recebe resumo e palavras-chave. Entrega em melhor esforço e DEPOIS do
+  // comentário: o painel fora do ar não pode segurar o que o atendente vê.
+  await entregarAoPainel(db, meeting, salvo, opcoes);
+
   return resultado;
+}
+
+/**
+ * Sobe a transcrição pro painel (POST /meetings/{id}/transcript).
+ *
+ * Só acontece quando a reunião nasceu lá (tem `painel_meeting_id`): reunião
+ * criada pelo plano B do Google Calendar não tem destino no painel.
+ *
+ * Nunca lança e nunca repete uma entrega que já deu certo — o `painel_status`
+ * é o que impede a transcrição de subir duas vezes quando o Recall reentrega
+ * o mesmo `transcript.done`.
+ */
+async function entregarAoPainel(
+  db: Db,
+  meeting: MeetingRow,
+  salvo: TranscriptSalvo,
+  opcoes: OpcoesEntrega
+): Promise<void> {
+  const painel = opcoes.painel;
+  const idNoPainel = meeting.painel_meeting_id;
+  if (!painel || !idNoPainel) return;
+  if (meeting.painel_status === 'enviado') return;
+  if (salvo.falas.length === 0) return;
+
+  // O painel quer texto corrido com quem falou, não o nosso JSON.
+  const texto = salvo.falas
+    .map((f) => `${f.speaker ?? 'Participante'}: ${f.text ?? ''}`.trim())
+    .filter((l) => l.length > 1)
+    .join('\n\n');
+  if (texto === '') return;
+
+  const ok = await painel.enviarTranscricao({
+    meetingId: idNoPainel,
+    // O painel exige um usuário ATIVO em actor_email; quem responde pela
+    // reunião é o certo, e é quem já está registrado na atribuição.
+    actorEmail: meeting.atendente_email ?? '',
+    texto,
+  });
+  db.setPainelStatus(meeting.id, ok ? 'enviado' : 'falhou');
 }
 
 /**

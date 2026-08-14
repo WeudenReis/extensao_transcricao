@@ -85,6 +85,8 @@ export interface CriarReuniaoEntrada {
   tipo?: string | null;
   /** { nome, cnpj, instancia, telefone } quando o tipo exige. */
   clienteJson?: string | null;
+  /** Id da reunião no painel — destino da transcrição no fim. */
+  painelMeetingId?: string | null;
 }
 
 export type ResultadoCriacao =
@@ -231,6 +233,7 @@ export async function criarReuniao(
     atendenteEmail: entrada.atendenteEmail ?? null,
     tipo: entrada.tipo ?? null,
     clienteJson: entrada.clienteJson ?? null,
+    painelMeetingId: entrada.painelMeetingId ?? null,
     status: 'created',
   });
 
