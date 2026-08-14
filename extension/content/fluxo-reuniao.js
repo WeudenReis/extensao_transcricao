@@ -162,7 +162,8 @@
         if (resposta && resposta.configurado === false) {
           estado.eu = {
             email: atendente.email,
-            nome: atendente.email.split('@')[0],
+            nome: atendente.nome || atendente.email.split('@')[0],
+            userId: atendente.userId || null,
             papel: null,
             capacidades: Object.keys(TIPOS).map((t) => ({
               type: t,
@@ -201,6 +202,8 @@
         }
 
         estado.eu = resposta.eu;
+        // O painel confirma quem é; o id de usuário do chatPro só existe aqui.
+        estado.eu.userId = atendente.userId || null;
         passoModo();
       }
 
@@ -678,6 +681,9 @@
           quando: quandoIso,
           tipoReuniao: estado.tipo,
           atendenteEmail: estado.eu.email,
+          // Vem do JWT do chatPro: é com ele que o comentário na conversa fica
+          // no nome de quem conduziu, em vez do usuário fixo do .env.
+          atendenteUserId: estado.eu.userId || null,
           cliente: estado.cliente,
           vendedorEmail: estado.vendedorEmail,
         }).catch((err) => ({ ok: false, erro: String(err) }));

@@ -101,6 +101,7 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
             // quebrar a validação do servidor com null onde ele espera ausência.
             ...(msg.tipoReuniao ? { tipo: msg.tipoReuniao } : {}),
             ...(msg.atendenteEmail ? { atendenteEmail: msg.atendenteEmail } : {}),
+            ...(msg.atendenteUserId ? { atendenteUserId: msg.atendenteUserId } : {}),
             ...(msg.cliente ? { cliente: msg.cliente } : {}),
             ...(msg.vendedorEmail ? { vendedorEmail: msg.vendedorEmail } : {}),
           }),

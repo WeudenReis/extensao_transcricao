@@ -42,6 +42,12 @@ export function backoffMs(tentativasFeitas: number): number {
 }
 
 export interface ChatproPayload {
+  /**
+   * Quem assina o comentário no chatPro. Vem do JWT do atendente que conduziu
+   * a reunião; sem ele cai no CHATPRO_USER_ID do .env, que é um usuário só
+   * pra empresa inteira — o comentário aparecia sempre no mesmo nome.
+   */
+  autorUserId?: string | null;
   sessionId: string | null;
   meetingUrl: string;
   meetingCode: string | null;
@@ -294,7 +300,7 @@ export class ChatproClient {
           instanceId,
           sessionId: payload.sessionId,
           message: parte,
-          userId: this.userId ?? '',
+          userId: payload.autorUserId || this.userId || '',
         });
         enviadas = i + 1;
         // Grava JÁ, não no fim: se o processo cair na parte seguinte, a

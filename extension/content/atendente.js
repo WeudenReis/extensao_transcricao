@@ -92,8 +92,14 @@
   }
 
   /**
-   * Decodifica o payload de um JWT sem validar assinatura — não estamos
-   * autenticando ninguém, só lendo quem o próprio chatPro já autenticou.
+   * Decodifica o payload de um JWT.
+   *
+   * Sem validar assinatura, e isso é proposital: o payload é **assinado, não
+   * criptografado** — é base64 legível por qualquer um, sem chave nenhuma. Não
+   * estamos autenticando ninguém aqui, só lendo quem o chatPro já autenticou.
+   * Quem valida de verdade é o `/me` do painel, que recusa e-mail que não seja
+   * usuário ativo. Por isso também nada daqui vira permissão.
+   *
    * Devolve null pra qualquer coisa que não seja um JWT legível.
    */
   function lerJwt(valor) {
@@ -116,17 +122,72 @@
     }
   }
 
-  /** As três leituras possíveis de um valor bruto, na ordem de confiança. */
+  /**
+   * O id do usuário dentro do payload. O chatPro pode chamar de várias formas,
+   * e `sub` é o campo padrão do JWT pra "quem é o dono deste token".
+   *
+   * Vale mais que curiosidade: o comentário na conversa (`addComments`) exige
+   * um `userId`, e hoje ele vem fixo do `.env` — com este aqui, o comentário
+   * fica no nome de quem realmente conduziu a reunião.
+   */
+  function procurarUserId(payload) {
+    if (payload === null || typeof payload !== 'object') return null;
+    const chaves = ['user_id', 'userId', 'sub', 'id', 'uid', 'usuario_id'];
+    for (const chave of chaves) {
+      const v = payload[chave];
+      if (typeof v === 'string' && v.trim() !== '') return v;
+      if (typeof v === 'number') return String(v);
+    }
+    // Um nível abaixo: payloads costumam aninhar em `user` ou `data`.
+    for (const dentro of ['user', 'usuario', 'data']) {
+      const sub = payload[dentro];
+      if (sub !== null && typeof sub === 'object') {
+        const achado = procurarUserId(sub);
+        if (achado) return achado;
+      }
+    }
+    return null;
+  }
+
+  /** O nome de quem está atendendo, quando o payload traz. */
+  function procurarNome(payload) {
+    if (payload === null || typeof payload !== 'object') return null;
+    for (const chave of ['name', 'nome', 'full_name', 'displayName']) {
+      const v = payload[chave];
+      if (typeof v === 'string' && v.trim() !== '') return v.trim();
+    }
+    for (const dentro of ['user', 'usuario', 'data']) {
+      const sub = payload[dentro];
+      if (sub !== null && typeof sub === 'object') {
+        const achado = procurarNome(sub);
+        if (achado) return achado;
+      }
+    }
+    return null;
+  }
+
+  /** Tudo que o payload de um JWT tem sobre quem está atendendo. */
+  function daPayload(payload, via) {
+    const achado = procurarNoObjeto(payload);
+    if (!achado) return null;
+    return {
+      email: achado.email,
+      userId: procurarUserId(payload),
+      nome: procurarNome(payload),
+      via,
+    };
+  }
+
+  /** As leituras possíveis de um valor bruto, na ordem de confiança. */
   function lerValor(bruto, origem) {
     if (typeof bruto !== 'string' || bruto === '') return null;
 
-    // 1. JSON com um campo de e-mail.
     try {
       const obj = JSON.parse(bruto);
-      const achado = procurarNoObjeto(obj);
-      if (achado) return { email: achado.email, via: `${origem} → ${achado.via}` };
 
-      // 2. JSON cujo conteúdo é (ou contém) um JWT.
+      // 1. JSON cujo conteúdo é (ou contém) um JWT. Vem PRIMEIRO porque o
+      //    token é a fonte mais completa: traz e-mail, id e nome de uma vez,
+      //    e é o que o próprio chatPro usa como identidade.
       const fila = [obj];
       while (fila.length > 0) {
         const atual = fila.shift();
@@ -134,12 +195,23 @@
         for (const [chave, valor] of Object.entries(atual)) {
           if (typeof valor === 'string') {
             const payload = lerJwt(valor);
-            const doToken = payload && procurarNoObjeto(payload);
-            if (doToken) return { email: doToken.email, via: `${origem} → ${chave} (JWT)` };
+            const doToken = payload && daPayload(payload, `${origem} → ${chave} (JWT)`);
+            if (doToken) return doToken;
           } else if (valor !== null && typeof valor === 'object') {
             fila.push(valor);
           }
         }
+      }
+
+      // 2. JSON com um campo de e-mail solto (sem token).
+      const achado = procurarNoObjeto(obj);
+      if (achado) {
+        return {
+          email: achado.email,
+          userId: procurarUserId(obj),
+          nome: procurarNome(obj),
+          via: `${origem} → ${achado.via}`,
+        };
       }
     } catch {
       // Não era JSON — segue pros caminhos de texto puro.
@@ -147,11 +219,13 @@
 
     // 3. O valor É um JWT.
     const payload = lerJwt(bruto);
-    const doToken = payload && procurarNoObjeto(payload);
-    if (doToken) return { email: doToken.email, via: `${origem} (JWT)` };
+    const doToken = payload && daPayload(payload, `${origem} (JWT)`);
+    if (doToken) return doToken;
 
-    // 4. Último recurso: um e-mail solto no texto.
-    if (ehEmailUtil(bruto)) return { email: extrairEmail(bruto), via: `${origem} (texto)` };
+    // 4. Último recurso: um e-mail solto no texto. Aqui não há id nem nome.
+    if (ehEmailUtil(bruto)) {
+      return { email: extrairEmail(bruto), userId: null, nome: null, via: `${origem} (texto)` };
+    }
 
     return null;
   }
@@ -208,8 +282,11 @@
   }
 
   /**
-   * O e-mail do atendente, ou null. `{ email, via }` no cache pra quem quiser
-   * diagnosticar sem repetir a varredura.
+   * Quem está atendendo: `{ email, userId, nome, via }`.
+   *
+   * `userId` e `nome` só existem quando a fonte foi um JWT ou um objeto com
+   * esses campos — pelo caminho do regex vem só o e-mail. Quem usa precisa
+   * aguentar null nos dois.
    */
   function detectar() {
     const agora = Date.now();
@@ -220,7 +297,13 @@
       procurarNoStorage(window.sessionStorage, 'sessionStorage') ||
       procurarNoDom();
 
-    cache = { email: achado ? achado.email : null, via: achado ? achado.via : null, lidoEm: agora };
+    cache = {
+      email: achado ? achado.email : null,
+      userId: achado ? (achado.userId ?? null) : null,
+      nome: achado ? (achado.nome ?? null) : null,
+      via: achado ? achado.via : null,
+      lidoEm: agora,
+    };
     return cache;
   }
 

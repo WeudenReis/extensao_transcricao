@@ -87,6 +87,8 @@ export interface CriarReuniaoEntrada {
   clienteJson?: string | null;
   /** Id da reunião no painel — destino da transcrição no fim. */
   painelMeetingId?: string | null;
+  /** Id do atendente no chatPro — autor do comentário no fim da reunião. */
+  atendenteUserId?: string | null;
 }
 
 export type ResultadoCriacao =
@@ -234,6 +236,7 @@ export async function criarReuniao(
     tipo: entrada.tipo ?? null,
     clienteJson: entrada.clienteJson ?? null,
     painelMeetingId: entrada.painelMeetingId ?? null,
+    atendenteUserId: entrada.atendenteUserId ?? null,
     status: 'created',
   });
 

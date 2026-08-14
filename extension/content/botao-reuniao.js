@@ -42,6 +42,25 @@
   // está com OUTRA cópia da extensão carregada — foi o que já aconteceu aqui.
   log(`v${chrome.runtime.getManifest().version} carregada`);
 
+  // Este arquivo depende de três outros, e quem os carrega é o manifest — que
+  // o Chrome só relê ao RECARREGAR a extensão. Dar F5 na página deixa este
+  // arquivo atualizado e os outros ausentes, e aí o botão aparece mas não abre
+  // nada. Conferir no carregamento transforma isso numa linha no console em vez
+  // de um clique que não responde.
+  const ausentes = [
+    !window.__cpmAtendente && 'content/atendente.js',
+    !window.__cpmAba && 'content/aba-reuniao.js',
+    !window.__cpmFluxo && 'content/fluxo-reuniao.js',
+  ].filter(Boolean);
+  if (ausentes.length > 0) {
+    console.error(
+      '[chatPro reunião] Estes arquivos não foram carregados: ' +
+        ausentes.join(', ') +
+        '.\nO manifest em memória não lista eles. Vá em chrome://extensions e clique ' +
+        'em RECARREGAR na extensão (F5 na página não resolve).'
+    );
+  }
+
   function sessaoAtual() {
     const m = /\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
     return m ? m[1] : null;
@@ -400,6 +419,33 @@
         window.__cpmAba.fechar();
         return;
       }
+
+      // Os três ajudantes vêm de OUTROS arquivos, declarados no manifest. E o
+      // manifest só é relido quando a extensão é recarregada — dar F5 na página
+      // não basta. Então dá pra cair aqui com este arquivo já atualizado e os
+      // outros três nunca carregados: o botão aparece e o clique não faz nada.
+      //
+      // Já aconteceu, e o pior foi o silêncio. Aqui a falha vira instrução.
+      const faltando = [
+        !window.__cpmAtendente && 'atendente.js',
+        !window.__cpmAba && 'aba-reuniao.js',
+        !window.__cpmFluxo && 'fluxo-reuniao.js',
+      ].filter(Boolean);
+      if (faltando.length > 0) {
+        const versao = chrome.runtime.getManifest().version;
+        log(
+          `FALTANDO: ${faltando.join(', ')}. O manifest carregado é o da v${versao} ` +
+            'e não lista esses arquivos. Recarregue a extensão em chrome://extensions ' +
+            '(o botão de recarregar), não só F5 na página.'
+        );
+        avisar(
+          'Recarregue a extensão em chrome://extensions — a página sozinha não ' +
+            'atualiza os arquivos novos.',
+          'erro'
+        );
+        return;
+      }
+
       window.__cpmFluxo.iniciar({
         sessionId: sessao,
         contato: nomeDoContato(),

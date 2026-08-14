@@ -241,6 +241,9 @@ export async function entregarAoChatpro(
 
   const resultado = await chatpro.enviar({
     conteudo: corpo,
+    // O comentário sai no nome de quem conduziu a reunião — o id vem do JWT
+    // do chatPro, capturado quando ela foi marcada.
+    autorUserId: meeting.atendente_user_id,
     sessionId: meeting.session_id,
     meetingUrl: meeting.meeting_url,
     meetingCode: meeting.meeting_code,

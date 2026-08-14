@@ -192,6 +192,8 @@ export interface MeetingRow {
   painel_meeting_id: string | null;
   /** pendente | enviado | falhou — entrega da transcrição ao painel. */
   painel_status: string | null;
+  /** Id do atendente no chatPro — autor do comentário na conversa. */
+  atendente_user_id: string | null;
   error: string | null;
   created_at: string;
 }
@@ -472,6 +474,9 @@ export class Db {
     // grava e a transcrição não tem pra onde ir.
     this.garantirColuna('meetings', 'painel_meeting_id', 'TEXT');
     this.garantirColuna('meetings', 'painel_status', 'TEXT');
+    // Id do atendente no chatPro (vem do JWT). O comentário da reunião sai no
+    // nome dele em vez do usuário fixo do .env.
+    this.garantirColuna('meetings', 'atendente_user_id', 'TEXT');
 
     // Mensagens que só podem sair PERTO do horário (reunião agendada convida o
     // cliente ~5 min antes, não na hora de marcar). Fila durável: reiniciar o
@@ -1160,6 +1165,7 @@ export class Db {
     tipo?: string | null;
     clienteJson?: string | null;
     painelMeetingId?: string | null;
+    atendenteUserId?: string | null;
     status?: MeetingStatus;
     createdAt?: string;
   }): MeetingRow {
@@ -1168,10 +1174,12 @@ export class Db {
         `INSERT INTO meetings
            (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name,
             chatpro_status, chatpro_instance_id, chatpro_parts_sent,
-            atendente_email, tipo, cliente_json, painel_meeting_id, created_at)
+            atendente_email, tipo, cliente_json, painel_meeting_id,
+            atendente_user_id, created_at)
          VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName,
             'pending', @chatproInstanceId, 0,
-            @atendenteEmail, @tipo, @clienteJson, @painelMeetingId, @createdAt)`
+            @atendenteEmail, @tipo, @clienteJson, @painelMeetingId,
+            @atendenteUserId, @createdAt)`
       )
       .run({
         id: input.id,
@@ -1186,6 +1194,7 @@ export class Db {
         tipo: input.tipo ?? null,
         clienteJson: input.clienteJson ?? null,
         painelMeetingId: input.painelMeetingId ?? null,
+        atendenteUserId: input.atendenteUserId ?? null,
         createdAt: input.createdAt ?? new Date().toISOString(),
       });
     const row = this.getMeeting(input.id);

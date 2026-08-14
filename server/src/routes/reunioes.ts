@@ -137,6 +137,12 @@ export const iniciarSchema = z.object({
   tipo: z.enum(TIPOS_REUNIAO).nullish(),
   /** Quem clicou — e-mail lido do @chatpro:auth da página do chatPro. */
   atendenteEmail: z.string().email('atendenteEmail deve ser um e-mail válido.').nullish(),
+  /**
+   * Id do atendente DENTRO do chatPro, lido do JWT guardado no
+   * `@chatpro:auth`. É o que o `addComments` exige pra o comentário da reunião
+   * sair no nome de quem conduziu, em vez do usuário único do `.env`.
+   */
+  atendenteUserId: z.string().max(120).nullish(),
   /** Vendedor escolhido no seletor da APRESENTAÇÃO agendada. */
   vendedorEmail: z.string().email('vendedorEmail deve ser um e-mail válido.').nullish(),
   cliente: clienteSchema.nullish(),
@@ -321,6 +327,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const quando = parsed.data.quando ? new Date(parsed.data.quando) : null;
       const tipo = parsed.data.tipo ?? null;
       const atendenteEmail = parsed.data.atendenteEmail ?? null;
+      const atendenteUserId = parsed.data.atendenteUserId ?? null;
       const vendedorEmail = parsed.data.vendedorEmail ?? null;
       const cliente = parsed.data.cliente ?? null;
 
@@ -479,6 +486,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
           // O elo com o painel: é por ele que a transcrição volta pra lá no
           // fim da reunião. Sem isto, grava e não tem pra onde ir.
           painelMeetingId,
+          atendenteUserId,
         }
       );
 
