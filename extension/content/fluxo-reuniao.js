@@ -168,7 +168,35 @@
         try {
           resposta = await pedir('PAINEL_ME', { email: atendente.email });
         } catch (err) {
-          resposta = { erro: String(err) };
+          const texto = String((err && err.message) || err);
+          // "Extension context invalidated" NÃO é o painel recusando ninguém:
+          // é a extensão ter sido recarregada com esta aba ainda rodando o
+          // script antigo. O canal com o service worker morreu, e nenhuma
+          // chamada vai funcionar até dar F5. Confundir os dois mandava a
+          // pessoa investigar o cadastro dela no painel, que está certo.
+          if (/context invalidated|receiving end does not exist|message port closed/i.test(texto)) {
+            api.limpar();
+            api.cabecalho('Reunião', null);
+            const p = api.p;
+            api.corpo.appendChild(
+              api.el(
+                'div',
+                `font:600 14px/1.45 system-ui,sans-serif;margin-bottom:8px;color:${p.texto}`,
+                'A extensão foi recarregada — atualize esta página.'
+              )
+            );
+            api.corpo.appendChild(
+              api.el(
+                'div',
+                `font:400 12px/1.5 system-ui,sans-serif;color:${p.textoFraco}`,
+                'Esta aba ainda está com a versão antiga carregada, e ela não fala ' +
+                  'mais com a extensão. Um F5 resolve.'
+              )
+            );
+            api.acao('Atualizar a página', () => window.location.reload());
+            return;
+          }
+          resposta = { erro: texto };
         }
 
         // Painel AINDA NÃO CONFIGURADO (sem PAINEL_API_URL/tokens): seguimos

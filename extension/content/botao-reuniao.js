@@ -560,6 +560,9 @@
   const observer = new MutationObserver(() => {
     conferirTroca();
     injetar();
+    // Aproveita qualquer momento em que o Copiloto esteja aberto pra copiar o
+    // estilo dele. Custa nada quando já foi medido (sai na primeira linha).
+    if (window.__cpmAba) window.__cpmAba.medirSePuder();
   });
 
   /**

@@ -48,23 +48,146 @@
   }
 
   /**
-   * Tokens da identidade chatPro. Verde #25D066 é o CTA, #1BAD53 o hover, e os
-   * cinzas do dark theme são os oficiais (#1d2125 / #22272b / #2c333a) — não
-   * cores aproximadas, senão a aba destoa ao lado do Copiloto.
+   * Estilo MEDIDO no Copiloto, quando ele está aberto.
+   *
+   * Chutar as cores de um print faz a aba ficar "parecida" e envelhecer mal:
+   * qualquer ajuste de tema do chatPro nos deixaria pra trás. Medir os valores
+   * reais faz a aba acompanhar sozinha — e é o mesmo truque que o botão da
+   * barra já usa, clonando o vizinho em vez de recriar o CSS deles.
+   *
+   * O resultado fica no chrome.storage porque o Copiloto normalmente está
+   * FECHADO na hora em que a nossa aba abre: sem guardar, a medição só valeria
+   * na única vez em que os dois estivessem abertos juntos.
+   */
+  const CHAVE_ESTILO = 'cpm_estilo_copiloto';
+  let estiloMedido = null;
+
+  function corDe(valor, alternativa) {
+    if (!valor) return alternativa;
+    const v = String(valor).trim();
+    if (v === '' || v === 'none' || /rgba\(0,\s*0,\s*0,\s*0\)/.test(v) || v === 'transparent') {
+      return alternativa;
+    }
+    return v;
+  }
+
+  /** Lê do Copiloto aberto o que dá pra copiar sem adivinhar. */
+  function medirCopiloto(painel) {
+    try {
+      const s = getComputedStyle(painel);
+      const medida = { fundo: corDe(s.backgroundColor, null) };
+
+      // O cabeçalho é o primeiro filho alto o bastante pra ser barra e baixo o
+      // bastante pra não ser conteúdo.
+      for (const filho of painel.children) {
+        const r = filho.getBoundingClientRect();
+        if (r.height >= 36 && r.height <= 96) {
+          const cs = getComputedStyle(filho);
+          medida.alturaCabecalho = Math.round(r.height);
+          medida.fundoCabecalho = corDe(cs.backgroundColor, null);
+          medida.bordaCabecalho = cs.borderBottomWidth !== '0px' ? cs.borderBottomColor : null;
+          break;
+        }
+      }
+
+      // Título: o texto mais destacado dentro do cabeçalho.
+      const titulo = painel.querySelector('h1,h2,h3,[class*="title"],[class*="titulo"]');
+      if (titulo) {
+        const ts = getComputedStyle(titulo);
+        medida.tituloTamanho = ts.fontSize;
+        medida.tituloPeso = ts.fontWeight;
+        medida.tituloCor = corDe(ts.color, null);
+      }
+
+      // Campos: o raio e o fundo deles são o que mais denuncia diferença.
+      const campo = painel.querySelector('input,textarea,select');
+      if (campo) {
+        const cs = getComputedStyle(campo);
+        medida.campoFundo = corDe(cs.backgroundColor, null);
+        medida.campoBorda = cs.borderTopWidth !== '0px' ? cs.borderTopColor : null;
+        medida.campoRaio = cs.borderRadius;
+        medida.campoPadding = cs.padding;
+        medida.campoFonte = cs.fontSize;
+      }
+
+      // Botão primário: o de maior largura dentro do painel.
+      let maior = null;
+      for (const b of painel.querySelectorAll('button')) {
+        const r = b.getBoundingClientRect();
+        if (r.width > 120 && (!maior || r.width > maior.r.width)) maior = { b, r };
+      }
+      if (maior) {
+        const bs = getComputedStyle(maior.b);
+        medida.botaoFundo = corDe(bs.backgroundColor, null);
+        medida.botaoCor = corDe(bs.color, null);
+        medida.botaoRaio = bs.borderRadius;
+        medida.botaoAltura = `${Math.round(maior.r.height)}px`;
+        medida.botaoPeso = bs.fontWeight;
+      }
+
+      medida.fonte = s.fontFamily;
+      return medida;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Guarda a medição pra valer quando o Copiloto estiver fechado. */
+  function guardarEstilo(medida) {
+    estiloMedido = medida;
+    try {
+      chrome.storage?.local?.set({ [CHAVE_ESTILO]: medida });
+    } catch {
+      // storage indisponível não pode derrubar a abertura da aba.
+    }
+  }
+
+  function carregarEstilo() {
+    try {
+      chrome.storage?.local?.get(CHAVE_ESTILO, (r) => {
+        if (r && r[CHAVE_ESTILO] && !estiloMedido) estiloMedido = r[CHAVE_ESTILO];
+      });
+    } catch {
+      /* idem */
+    }
+  }
+  carregarEstilo();
+
+  /**
+   * Tokens da identidade chatPro, com o que foi medido no Copiloto por cima.
+   *
+   * Os padrões são os valores oficiais (#25D066 CTA, #1BAD53 hover, cinzas
+   * #1d2125 / #22272b / #2c333a) — usados quando ninguém abriu o Copiloto
+   * ainda. A medição real ganha deles sempre que existe.
    */
   function paleta() {
     const e = escuro();
+    const m = estiloMedido || {};
     return {
       escuro: e,
-      fundo: e ? '#22272b' : '#ffffff',
+      fundo: m.fundo || (e ? '#22272b' : '#ffffff'),
       fundoFraco: e ? '#2c333a' : '#f1f0f2',
-      fundoTopo: e ? '#1d2125' : '#ffffff',
-      texto: e ? '#E6E5E8' : '#1d2125',
+      fundoTopo: m.fundoCabecalho || m.fundo || (e ? '#22272b' : '#ffffff'),
+      texto: m.tituloCor || (e ? '#E6E5E8' : '#1d2125'),
       textoFraco: e ? '#9aa4ad' : '#6b7280',
-      borda: e ? 'rgba(255,255,255,.10)' : '#E6E5E8',
-      verde: '#25D066',
-      verdeHover: '#1BAD53',
+      borda: m.bordaCabecalho || (e ? 'rgba(255,255,255,.10)' : '#E6E5E8'),
+      verde: m.botaoFundo || '#25D066',
+      verdeHover: m.botaoFundo ? m.botaoFundo : '#1BAD53',
+      botaoCor: m.botaoCor || (m.botaoFundo ? '#ffffff' : '#0b2016'),
+      botaoRaio: m.botaoRaio || '8px',
+      botaoAltura: m.botaoAltura || '48px',
+      botaoPeso: m.botaoPeso || '600',
       perigo: e ? '#ff6b6b' : '#c92a2a',
+      // Cabeçalho e campos, medidos ou no padrão do print do Copiloto.
+      alturaCabecalho: m.alturaCabecalho ? `${m.alturaCabecalho}px` : '60px',
+      tituloTamanho: m.tituloTamanho || '17px',
+      tituloPeso: m.tituloPeso || '600',
+      campoFundo: m.campoFundo || (e ? '#1d2125' : '#ffffff'),
+      campoBorda: m.campoBorda || (e ? 'rgba(255,255,255,.12)' : '#D1D1D5'),
+      campoRaio: m.campoRaio || '8px',
+      campoPadding: m.campoPadding || '13px 14px',
+      campoFonte: m.campoFonte || '14px',
+      fonte: m.fonte || 'system-ui,-apple-system,Segoe UI,sans-serif',
     };
   }
 
@@ -128,6 +251,10 @@
     }
     const copiloto = acharCopiloto();
     if (copiloto) {
+      // Copiloto aberto é a única chance de copiar o estilo dele. Medimos
+      // agora e guardamos — na próxima vez ele provavelmente estará fechado.
+      const medida = medirCopiloto(copiloto.el);
+      if (medida && medida.fundo) guardarEstilo(medida);
       // Mesma largura do Copiloto: as duas colunas ocupam o mesmo espaço, e
       // trocar de uma pra outra não faz a conversa pular de tamanho.
       const largura = Math.round(Math.max(LARGURA_MIN, Math.min(copiloto.rect.width, 560)));
@@ -152,22 +279,31 @@
     b.type = 'button';
     b.textContent = rotulo;
     const primario = tipo === 'primario';
+    // Altura, raio e peso vêm do botão do Copiloto quando ele foi medido —
+    // é o que faz o "Começar" deles e o nosso CTA parecerem o mesmo botão.
     b.style.cssText = [
       'width:100%',
-      'padding:11px 14px',
-      'border-radius:10px',
-      'font:600 14px/1.2 system-ui,-apple-system,Segoe UI,sans-serif',
+      'box-sizing:border-box',
+      `min-height:${p.botaoAltura}`,
+      'padding:0 14px',
+      `border-radius:${p.botaoRaio}`,
+      `font:${p.botaoPeso} 14px/1.2 ${p.fonte}`,
       'cursor:pointer',
-      `transition:background ${TRANSICAO},border-color ${TRANSICAO}`,
+      `transition:background ${TRANSICAO},border-color ${TRANSICAO},filter ${TRANSICAO}`,
       primario ? `background:${p.verde}` : 'background:transparent',
-      primario ? 'color:#0b2016' : `color:${p.texto}`,
+      primario ? `color:${p.botaoCor}` : `color:${p.texto}`,
       primario ? 'border:1px solid transparent' : `border:1px solid ${p.borda}`,
     ].join(';');
     b.addEventListener('mouseenter', () => {
-      b.style.background = primario ? p.verdeHover : p.fundoFraco;
+      // Clarear por filtro em vez de trocar a cor: a cor medida no Copiloto
+      // não tem um "hover" conhecido, e inventar um verde escuro romperia a
+      // igualdade que acabamos de conquistar.
+      if (primario) b.style.filter = 'brightness(1.08)';
+      else b.style.background = p.fundoFraco;
     });
     b.addEventListener('mouseleave', () => {
-      b.style.background = primario ? p.verde : 'transparent';
+      b.style.filter = 'none';
+      if (!primario) b.style.background = 'transparent';
     });
     return b;
   }
@@ -185,12 +321,12 @@
     entrada.style.cssText = [
       'width:100%',
       'box-sizing:border-box',
-      'padding:10px 12px',
-      'border-radius:10px',
-      `border:1px solid ${p.borda}`,
-      `background:${p.escuro ? '#1d2125' : '#fff'}`,
+      `padding:${p.campoPadding}`,
+      `border-radius:${p.campoRaio}`,
+      `border:1px solid ${p.campoBorda}`,
+      `background:${p.campoFundo}`,
       `color:${p.texto}`,
-      'font:400 14px/1.3 system-ui,-apple-system,Segoe UI,sans-serif',
+      `font:400 ${p.campoFonte}/1.3 ${p.fonte}`,
       'outline:none',
       `transition:border-color ${TRANSICAO}`,
     ].join(';');
@@ -243,8 +379,11 @@
 
   function abrir(render) {
     fechar();
-    const p = paleta();
+    // O destino vem PRIMEIRO porque é ele quem mede o Copiloto. Calcular a
+    // paleta antes usaria os padrões na primeira abertura e só acertaria a
+    // partir da segunda — e a primeira impressão é justamente a que conta.
     const destino = decidirDestino();
+    const p = paleta();
 
     const raiz = el('div', '');
     raiz.id = ID;
@@ -258,7 +397,7 @@
       'display:flex',
       'flex-direction:column',
       'overflow:hidden',
-      'font-family:system-ui,-apple-system,Segoe UI,sans-serif',
+      `font-family:${p.fonte}`,
       // Anima largura E opacidade: só a largura faria o texto se espremer
       // durante a abertura, que é o efeito que denuncia painel improvisado.
       `transition:width ${TRANSICAO},opacity ${TRANSICAO}`,
@@ -298,10 +437,12 @@
         'display:flex',
         'align-items:center',
         'gap:8px',
-        'padding:14px',
+        'padding:0 14px',
+        `height:${p.alturaCabecalho}`,
+        'flex:0 0 auto',
+        'box-sizing:border-box',
         `border-bottom:1px solid ${p.borda}`,
         `background:${p.fundoTopo}`,
-        'flex:0 0 auto',
       ].join(';')
     );
     const voltar = el(
@@ -316,7 +457,7 @@
     const titulo = el('div', 'flex:1;text-align:center;min-width:0');
     const tituloTexto = el(
       'span',
-      `font:600 15px/1.2 system-ui,sans-serif;color:${p.texto}`,
+      `font:${p.tituloPeso} ${p.tituloTamanho}/1.2 ${p.fonte};color:${p.texto}`,
       'Reunião'
     );
     titulo.appendChild(tituloTexto);
@@ -478,5 +619,29 @@
     return api;
   }
 
-  window.__cpmAba = { abrir, fechar, estaAberta, paleta, decidirDestino };
+  /**
+   * Mede o Copiloto SE ele estiver aberto agora, sem abrir nada.
+   *
+   * Chamado pelo tick do botão. Sem isto, a medição dependeria de o Copiloto
+   * estar aberto no instante exato do clique em "reunião" — e as duas colunas
+   * ocupam o mesmo lugar, então quase nunca estão abertas juntas. Assim basta o
+   * atendente ter usado o Copiloto uma vez, em qualquer momento, e a aba já
+   * nasce com o estilo certo.
+   */
+  function medirSePuder() {
+    if (estiloMedido) return false;
+    const copiloto = acharCopiloto();
+    if (!copiloto) return false;
+    const medida = medirCopiloto(copiloto.el);
+    if (!medida || !medida.fundo) return false;
+    guardarEstilo(medida);
+    console.log(
+      '%c[chatPro reunião]%c estilo do Copiloto capturado — a aba vai usar as cores dele.',
+      'color:#25D066;font-weight:700',
+      ''
+    );
+    return true;
+  }
+
+  window.__cpmAba = { abrir, fechar, estaAberta, paleta, decidirDestino, medirSePuder };
 })();
