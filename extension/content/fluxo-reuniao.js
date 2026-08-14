@@ -19,11 +19,13 @@
 (() => {
   'use strict';
 
+  // Só o rótulo: cor literal aqui era o que quebrava a aba na troca de tema.
+  // Quem pinta é o design system do chatPro, pelas classes do Copiloto.
   const TIPOS = {
-    apresentacao: { rotulo: 'Apresentação', cor: '#3b82f6' },
-    migracao: { rotulo: 'Migração', cor: '#f59e0b' },
-    implantacao: { rotulo: 'Implantação', cor: '#8b5cf6' },
-    cs: { rotulo: 'CS', cor: '#25D066' },
+    apresentacao: { rotulo: 'Apresentação' },
+    migracao: { rotulo: 'Migração' },
+    implantacao: { rotulo: 'Implantação' },
+    cs: { rotulo: 'CS' },
   };
   /** Estes três não sobem sem os dados cadastrais do cliente. */
   const COM_DADOS = ['migracao', 'implantacao', 'cs'];
@@ -269,61 +271,25 @@
           );
         }
 
-        if (estado.eu && estado.eu.nome) {
-          api.corpo.appendChild(
-            api.el(
-              'div',
-              `margin-bottom:16px;font:400 12px/1.4 system-ui,sans-serif;color:${p.textoFraco}`,
-              `Marcando como ${estado.eu.nome}${estado.eu.papel ? ` · ${estado.eu.papel}` : ''}`
-            )
-          );
-        }
+        // Cabeçalho de seção igual ao "Chats anteriores" do Copiloto.
+        const quem = estado.eu && estado.eu.nome
+          ? `Marcando como ${estado.eu.nome}${estado.eu.papel ? ` · ${estado.eu.papel}` : ''}`
+          : 'Marcar reunião';
+        const lista = api.secao(quem);
 
-        const opcoes = [
-          ['agora', 'Reunir agora', 'Cria a sala e manda o link pro cliente na hora.'],
-          ['marcar', 'Marcar para depois', 'Escolhe dia e horário livres. O convite sai 5 min antes.'],
-        ];
-        for (const [chave, titulo, ajuda] of opcoes) {
-          const cartao = api.el(
-            'button',
-            [
-              'display:block',
-              'width:100%',
-              'text-align:left',
-              'padding:14px',
-              'margin-bottom:10px',
-              `border-radius:${p.blocoRaio}`,
-              `border:1px solid ${p.borda}`,
-              'background:transparent',
-              `color:${p.texto}`,
-              'cursor:pointer',
-            ].join(';')
-          );
-          cartao.type = 'button';
-          cartao.appendChild(
-            api.el('div', 'font:600 14px/1.3 system-ui,sans-serif;margin-bottom:4px', titulo)
-          );
-          cartao.appendChild(
-            api.el(
-              'div',
-              `font:400 12px/1.4 system-ui,sans-serif;color:${p.textoFraco}`,
-              ajuda
-            )
-          );
-          cartao.addEventListener('mouseenter', () => {
-            cartao.style.background = p.fundoFraco;
-            cartao.style.borderColor = p.verde;
-          });
-          cartao.addEventListener('mouseleave', () => {
-            cartao.style.background = 'transparent';
-            cartao.style.borderColor = p.borda;
-          });
-          cartao.addEventListener('click', () => {
-            estado.modo = chave;
+        api.cartao(lista, 'Reunir agora', 'Cria a sala e manda o link pro cliente na hora.', () => {
+          estado.modo = 'agora';
+          passoTipo();
+        });
+        api.cartao(
+          lista,
+          'Marcar para depois',
+          'Escolhe dia e horário livres. O convite sai 5 min antes.',
+          () => {
+            estado.modo = 'marcar';
             passoTipo();
-          });
-          api.corpo.appendChild(cartao);
-        }
+          }
+        );
       }
 
       // ── Passo 2: tipo, só o que este atendente pode ──────────────────────
@@ -344,37 +310,10 @@
           return;
         }
 
+        const lista = api.secao('Tipo da reunião');
         for (const cap of permitidos) {
           const meta = TIPOS[cap.type];
           if (!meta) continue;
-          const b = api.el(
-            'button',
-            [
-              'display:flex',
-              'align-items:center',
-              'gap:10px',
-              'width:100%',
-              'text-align:left',
-              'padding:13px 14px',
-              'margin-bottom:9px',
-              `border-radius:${p.blocoRaio}`,
-              `border:1px solid ${p.borda}`,
-              'background:transparent',
-              `color:${p.texto}`,
-              'cursor:pointer',
-            ].join(';')
-          );
-          b.type = 'button';
-          b.appendChild(
-            api.el(
-              'span',
-              `width:8px;height:8px;border-radius:50%;background:${meta.cor};flex:0 0 auto`
-            )
-          );
-          const bloco = api.el('span', 'flex:1');
-          bloco.appendChild(
-            api.el('span', 'display:block;font:600 14px/1.3 system-ui,sans-serif', meta.rotulo)
-          );
           // O modo de atribuição muda o que vai acontecer — dizer antes evita
           // a surpresa de marcar e a reunião cair pra outra pessoa.
           const explica =
@@ -383,26 +322,11 @@
               : cap.assignment === 'round_robin'
                 ? 'entra na distribuição'
                 : 'você escolhe o responsável';
-          bloco.appendChild(
-            api.el(
-              'span',
-              `display:block;font:400 11px/1.4 system-ui,sans-serif;color:${p.textoFraco}`,
-              explica
-            )
-          );
-          b.appendChild(bloco);
-          b.addEventListener('mouseenter', () => {
-            b.style.background = p.fundoFraco;
-          });
-          b.addEventListener('mouseleave', () => {
-            b.style.background = 'transparent';
-          });
-          b.addEventListener('click', () => {
+          api.cartao(lista, meta.rotulo, explica, () => {
             estado.tipo = cap.type;
             estado.capacidade = cap;
             passoDados();
           });
-          api.corpo.appendChild(b);
         }
       }
 
