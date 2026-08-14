@@ -292,7 +292,7 @@
               'text-align:left',
               'padding:14px',
               'margin-bottom:10px',
-              'border-radius:12px',
+              `border-radius:${p.blocoRaio}`,
               `border:1px solid ${p.borda}`,
               'background:transparent',
               `color:${p.texto}`,
@@ -357,7 +357,7 @@
               'text-align:left',
               'padding:13px 14px',
               'margin-bottom:9px',
-              'border-radius:12px',
+              `border-radius:${p.blocoRaio}`,
               `border:1px solid ${p.borda}`,
               'background:transparent',
               `color:${p.texto}`,
@@ -714,7 +714,7 @@
           api.corpo.appendChild(
             api.el(
               'div',
-              `margin-top:14px;padding:10px 12px;border-radius:10px;background:${p.fundoFraco};` +
+              `margin-top:14px;padding:10px 12px;border-radius:${p.blocoRaio};background:${p.fundoFraco};` +
                 `font:500 12px/1.5 system-ui,sans-serif;color:${p.textoFraco}`,
               'Nada foi criado. Com o painel configurado, aqui a reunião seria ' +
                 'marcada, o link gerado e o cliente avisado.'
@@ -779,7 +779,7 @@
             api.corpo.appendChild(
               api.el(
                 'div',
-                `margin-top:12px;padding:10px 12px;border-radius:10px;background:${p.fundoFraco};` +
+                `margin-top:12px;padding:10px 12px;border-radius:${p.blocoRaio};background:${p.fundoFraco};` +
                   `font:500 12px/1.5 system-ui,sans-serif;color:${p.texto}`,
                 'Confira no painel de reuniões antes de marcar de novo — se ela já ' +
                   'estiver lá, marcar outra vez cria uma reunião duplicada.'
@@ -819,7 +819,7 @@
           api.corpo.appendChild(
             api.el(
               'div',
-              `margin-bottom:12px;padding:10px 12px;border-radius:10px;` +
+              `margin-bottom:12px;padding:10px 12px;border-radius:${p.blocoRaio};` +
                 `background:${p.fundoFraco};border-left:3px solid ${p.perigo};` +
                 `font:500 12px/1.5 system-ui,sans-serif;color:${p.texto}`,
               String(resposta.avisoMensagem)

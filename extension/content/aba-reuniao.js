@@ -132,6 +132,93 @@
     }
   }
 
+  /**
+   * Mede a PÁGINA, não o Copiloto.
+   *
+   * A medição do Copiloto só acontece se ele estiver aberto — e as duas colunas
+   * disputam o mesmo lugar, então isso quase nunca acontece. Já os elementos
+   * abaixo estão sempre na tela, em qualquer conversa:
+   *
+   *   - a barra do topo   → altura e fundo do nosso cabeçalho
+   *   - os cartões da lista de conversas → raio e borda dos nossos blocos
+   *   - o campo de mensagem → fundo, raio e padding dos nossos campos
+   *   - o corpo            → fundo e família tipográfica
+   *
+   * É o mesmo princípio do botão da barra, que clona o vizinho: em vez de
+   * recriar o CSS do chatPro, a gente lê o que já está aplicado.
+   */
+  function medirPagina() {
+    const medida = {};
+    try {
+      const corpo = getComputedStyle(document.body);
+      medida.fonte = corpo.fontFamily;
+
+      // Fundo: o painel lateral do chatPro (coluna alta e estreita) é o que a
+      // nossa aba imita. O fundo do body seria o da conversa, que é outro.
+      let coluna = null;
+      for (const el of document.querySelectorAll('div,aside,section,nav')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 200 || r.width > 520) continue;
+        if (r.height < window.innerHeight * 0.6) continue;
+        const cor = corDe(getComputedStyle(el).backgroundColor, null);
+        if (!cor) continue;
+        if (!coluna || r.height > coluna.r.height) coluna = { el, r, cor };
+      }
+      if (coluna) medida.fundo = coluna.cor;
+
+      // Barra do topo: alta o bastante pra ser barra, larga o bastante pra
+      // atravessar a tela, e encostada no topo.
+      for (const el of document.querySelectorAll('header,div,nav')) {
+        const r = el.getBoundingClientRect();
+        if (r.top > 8 || r.height < 40 || r.height > 96) continue;
+        if (r.width < window.innerWidth * 0.5) continue;
+        const cs = getComputedStyle(el);
+        const cor = corDe(cs.backgroundColor, null);
+        if (!cor) continue;
+        medida.alturaCabecalho = Math.round(r.height);
+        medida.fundoCabecalho = cor;
+        if (cs.borderBottomWidth !== '0px') medida.bordaCabecalho = cs.borderBottomColor;
+        break;
+      }
+
+      // Campo de mensagem: é o input mais largo da metade de baixo da tela.
+      let campo = null;
+      for (const el of document.querySelectorAll('input,textarea,[contenteditable="true"]')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 200 || r.top < window.innerHeight * 0.5) continue;
+        if (!campo || r.width > campo.r.width) campo = { el, r };
+      }
+      if (campo) {
+        const cs = getComputedStyle(campo.el);
+        const fundo = corDe(cs.backgroundColor, null);
+        if (fundo) medida.campoFundo = fundo;
+        if (cs.borderRadius && cs.borderRadius !== '0px') medida.campoRaio = cs.borderRadius;
+        if (cs.borderTopWidth !== '0px') medida.campoBorda = cs.borderTopColor;
+        medida.campoFonte = cs.fontSize;
+      }
+
+      // Raio dos blocos: o mais comum entre os cartões da lista de conversas.
+      // Moda, não média — um cartão excêntrico não pode puxar o valor.
+      const raios = new Map();
+      for (const el of document.querySelectorAll('div,li,article')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 150 || r.width > 520 || r.height < 40 || r.height > 140) continue;
+        const raio = getComputedStyle(el).borderRadius;
+        if (!raio || raio === '0px') continue;
+        raios.set(raio, (raios.get(raio) ?? 0) + 1);
+      }
+      let maisComum = null;
+      for (const [raio, n] of raios) {
+        if (!maisComum || n > maisComum.n) maisComum = { raio, n };
+      }
+      if (maisComum && maisComum.n >= 3) medida.blocoRaio = maisComum.raio;
+
+      return Object.keys(medida).length > 1 ? medida : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Guarda a medição pra valer quando o Copiloto estiver fechado. */
   function guardarEstilo(medida) {
     estiloMedido = medida;
@@ -187,6 +274,7 @@
       campoRaio: m.campoRaio || '8px',
       campoPadding: m.campoPadding || '13px 14px',
       campoFonte: m.campoFonte || '14px',
+      blocoRaio: m.blocoRaio || m.campoRaio || '10px',
       fonte: m.fonte || 'system-ui,-apple-system,Segoe UI,sans-serif',
     };
   }
@@ -382,6 +470,9 @@
     // O destino vem PRIMEIRO porque é ele quem mede o Copiloto. Calcular a
     // paleta antes usaria os padrões na primeira abertura e só acertaria a
     // partir da segunda — e a primeira impressão é justamente a que conta.
+    // Garante a medição ANTES da paleta: se o tick ainda não rodou (aba
+    // recém-carregada), a primeira abertura sairia com os padrões.
+    medirSePuder();
     const destino = decidirDestino();
     const p = paleta();
 
@@ -592,7 +683,7 @@
           [
             'margin:-4px 0 14px',
             'padding:10px 12px',
-            'border-radius:10px',
+            `border-radius:${p.blocoRaio}`,
             `background:${p.fundoFraco}`,
             `color:${cor}`,
             'font:500 12px/1.45 system-ui,sans-serif',
@@ -629,14 +720,31 @@
    * nasce com o estilo certo.
    */
   function medirSePuder() {
-    if (estiloMedido) return false;
+    // O Copiloto é a fonte melhor (é o painel que a gente está imitando), então
+    // ele SEMPRE tem prioridade — mesmo que a página já tenha sido medida.
     const copiloto = acharCopiloto();
-    if (!copiloto) return false;
-    const medida = medirCopiloto(copiloto.el);
-    if (!medida || !medida.fundo) return false;
-    guardarEstilo(medida);
+    if (copiloto && !(estiloMedido && estiloMedido.origem === 'copiloto')) {
+      const medida = medirCopiloto(copiloto.el);
+      if (medida && medida.fundo) {
+        medida.origem = 'copiloto';
+        guardarEstilo(medida);
+        console.log(
+          '%c[chatPro reunião]%c estilo capturado do COPILOTO — cores idênticas.',
+          'color:#25D066;font-weight:700',
+          ''
+        );
+        return true;
+      }
+    }
+    // Sem Copiloto aberto, a página serve: barra do topo, cartões da lista e o
+    // campo de mensagem já carregam a identidade aplicada.
+    if (estiloMedido) return false;
+    const daPagina = medirPagina();
+    if (!daPagina) return false;
+    daPagina.origem = 'pagina';
+    guardarEstilo(daPagina);
     console.log(
-      '%c[chatPro reunião]%c estilo do Copiloto capturado — a aba vai usar as cores dele.',
+      '%c[chatPro reunião]%c estilo medido na página do chatPro.',
       'color:#25D066;font-weight:700',
       ''
     );
