@@ -94,6 +94,46 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
     })
   );
 
+  /**
+   * Gera o checklist de onboarding da migração.
+   *
+   * É a única rota de ESCRITA daqui, e existe porque o painel recusa marcar
+   * migração sem checklist — mas o link do onboarding é gerado DURANTE a
+   * migração no fluxo do time, não antes. Sem isto, o atendente teria que sair
+   * da tela no meio do atendimento.
+   *
+   * Nunca é chamada sozinha: só pelo botão que a aba mostra quando o painel
+   * disse que falta checklist.
+   */
+  router.post(
+    '/api/painel/migracao/link',
+    assincrono(async (req, res) => {
+      const corpo = (req.body ?? {}) as Record<string, unknown>;
+      const cnpj = String(corpo.cnpj ?? '');
+      const vendedorEmail = String(corpo.vendedorEmail ?? '').trim();
+      const instanceCode = String(corpo.instanceCode ?? '').trim();
+
+      if (!validarCnpj(cnpj)) {
+        res.status(400).json({ error: 'CNPJ inválido.' });
+        return;
+      }
+      if (!vendedorEmail.includes('@') || instanceCode === '') {
+        res.status(400).json({
+          error: 'Informe o vendedor da conta e o código da instância.',
+        });
+        return;
+      }
+
+      const r = await painel.gerarLinkDeMigracao({ cnpj, vendedorEmail, instanceCode });
+      if (!r.ok) {
+        log.warn(`não deu pra gerar o checklist (…${normalizarCnpj(cnpj).slice(-4)}): ${r.motivo}`);
+        res.status(502).json({ error: 'Não deu pra gerar o link do onboarding.', detail: r.motivo });
+        return;
+      }
+      res.json({ ok: true, publicUrl: r.publicUrl, razaoSocial: r.razaoSocial });
+    })
+  );
+
   router.get(
     '/api/painel/vendedores',
     assincrono(async (_req, res) => {

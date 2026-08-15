@@ -163,6 +163,26 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      // Gera o checklist de onboarding da migração. É a ÚNICA chamada de
+      // escrita que a aba dispara antes de marcar, e só com clique explícito:
+      // cria um registro de verdade no painel.
+      if (msg?.tipo === 'PAINEL_GERAR_MIGRACAO') {
+        const r = await chamar('/api/painel/migracao/link', {
+          method: 'POST',
+          body: JSON.stringify({
+            cnpj: msg.cnpj,
+            vendedorEmail: msg.vendedorEmail,
+            instanceCode: msg.instanceCode,
+          }),
+        });
+        responder(
+          r.ok
+            ? { ok: true, ...r.corpo }
+            : { ok: false, error: r.corpo?.error, detail: r.corpo?.detail }
+        );
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_VENDEDORES') {
         const r = await chamar('/api/painel/vendedores');
         responder(r.ok ? r.corpo : { vendedores: [] });

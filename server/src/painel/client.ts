@@ -604,6 +604,12 @@ interface ApuracaoCnpj {
   dados: DadosCnpj | null;
   /** Só faz sentido quando `dados` é null. */
   motivo?: MotivoSemDados;
+  /**
+   * O que o PAINEL disse sobre o checklist, mesmo quando nenhuma fonte soube a
+   * razão social. Sobe separado de `dados` porque a aba precisa dele pra não
+   * consultar o mesmo endpoint duas vezes na mesma digitação.
+   */
+  temChecklist?: boolean | null;
 }
 
 /**
@@ -707,7 +713,10 @@ export class PainelClient {
    * INSTÂNCIA, não em módulo: o servidor tem um cliente só, e cache global
    * vazaria entre instâncias nos testes.
    */
-  private readonly cacheCnpj = new Map<string, { expiraEm: number; dados: DadosCnpj | null }>();
+  private readonly cacheCnpj = new Map<
+    string,
+    { expiraEm: number; dados: DadosCnpj | null; temChecklist?: boolean | null }
+  >();
   /** Os segredos que este cliente manda pra rede — e que não podem voltar no log. */
   private readonly segredos: readonly string[];
 
@@ -941,9 +950,14 @@ export class PainelClient {
       date: options.data,
       actor_email: options.actorEmail,
     });
-    // Migração é o ÚNICO tipo que exige client_type: base e prospect são
-    // atendidos por pools diferentes. Sem o parâmetro a API devolve 422.
-    if (options.tipo === 'migracao' && options.clientType) {
+    // Migração EXIGE client_type (sem ele a API devolve 422), mas os outros
+    // tipos também o aceitam — medido contra produção. Mandar sempre que a
+    // aba souber é o que garante que a grade consultada seja a MESMA fila em
+    // que a reunião vai ser criada: base e prospect são pools distintos por
+    // contrato, e hoje as grades coincidem só porque estão configurados igual.
+    // Consultar um pool e marcar no outro faria a pessoa escolher um horário
+    // "livre" e levar 409 no fim.
+    if (options.clientType) {
       params.set('client_type', options.clientType);
     }
     const dados = await this.ler(
@@ -1143,6 +1157,63 @@ export class PainelClient {
     return { estado: 'incerto', motivo };
   }
 
+  /**
+   * Gera o checklist de onboarding do CNPJ (`POST /api/retaguarda/migracao/link`).
+   *
+   * POR QUE ISTO EXISTE: o painel recusa marcar migração sem checklist ativo —
+   * "Gere o link do onboarding antes de agendar". Só que, no fluxo real do
+   * time, esse link é gerado DURANTE a migração, não antes. Mandar o atendente
+   * sair da tela pra criar o checklist em outro lugar quebra o atendimento por
+   * uma regra de ordem que não é a dele.
+   *
+   * Então a aba passa a oferecer gerar aqui mesmo, num clique explícito. É
+   * ESCRITA e cria registro de verdade: nunca acontece sozinho.
+   *
+   * Quando já existe um checklist, a API reaproveita (responde 200 em vez de
+   * 201) — então clicar duas vezes não duplica nada.
+   */
+  async gerarLinkDeMigracao(entrada: {
+    cnpj: string;
+    vendedorEmail: string;
+    instanceCode: string;
+  }): Promise<
+    | { ok: true; publicUrl: string | null; razaoSocial: string | null }
+    | { ok: false; motivo: string }
+  > {
+    if (!this.baseUrl || !this.retaguardaToken) {
+      return { ok: false, motivo: 'A retaguarda do painel não está configurada no servidor.' };
+    }
+    if (!validarCnpj(entrada.cnpj)) return { ok: false, motivo: 'CNPJ inválido.' };
+
+    try {
+      const resposta = await this.pedir('POST', '/api/retaguarda/migracao/link', {
+        corpo: {
+          cnpj: normalizarCnpj(entrada.cnpj),
+          vendedor_email: entrada.vendedorEmail,
+          instance_code: entrada.instanceCode,
+        },
+        token: this.retaguardaToken,
+        timeoutMs: this.timeoutMs,
+      });
+      const bruto: unknown = await resposta.json().catch(() => undefined);
+      if (!resposta.ok) {
+        const erro = texto(objeto(bruto)?.error) ?? `HTTP ${resposta.status}`;
+        return { ok: false, motivo: this.censurar(erro) };
+      }
+      const dentro = objeto(objeto(bruto)?.data) ?? objeto(bruto) ?? {};
+      // O checklist recém-criado invalida o que estava guardado.
+      this.cacheCnpj.delete(normalizarCnpj(entrada.cnpj));
+      log.info(`checklist de migração gerado para …${normalizarCnpj(entrada.cnpj).slice(-4)}.`);
+      return {
+        ok: true,
+        publicUrl: texto(dentro.public_url) ?? null,
+        razaoSocial: texto(dentro.razao_social) ?? null,
+      };
+    } catch (err) {
+      return { ok: false, motivo: this.censurar(errorMessage(err)) };
+    }
+  }
+
   /** Vendedores pro seletor da apresentação. `[]` = sem token de retaguarda. */
   async vendedores(): Promise<PessoaPainel[]> {
     if (!this.retaguardaToken) return [];
@@ -1196,18 +1267,33 @@ export class PainelClient {
    * ar": o atendente digita o nome na mão, como fazia antes.
    */
   async dadosDoCnpj(cnpj: string): Promise<DadosCnpj | null> {
+    return (await this.apurarCnpj(cnpj)).dados;
+  }
+
+  /**
+   * Como , mas devolve TAMBÉM o que se sabe do checklist quando
+   * nenhuma fonte soube a razão social.
+   *
+   * Existe porque o  já foi apurado no /migracao/status, e
+   * escondê-lo dentro de  fazia a aba disparar uma SEGUNDA consulta ao
+   * mesmo endpoint, pro mesmo CNPJ, na mesma digitação — justo quando o painel
+   * já está lento (é o caso em que a fonte pública falhou).
+   */
+  async apurarCnpj(cnpj: string): Promise<{ dados: DadosCnpj | null; temChecklist: boolean | null }> {
     const n = normalizarCnpj(cnpj);
     // CNPJ com dígito verificador errado não vira consulta nenhuma: o painel
     // devolveria a empresa ERRADA e a BrasilAPI levaria um pedido à toa a cada
     // tecla enquanto a pessoa ainda está digitando.
-    if (!validarCnpj(n)) return null;
+    if (!validarCnpj(n)) return { dados: null, temChecklist: null };
 
     const emCache = this.cacheCnpj.get(n);
-    if (emCache && emCache.expiraEm > Date.now()) return emCache.dados;
+    if (emCache && emCache.expiraEm > Date.now()) {
+      return { dados: emCache.dados, temChecklist: emCache.temChecklist ?? null };
+    }
 
     const apurado = await this.consultarCnpj(n);
     this.guardarNoCache(n, apurado);
-    return apurado.dados;
+    return { dados: apurado.dados, temChecklist: apurado.temChecklist ?? null };
   }
 
   /** As fontes, na ordem: painel primeiro (é o cadastro), públicas depois. */
@@ -1245,7 +1331,7 @@ export class PainelClient {
         `nenhuma fonte soube a razão social de ${fimDoCnpj(n)} (${publico.estado}) — ` +
           'o campo fica pro atendente.'
       );
-      return { dados: null, motivo: publico.estado };
+      return { dados: null, motivo: publico.estado, temChecklist };
     }
     // `temChecklist` continua vindo do PAINEL, não das fontes públicas: a
     // Receita não sabe nada sobre o checklist de migração da nossa retaguarda.

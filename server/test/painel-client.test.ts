@@ -230,7 +230,13 @@ describe('GET available-slots', () => {
     expect(chamadas[0]?.url).toContain('client_type=base');
   });
 
-  it('os outros tipos NÃO mandam client_type', async () => {
+  it('os outros tipos TAMBÉM mandam client_type quando a aba sabe qual é', async () => {
+    // A grade consultada tem que ser a MESMA fila em que a reunião vai ser
+    // criada. Base e prospect são pools distintos por contrato; hoje as duas
+    // grades vêm iguais (medido em produção), mas consultar um pool e marcar no
+    // outro faria a pessoa escolher um horário "livre" e levar 409 no fim.
+    //
+    // A API aceita o parâmetro nos quatro tipos — também medido.
     const { painel, chamadas } = montar(() => jsonResponse({ available_slots: [] }));
     await painel.horarios({
       tipo: 'implantacao',
@@ -238,6 +244,12 @@ describe('GET available-slots', () => {
       actorEmail: EMAIL,
       clientType: 'base',
     });
+    expect(chamadas[0]?.url).toContain('client_type=base');
+  });
+
+  it('sem clientType, o parâmetro não vai — quem exige é só a migração', async () => {
+    const { painel, chamadas } = montar(() => jsonResponse({ available_slots: [] }));
+    await painel.horarios({ tipo: 'apresentacao', data: '2026-08-20', actorEmail: EMAIL });
     expect(chamadas[0]?.url).not.toContain('client_type');
   });
 

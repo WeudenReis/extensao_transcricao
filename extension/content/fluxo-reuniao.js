@@ -674,8 +674,6 @@
 
       // ── Passo 1: agora ou marcar ─────────────────────────────────────────
       function passoModo() {
-        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
-        iniciar.passoAtual = passoModo;
         api.limpar();
         api.cabecalho('Reunião', null);
         const p = api.p;
@@ -713,8 +711,6 @@
 
       // ── Passo 2: tipo, só o que este atendente pode ──────────────────────
       function passoTipo() {
-        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
-        iniciar.passoAtual = passoTipo;
         api.limpar();
         api.cabecalho('Tipo da reunião', passoModo);
         const p = api.p;
@@ -751,8 +747,6 @@
 
       // ── Passo 3: dados do cliente ────────────────────────────────────────
       function passoDados() {
-        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
-        iniciar.passoAtual = passoDados;
         api.limpar();
         api.cabecalho(TIPOS[estado.tipo].rotulo, passoTipo);
         const p = api.p;
@@ -1042,8 +1036,47 @@
             // `api.aviso`, nunca em rgb/hex.
             const nota = document.createElement('div');
             nota.className = 'cpm-nota';
-            nota.style.color = p.perigo;
             nota.textContent = SEM_CHECKLIST;
+
+            // O link do onboarding é gerado DURANTE a migração, não antes —
+            // mandar a pessoa sair da tela pra criar em outro lugar quebra o
+            // atendimento por uma regra de ordem que não é dela. Então o botão
+            // resolve aqui. É escrita, por isso é um clique explícito.
+            const gerar = api.botao('Gerar o link do onboarding');
+            gerar.style.marginTop = '.5rem';
+            gerar.addEventListener('click', async () => {
+              const vendedor = vendedorConta && vendedorConta.entrada.value;
+              const instanciaValor = instancia.entrada.value.trim();
+              if (!vendedor || instanciaValor === '') {
+                nota.textContent =
+                  'Pra gerar o link, informe antes o vendedor da conta e o código da instância.';
+                return;
+              }
+              gerar.disabled = true;
+              gerar.textContent = 'Gerando…';
+              const r = await pedir('PAINEL_GERAR_MIGRACAO', {
+                cnpj: cnpj.entrada.value,
+                vendedorEmail: vendedor,
+                instanceCode: instanciaValor,
+              }).catch(() => null);
+
+              if (r && r.ok) {
+                // Some o aviso inteiro: o impedimento acabou.
+                avisarChecklist(false);
+                const feito = document.createElement('div');
+                feito.className = 'cpm-nota';
+                feito.textContent = 'Link do onboarding gerado — dá pra agendar a migração.';
+                cnpj.wrap.appendChild(feito);
+                avisoChecklist = feito;
+                return;
+              }
+              gerar.disabled = false;
+              gerar.textContent = 'Gerar o link do onboarding';
+              nota.textContent =
+                (r && (r.detail || r.error)) || 'Não deu pra gerar o link agora. Tente de novo.';
+            });
+
+            nota.appendChild(gerar);
             cnpj.wrap.appendChild(nota);
             avisoChecklist = nota;
           }
@@ -1273,8 +1306,6 @@
       // API não devolve quantas sobram em CADA horário, e número inventado numa
       // tela de agendamento é pior que número nenhum.
       function passoHorario() {
-        // Qual passo está na tela — a remontagem por troca de modo volta aqui.
-        iniciar.passoAtual = passoHorario;
         estiloDoSeletorDeDia();
         api.limpar();
         api.cabecalho('Quando', passoDados);
@@ -1300,7 +1331,16 @@
         const memoria =
           estado.memoriaGrade || (estado.memoriaGrade = { dias: new Map(), maxDate: null });
 
-        const clientType = (estado.cliente && estado.cliente.clientType) || '';
+        // O MESMO client_type que o POST vai usar — não o que está no
+        // formulário. O servidor força 'prospect' em apresentação e 'base' nos
+        // demais quando o campo não existe na tela; consultar a grade com um
+        // valor e marcar com outro deixaria a pessoa escolher um horário
+        // mostrado como livre e levar 409 no fim. Hoje as duas grades vêm
+        // iguais (medido), mas base e prospect são pools distintos por contrato
+        // e podem divergir a qualquer configuração.
+        const clientType =
+          (estado.cliente && estado.cliente.clientType) ||
+          (estado.tipo === 'apresentacao' ? 'prospect' : 'base');
         const chaveDe = (data) => `${estado.tipo}|${data}|${clientType}`;
 
         // Chegar aqui com um horário JÁ escolhido significa que a tentativa
