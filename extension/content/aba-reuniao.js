@@ -180,23 +180,48 @@
    * porque o tamanho e a espessura são nossos, e `currentColor` mantém a cor
    * vindo do `.button--empty` deles.
    */
-  function icone(caminho) {
+  function icone(caminho, opcoes) {
     const NS = 'http://www.w3.org/2000/svg';
+    const preenchido = Boolean(opcoes && opcoes.preenchido);
     const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('viewBox', (opcoes && opcoes.viewBox) || '0 0 24 24');
     svg.setAttribute('width', '20');
     svg.setAttribute('height', '20');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('stroke-linejoin', 'round');
     svg.setAttribute('aria-hidden', 'true');
+    // `currentColor` nos dois casos, e é o que importa: o arquivo original da
+    // seta vinha com `fill="#000000"` cravado, o que a deixaria PRETA no tema
+    // escuro — invisível em cima do painel. Assim ela herda a cor do
+    // `.button--empty` do chatPro e acompanha a troca de tema.
+    if (preenchido) {
+      svg.setAttribute('fill', 'currentColor');
+    } else {
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('stroke', 'currentColor');
+      svg.setAttribute('stroke-width', '2');
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+    }
     const p = document.createElementNS(NS, 'path');
     p.setAttribute('d', caminho);
     svg.appendChild(p);
     return svg;
   }
+
+  /**
+   * Os dois ícones do cabeçalho, da MESMA família (Phosphor, preenchidos).
+   *
+   * A seta veio do arquivo que o usuário escolheu. O X foi trocado pelo
+   * correspondente dela: um ícone de traço ao lado de um preenchido, na mesma
+   * barra e no mesmo tamanho, fica com pesos visuais diferentes — é sutil, mas
+   * é o tipo de coisa que faz a barra parecer montada de retalhos.
+   */
+  const SETA_VOLTAR =
+    'M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,' +
+    '0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z';
+  const X_FECHAR =
+    'M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,' +
+    '128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,' +
+    '128Z';
 
   function el(tag, classe, texto) {
     const n = document.createElement(tag);
@@ -290,7 +315,7 @@
     const esquerda = el('div', '');
     const voltar = el('button', 'button button--empty button--inv');
     voltar.type = 'button';
-    voltar.appendChild(icone('M15 18l-6-6 6-6'));
+    voltar.appendChild(icone(SETA_VOLTAR, { preenchido: true, viewBox: '0 0 256 256' }));
     voltar.setAttribute('aria-label', 'Voltar');
     voltar.hidden = true;
     esquerda.appendChild(voltar);
@@ -299,7 +324,7 @@
 
     const fecharBtn = el('button', 'button button--empty button--inv');
     fecharBtn.type = 'button';
-    fecharBtn.appendChild(icone('M18 6 6 18M6 6l12 12'));
+    fecharBtn.appendChild(icone(X_FECHAR, { preenchido: true, viewBox: '0 0 256 256' }));
     fecharBtn.setAttribute('aria-label', 'Fechar');
     fecharBtn.addEventListener('click', fechar);
     cabecalho.append(esquerda, titulo, fecharBtn);
