@@ -105,13 +105,32 @@
 .copilot--reuniao .cpm-nota{
   padding:var(--padding-xs);border-radius:var(--radius-md);
   background:hsl(var(--gray-10));font-size:.8125rem;line-height:1.45}
+.copilot--reuniao .cpm-caixa{display:flex;align-items:flex-start;gap:.5rem;
+  margin:-4px 0 14px;cursor:pointer}
+.copilot--reuniao .cpm-caixa input{width:auto;height:auto;margin:2px 0 0;flex:0 0 auto}
+.copilot--reuniao .cpm-caixa-rotulo{display:block;font-size:.875rem;
+  color:hsl(var(--gray-80))}
+.copilot--reuniao .cpm-caixa-ajuda{display:block;font-size:.6875rem;
+  color:hsl(var(--gray-50))}
+/* Horários no desenho do painel: caixas altas, duas por linha, com o horário
+   centralizado. O escolhido é PREENCHIDO de verde vivo (--lime-green-50, o
+   mesmo da seleção de dia), não tingido — é o que deixa claro o que está
+   valendo antes de confirmar. */
 .copilot--reuniao .cpm-horarios{
-  display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}
+  display:grid;grid-template-columns:repeat(2,1fr);gap:.625rem}
 .copilot--reuniao .cpm-horario{
-  height:38px;border-radius:var(--radius-sm);border:1px solid hsl(var(--gray-10));
+  min-height:52px;border-radius:var(--radius-md);
+  border:1px solid hsl(var(--gray-10));
   background:hsl(var(--gray-00));color:hsl(var(--gray-80));cursor:pointer;
-  font-family:inherit;font-size:.875rem;transition:all .1s}
-.copilot--reuniao .cpm-horario:hover{border-color:hsl(var(--cool-green-70))}
+  font-family:inherit;font-size:1rem;font-weight:600;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .1s}
+.copilot--reuniao .cpm-horario:hover{
+  border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
+.copilot--reuniao .cpm-horario--escolhido,
+.copilot--reuniao .cpm-horario--escolhido:hover{
+  background:hsl(var(--lime-green-50));border-color:hsl(var(--lime-green-50));
+  color:hsl(var(--gray-00))}
 .copilot--reuniao .cpm-centro{text-align:center;padding:1.5rem .5rem;
   color:hsl(var(--gray-50));font-size:.8125rem}
 
@@ -333,6 +352,21 @@
         return b;
       },
       campo,
+      /**
+       * Caixa de seleção com explicação embaixo — o "Não enviar email" da tela
+       * do painel. Fica fora de `campo()` porque um checkbox não tem rótulo em
+       * cima nem borda; espremê-lo naquele molde deixaria torto.
+       */
+      caixa(rotulo, ajuda) {
+        const wrap = el('label', 'cpm-caixa');
+        const entrada = document.createElement('input');
+        entrada.type = 'checkbox';
+        const textos = el('span', '');
+        textos.appendChild(el('span', 'cpm-caixa-rotulo', rotulo));
+        if (ajuda) textos.appendChild(el('span', 'cpm-caixa-ajuda', ajuda));
+        wrap.append(entrada, textos);
+        return { wrap, entrada };
+      },
       botao,
       el(tag, estilo, texto) {
         const n = document.createElement(tag);

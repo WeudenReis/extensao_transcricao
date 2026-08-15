@@ -60,6 +60,10 @@ async function montarApp(
     comPainel?: boolean;
     /** O POST do painel nunca responde — simula o timeout de 15 s. */
     painelTravaNoPost?: boolean;
+    /** O painel responde 500 no POST — é o que acontece em produção hoje. */
+    painelQuebradoNoPost?: boolean;
+    /** O painel RECUSA por regra de negócio (403, 422): não é pra contornar. */
+    painelRecusa?: number;
   } = {}
 ): Promise<App> {
   const db = new Db(':memory:');
@@ -74,6 +78,14 @@ async function montarApp(
         return Promise.resolve(new Response('fora do ar', { status: 503 }));
       }
       if (u.includes('/api/ext/agenda/meetings')) {
+        if (options.painelQuebradoNoPost) {
+          return Promise.resolve(jsonResponse({ error: 'Erro ao criar reunião.' }, 500));
+        }
+        if (options.painelRecusa) {
+          return Promise.resolve(
+            jsonResponse({ error: 'Só supervisor pode escolher o responsável' }, options.painelRecusa)
+          );
+        }
         if (options.painelTravaNoPost) {
           // Nunca responde — e respeita o abort, como o fetch de verdade faz.
           // Um stub que ignora o signal deixaria o teste pendurado em vez de
@@ -760,6 +772,63 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     expect(corpo.detail).toContain('Confira no painel');
 
     // Nada foi gravado como se tivesse dado certo.
+    expect(app.db.listMeetings()).toHaveLength(0);
+  });
+
+  it('painel com defeito (5xx) NÃO trava o atendimento — cai no plano B avisando', async () => {
+    // O painel está devolvendo 500 em toda criação de reunião (bug conhecido,
+    // documentado em docs/BUG-PAINEL-500.md). O atendente está com o cliente na
+    // linha e o problema não é dele nem do pedido: a reunião acontece pelo
+    // Google Calendar, o cliente recebe o link e o bot grava igual.
+    //
+    // O que NÃO pode é fingir que deu certo — a reunião não está no painel, e
+    // alguém precisa lançá-la lá depois.
+    const app = await montarApp({ comPainel: true, painelQuebradoNoPost: true });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'cs',
+      atendenteEmail: 'quem@marcou.com',
+      cliente: { ...cliente, provedor: 'starter' },
+    });
+
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as {
+      pendenteNoPainel?: boolean;
+      avisoPainel?: string;
+      meetUrl?: string;
+      painelMeetingId?: string;
+    };
+
+    // A reunião ACONTECEU: link criado e mandado pro cliente.
+    expect(corpo.meetUrl).toBe(MEET_URL);
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(true);
+    // E o bot foi armado.
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(true);
+
+    // Mas o aviso é explícito e não há id de painel — ela NÃO está registrada lá.
+    expect(corpo.pendenteNoPainel).toBe(true);
+    expect(corpo.avisoPainel).toContain('NÃO está registrada');
+    expect(corpo.painelMeetingId).toBeUndefined();
+    expect(app.db.listMeetings()[0]?.painel_meeting_id).toBeNull();
+  });
+
+  it('recusa de NEGÓCIO do painel (4xx) continua parando — a regra é deles', async () => {
+    // Diferente do 5xx: aqui o painel entendeu o pedido e disse não (papel sem
+    // direito, checklist faltando). Cair no plano B seria contornar a regra.
+    const app = await montarApp({ comPainel: true, painelRecusa: 403 });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'cs',
+      atendenteEmail: 'quem@marcou.com',
+      cliente: { ...cliente, provedor: 'starter' },
+    });
+
+    expect(res.status).toBe(502);
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(false);
     expect(app.db.listMeetings()).toHaveLength(0);
   });
 

@@ -9,6 +9,7 @@ import { createLogger } from '../log.js';
  *
  *   GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada)
  *   GET /api/painel/onboarding?cnpj=  → dados do cliente na migração
+ *   GET /api/painel/cnpj?cnpj=        → razão social pro formulário se preencher
  *   GET /api/painel/diagnostico       → por que o painel não está respondendo
  *
  * São só repasses pro PainelClient — o contrato da plataforma interna mora lá,
@@ -123,7 +124,40 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
       );
       // 200 com `encontrado:false` em vez de 404: pra extensão, "não achou" e
       // "painel fora do ar" terminam igual — o atendente preenche na mão.
-      res.json({ encontrado: cliente !== null, cliente });
+      //
+      // `temChecklist` é o que a ABA precisa saber antes de deixar alguém
+      // preencher um formulário de migração inteiro: sem checklist ativo o POST
+      // recusa com 422. Mesma leitura de `dadosDoCnpj`: `false` também cobre
+      // "não deu pra confirmar", porque prometer uma migração que o painel vai
+      // recusar é pior que um aviso a mais na tela.
+      res.json({
+        encontrado: cliente !== null,
+        cliente,
+        temChecklist: cliente !== null && cliente.found !== false,
+      });
+    })
+  );
+
+  // Digitou o CNPJ, veio a razão social. Duas fontes atrás disto (o cadastro do
+  // painel e a BrasilAPI), mas a tela não precisa saber de nenhuma delas — só
+  // recebe o nome pronto e `fonte` pra dizer de onde veio.
+  router.get(
+    '/api/painel/cnpj',
+    assincrono(async (req, res) => {
+      const cnpj = String(req.query.cnpj ?? '');
+      const dados = await painel.dadosDoCnpj(cnpj);
+      // 200 SEMPRE, nunca 404: pra tela, "CNPJ ainda incompleto", "não achei" e
+      // "fonte fora do ar" terminam no mesmo lugar — a pessoa digita o nome na
+      // mão. Um 404 aqui viraria erro vermelho no meio de quem está digitando.
+      //
+      // `cnpjValido` separa o único caso que a tela trata diferente: enquanto o
+      // CNPJ não fecha os dígitos verificadores, não há o que avisar — ninguém
+      // foi consultado ainda.
+      res.json({ encontrado: dados !== null, dados, cnpjValido: validarCnpj(cnpj) });
+      log.debug(
+        `consulta de CNPJ (…${normalizarCnpj(cnpj).slice(-4)}): ` +
+          (dados ? `${dados.fonte}, checklist ${dados.temChecklist ? 'ativo' : 'ausente'}` : 'sem resposta')
+      );
     })
   );
 

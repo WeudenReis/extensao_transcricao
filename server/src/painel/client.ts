@@ -471,6 +471,229 @@ export function validarCnpj(bruto: string): boolean {
   return Number(n[12]) === d1 && Number(n[13]) === d2;
 }
 
+// ─── Razão social a partir do CNPJ ───────────────────────────────────────────
+//
+// Digitar o CNPJ tem que trazer a razão social sozinho — o atendente está com o
+// cliente na linha, não com o cartão CNPJ na mão.
+//
+// TRÊS FONTES, nesta ordem:
+//   1. O PAINEL (/api/retaguarda/migracao/status). É o CADASTRO DELES: se a
+//      empresa está lá, é aquele nome que vai aparecer no registro da reunião,
+//      então é ele que o formulário tem que mostrar. De quebra, a mesma resposta
+//      já diz se existe checklist de migração ativo.
+//   2. BrasilAPI (pública, sem chave). Só entra quando o painel não conhece o
+//      CNPJ — prospect que ainda não virou checklist, que é o caso comum.
+//   3. cnpj.ws (pública, sem chave). RESERVA, e só quando a BrasilAPI LIMITOU.
+//
+// POR QUE A RESERVA E AS RETENTATIVAS EXISTEM: a BrasilAPI limita POR IP, e o
+// escritório inteiro sai por um IP só. Quando a cota fecha ela responde 403 (às
+// vezes 429) e volta a responder 200 na tentativa seguinte, segundos depois. O
+// código antigo tratava qualquer resposta não-ok como "não achei", guardava
+// essa falha no cache e o campo NUNCA mais preenchia naquela sessão — foi
+// exatamente o "a razão social não está puxando do CNPJ" que o atendente
+// reportou. Um tropeço de cota não pode virar falha permanente.
+
+/** Base da consulta pública de CNPJ. Sem chave, sem cadastro, sem header. */
+export const BRASILAPI_URL = 'https://brasilapi.com.br/api/cnpj/v1';
+
+/**
+ * Reserva pública, com OUTRA forma de resposta:
+ * `{ razao_social, estabelecimento: { nome_fantasia, ddd1, telefone1 } }`.
+ *
+ * Vale a pena porque as duas contam cota por IP em janelas diferentes: a chance
+ * de as duas fecharem no mesmo instante é bem menor que a de uma fechar.
+ */
+export const CNPJWS_URL = 'https://publica.cnpj.ws/cnpj';
+
+/**
+ * Teto de UMA tentativa numa fonte pública. Ela é ENFEITE do formulário:
+ * preenche um campo que o atendente também sabe preencher na mão. Curto de
+ * propósito — melhor o campo vazio do que a tela parecendo travada esperando
+ * serviço de terceiro.
+ */
+export const BRASILAPI_TIMEOUT_MS = 5_000;
+
+/**
+ * Teto do CONJUNTO: as três tentativas na BrasilAPI, as esperas entre elas e a
+ * ida à reserva somadas. Tem gente com o cliente na linha olhando o campo — o
+ * orçamento é o que garante que retentar não vira tela congelada. Cada tentativa
+ * recebe o que ainda sobra dele, e quando não sobra nada a busca para.
+ */
+export const CNPJ_ORCAMENTO_MS = 4_000;
+
+/**
+ * Espera entre as retentativas do LIMITE, uma por retentativa (logo: 2 extras).
+ * Cresce porque a primeira serve pra janela de cota virar e a segunda pra dar
+ * tempo de a fonte respirar; somadas cabem no orçamento com folga pra reserva.
+ */
+export const ESPERAS_LIMITE_MS: readonly number[] = [400, 1200];
+
+/**
+ * Sucesso vale um DIA: razão social não muda entre a manhã e a tarde, e o campo
+ * dispara a cada digitação (máscara, colar, apagar e redigitar o último dígito).
+ * Sem cache longo, um preenchimento só viraria várias consultas pelo MESMO CNPJ.
+ */
+export const CACHE_CNPJ_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * "Esse CNPJ não existe" (404) é resposta FIRME: a fonte olhou e não achou.
+ * Uma hora de silêncio é justo — o que muda nesse prazo é o cadastro do painel,
+ * e empresa nova na Receita não aparece em minutos.
+ */
+export const CACHE_CNPJ_INEXISTENTE_MS = 60 * 60 * 1000;
+
+/**
+ * Fonte fora do ar, timeout, 5xx: ninguém disse nada, nem que existe nem que
+ * não. O painel pode voltar e o checklist pode ter sido criado agora há pouco —
+ * um minuto já mata a enxurrada de digitação sem congelar o erro.
+ */
+export const CACHE_CNPJ_FALHA_MS = 60_000;
+
+/**
+ * LIMITE de cota. O prazo mais curto de todos DE PROPÓSITO: guardar por muito
+ * tempo o "estou limitado" transforma um tropeço de segundos numa falha que
+ * dura a sessão inteira. Trinta segundos seguram a enxurrada de teclas e já
+ * deixam a próxima digitação tentar de novo.
+ */
+export const CACHE_CNPJ_LIMITE_MS = 30_000;
+
+/** Teto do cache — é um servidor que fica dias no ar, não pode crescer sem fim. */
+export const CACHE_CNPJ_MAX = 500;
+
+export interface DadosCnpj {
+  razaoSocial: string;
+  nomeFantasia?: string;
+  telefone?: string;
+  /** De onde veio o nome — a tela avisa quando não é o cadastro do painel. */
+  fonte: 'painel' | 'brasilapi';
+  /**
+   * O painel CONFIRMOU checklist de migração ativo pra este CNPJ.
+   *
+   * `false` também cobre "não deu pra confirmar" (painel fora do ar, sem token
+   * de retaguarda): as duas terminam igual pra quem está na tela — não dá pra
+   * garantir que a migração vai ser aceita, e o POST devolveria 422 explicando.
+   */
+  temChecklist: boolean;
+}
+
+/** O que uma fonte pública sabe dizer. Sem `fonte`/`temChecklist`: isso é nosso. */
+interface DadosPublicos {
+  razaoSocial: string;
+  nomeFantasia?: string;
+  telefone?: string;
+}
+
+/**
+ * POR QUE "não veio nada" tem três sabores: cada um merece um prazo de cache
+ * diferente, e confundi-los foi o defeito. `limite` ainda pede retentativa;
+ * `nao-existe` não pede nenhuma.
+ */
+type MotivoSemDados =
+  /** 404: a fonte olhou e disse que não existe. Não adianta insistir. */
+  | 'nao-existe'
+  /** 403/429: cota por IP fechada. Volta sozinho em segundos — insista. */
+  | 'limite'
+  /** Timeout, DNS, 5xx, corpo estranho: ninguém disse nada. */
+  | 'indisponivel';
+
+/** Resposta de UMA fonte pública, já interpretada. */
+type RespostaFonte = { estado: 'achou'; dados: DadosPublicos } | { estado: MotivoSemDados };
+
+/** O que `consultarCnpj` apurou — o motivo é o que decide o prazo do cache. */
+interface ApuracaoCnpj {
+  dados: DadosCnpj | null;
+  /** Só faz sentido quando `dados` é null. */
+  motivo?: MotivoSemDados;
+}
+
+/**
+ * 403 e 429 são LIMITE de cota (a BrasilAPI usa 403 pra isso, não só 429); 404
+ * é "não existe". O resto — 5xx, 502 de CDN, corpo que não é JSON — é a fonte
+ * de mau humor: não sabemos nada, e um prazo curto de cache basta.
+ */
+function classificarStatus(status: number): MotivoSemDados {
+  if (status === 403 || status === 429) return 'limite';
+  if (status === 404) return 'nao-existe';
+  return 'indisponivel';
+}
+
+/** Espera simples pro recuo entre retentativas. */
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Telefone de cadastro em formato aproveitável: só dígitos. A BrasilAPI manda
+ * `ddd_telefone_1` como "1130001000", às vezes com máscara, às vezes vazio.
+ * Fora da faixa brasileira (10 a 13 dígitos com o 55) não vale a pena mandar
+ * pro formulário — atrapalha mais do que ajuda.
+ */
+function lerTelefone(v: unknown): string | undefined {
+  const bruto = typeof v === 'number' ? String(v) : typeof v === 'string' ? v : '';
+  const digitos = bruto.replace(/\D/g, '');
+  return digitos.length >= 10 && digitos.length <= 13 ? digitos : undefined;
+}
+
+/** Últimos 4 dígitos bastam pro diagnóstico — CNPJ inteiro é dado de cliente. */
+function fimDoCnpj(cnpjNormalizado: string): string {
+  return `…${cnpjNormalizado.slice(-4)}`;
+}
+
+/**
+ * Mensagem de erro de rede pode carregar a URL que falhou — e a URL da BrasilAPI
+ * tem o CNPJ inteiro dentro. Troca pelo final antes de virar log.
+ */
+function semCnpj(texto: string, cnpjNormalizado: string): string {
+  return texto.split(cnpjNormalizado).join(fimDoCnpj(cnpjNormalizado));
+}
+
+/** Forma da BrasilAPI: tudo na raiz, telefone já com DDD em `ddd_telefone_1`. */
+function lerBrasilApi(bruto: unknown): DadosPublicos | null {
+  const o = objeto(bruto);
+  const razaoSocial = texto(o?.razao_social);
+  if (!razaoSocial) return null;
+  const nomeFantasia = texto(o?.nome_fantasia);
+  const telefone = lerTelefone(o?.ddd_telefone_1);
+  return {
+    razaoSocial,
+    ...(nomeFantasia ? { nomeFantasia } : {}),
+    ...(telefone ? { telefone } : {}),
+  };
+}
+
+/**
+ * Forma da cnpj.ws: a razão social fica na raiz, mas o resto mora em
+ * `estabelecimento`, e o telefone vem PARTIDO em `ddd1` + `telefone1` — juntar
+ * é o que devolve o mesmo formato de dígitos que o formulário já sabe usar.
+ */
+function lerCnpjWs(bruto: unknown): DadosPublicos | null {
+  const o = objeto(bruto);
+  const razaoSocial = texto(o?.razao_social);
+  if (!razaoSocial) return null;
+  const est = objeto(o?.estabelecimento);
+  const nomeFantasia = texto(est?.nome_fantasia);
+  const ddd = texto(est?.ddd1) ?? '';
+  const numero = texto(est?.telefone1) ?? '';
+  const telefone = lerTelefone(`${ddd}${numero}`);
+  return {
+    razaoSocial,
+    ...(nomeFantasia ? { nomeFantasia } : {}),
+    ...(telefone ? { telefone } : {}),
+  };
+}
+
+/**
+ * Quanto tempo esta resposta merece ficar guardada. É AQUI que mora o conserto:
+ * antes, todo "não veio nada" ficava o mesmo tanto, e um limite de cota de
+ * poucos segundos calava o campo pelo prazo de um "não existe".
+ */
+function validadeDoCache(apurado: ApuracaoCnpj): number {
+  if (apurado.dados) return CACHE_CNPJ_MS;
+  if (apurado.motivo === 'nao-existe') return CACHE_CNPJ_INEXISTENTE_MS;
+  if (apurado.motivo === 'limite') return CACHE_CNPJ_LIMITE_MS;
+  return CACHE_CNPJ_FALHA_MS;
+}
+
 export class PainelClient {
   private readonly baseUrl: string | undefined;
   private readonly extAgendaToken: string | undefined;
@@ -479,6 +702,12 @@ export class PainelClient {
   private readonly timeoutMs: number;
   /** operação → instante do último aviso de configuração (anti-enxurrada). */
   private readonly ultimoAviso = new Map<string, number>();
+  /**
+   * CNPJ normalizado → o que as fontes disseram, com validade. Fica NA
+   * INSTÂNCIA, não em módulo: o servidor tem um cliente só, e cache global
+   * vazaria entre instâncias nos testes.
+   */
+  private readonly cacheCnpj = new Map<string, { expiraEm: number; dados: DadosCnpj | null }>();
   /** Os segredos que este cliente manda pra rede — e que não podem voltar no log. */
   private readonly segredos: readonly string[];
 
@@ -958,6 +1187,207 @@ export class PainelClient {
     return o ? (objeto(o.data) ?? o) : null;
   }
 
+  /**
+   * Razão social (e o que mais der) a partir do CNPJ, pro formulário se
+   * preencher sozinho. NUNCA lança: é conveniência, e conveniência que quebra a
+   * tela é pior que campo vazio.
+   *
+   * `null` = ninguém soube dizer. Pra tela isso termina igual a "fonte fora do
+   * ar": o atendente digita o nome na mão, como fazia antes.
+   */
+  async dadosDoCnpj(cnpj: string): Promise<DadosCnpj | null> {
+    const n = normalizarCnpj(cnpj);
+    // CNPJ com dígito verificador errado não vira consulta nenhuma: o painel
+    // devolveria a empresa ERRADA e a BrasilAPI levaria um pedido à toa a cada
+    // tecla enquanto a pessoa ainda está digitando.
+    if (!validarCnpj(n)) return null;
+
+    const emCache = this.cacheCnpj.get(n);
+    if (emCache && emCache.expiraEm > Date.now()) return emCache.dados;
+
+    const apurado = await this.consultarCnpj(n);
+    this.guardarNoCache(n, apurado);
+    return apurado.dados;
+  }
+
+  /** As fontes, na ordem: painel primeiro (é o cadastro), públicas depois. */
+  private async consultarCnpj(n: string): Promise<ApuracaoCnpj> {
+    const doPainel = await this.statusMigracao(n);
+    // Sem resposta do painel a gente NÃO SABE se há checklist — e "não sei"
+    // vira `false`, porque prometer migração que o POST vai recusar é pior.
+    const temChecklist = doPainel !== null && doPainel.found !== false;
+    const razaoDoPainel = texto(doPainel?.razao_social) ?? texto(doPainel?.razaoSocial);
+
+    if (razaoDoPainel) {
+      log.info(
+        `razão social de ${fimDoCnpj(n)} veio do painel ` +
+          `(checklist ${temChecklist ? 'ativo' : 'ausente'}).`
+      );
+      const nomeFantasia = texto(doPainel?.nome_fantasia) ?? texto(doPainel?.nomeFantasia);
+      const telefone = lerTelefone(doPainel?.telefone ?? doPainel?.phone);
+      return {
+        dados: {
+          razaoSocial: razaoDoPainel,
+          ...(nomeFantasia ? { nomeFantasia } : {}),
+          ...(telefone ? { telefone } : {}),
+          fonte: 'painel',
+          temChecklist,
+        },
+      };
+    }
+
+    const publico = await this.consultarFontesPublicas(n);
+    if (publico.estado !== 'achou') {
+      // O motivo sobe junto porque é ele que decide quanto tempo este "não" vai
+      // ficar no cache. Sem ele, um limite de cota de 5 s calaria o campo pelo
+      // prazo de um "não existe".
+      log.info(
+        `nenhuma fonte soube a razão social de ${fimDoCnpj(n)} (${publico.estado}) — ` +
+          'o campo fica pro atendente.'
+      );
+      return { dados: null, motivo: publico.estado };
+    }
+    // `temChecklist` continua vindo do PAINEL, não das fontes públicas: a
+    // Receita não sabe nada sobre o checklist de migração da nossa retaguarda.
+    //
+    // `fonte: 'brasilapi'` vale também pro que veio da reserva: pra tela esse
+    // campo responde UMA pergunta — "este nome é do nosso cadastro ou de
+    // consulta pública?" — e as duas fontes públicas respondem igual. Inventar
+    // um terceiro valor mudaria o contrato com a extensão sem mudar o que ela
+    // faz. Qual das duas respondeu está no log.
+    return { dados: { ...publico.dados, fonte: 'brasilapi', temChecklist } };
+  }
+
+  /**
+   * As fontes PÚBLICAS, com orçamento de tempo próprio.
+   *
+   * A BrasilAPI é a preferida (dado mais completo). Quando ela LIMITA, e só
+   * nesse caso, vale insistir: recuo crescente e, se ainda assim ela não abrir,
+   * a reserva. 404 e fonte fora do ar não ganham retentativa nenhuma — insistir
+   * ali só faria o atendente esperar por um "não" que já veio.
+   */
+  private async consultarFontesPublicas(n: string): Promise<RespostaFonte> {
+    const fim = Date.now() + CNPJ_ORCAMENTO_MS;
+
+    let resultado: RespostaFonte = { estado: 'indisponivel' };
+    for (let tentativa = 0; ; tentativa++) {
+      resultado = await this.buscarNaFonte('BrasilAPI', `${BRASILAPI_URL}/${n}`, n, fim, lerBrasilApi);
+      if (resultado.estado !== 'limite') break;
+      const espera = this.esperaDoLimite(tentativa);
+      // Sem mais retentativas previstas, ou sem orçamento pra esperar e ainda
+      // pedir: parar aqui é melhor que estourar o tempo do clique.
+      if (espera === undefined || fim - Date.now() <= espera) break;
+      log.debug(
+        `BrasilAPI limitou a consulta do CNPJ ${fimDoCnpj(n)}; ` +
+          `nova tentativa em ${espera} ms (${tentativa + 1}ª).`
+      );
+      await esperar(espera);
+    }
+    if (resultado.estado !== 'limite') return resultado;
+
+    // Só o limite chega aqui: a reserva existe pra contornar cota de IP, não
+    // pra dar segunda opinião sobre um CNPJ que a Receita já disse não existir.
+    const reserva = await this.buscarNaFonte('cnpj.ws', `${CNPJWS_URL}/${n}`, n, fim, lerCnpjWs);
+    if (reserva.estado === 'achou') return reserva;
+    // A reserva falhando NÃO vira 'nao-existe': quem sabia responder estava
+    // limitado, então continuamos sem saber — e 'limite' é o prazo curto de
+    // cache, o que faz a próxima digitação tentar de novo em vez de desistir.
+    return resultado;
+  }
+
+  /**
+   * Quanto esperar antes da retentativa `tentativa` (0 = a primeira delas).
+   * `undefined` = acabaram as retentativas.
+   *
+   * O `timeoutMs` da instância também limita: nos testes ele é injetado curto,
+   * e 1,6 s de sono real por caso deixaria a suíte lenta à toa. Em produção ele
+   * vale 15 s e não muda nada — e um recuo maior que o teto de uma tentativa
+   * não faria sentido de qualquer forma.
+   */
+  private esperaDoLimite(tentativa: number): number | undefined {
+    const espera = ESPERAS_LIMITE_MS[tentativa];
+    return espera === undefined ? undefined : Math.min(espera, this.timeoutMs);
+  }
+
+  /**
+   * Uma tentativa numa fonte PÚBLICA de CNPJ.
+   *
+   * Fica fora do `pedir()` de propósito, e isto não é estilo: o `pedir()` cola a
+   * base do painel na URL e — pior — manda `Authorization: Bearer <token>`. São
+   * outros hosts; o token é NOSSO e não tem por que sair de casa. Aqui só vai
+   * `Accept`.
+   */
+  private async buscarNaFonte(
+    nome: string,
+    url: string,
+    n: string,
+    fimDoOrcamento: number,
+    ler: (bruto: unknown) => DadosPublicos | null
+  ): Promise<RespostaFonte> {
+    const restante = fimDoOrcamento - Date.now();
+    if (restante <= 0) {
+      log.debug(`sem orçamento de tempo pra consultar a ${nome} pelo CNPJ ${fimDoCnpj(n)}.`);
+      return { estado: 'indisponivel' };
+    }
+    // Em teste o timeoutMs injetado é pequeno; em produção vale o teto curto da
+    // fonte pública, e nunca mais do que ainda sobra do orçamento.
+    const timeoutMs = Math.min(this.timeoutMs, BRASILAPI_TIMEOUT_MS, restante);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resposta = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (!resposta.ok) {
+        descartarCorpo(resposta);
+        const motivo = classificarStatus(resposta.status);
+        // Nada disto é defeito nosso (CNPJ novo, cota do IP, fonte oscilando):
+        // fica em debug pra não poluir o log do atendimento.
+        log.debug(
+          `${nome} respondeu HTTP ${resposta.status} (${motivo}) pro CNPJ ${fimDoCnpj(n)}.`
+        );
+        return { estado: motivo };
+      }
+      const bruto: unknown = await resposta.json().catch(() => undefined);
+      const dados = ler(bruto);
+      // 200 sem razão social: a fonte respondeu e não tem o nome. Vale como
+      // "não existe" — insistir devolveria o mesmo corpo vazio.
+      if (!dados) return { estado: 'nao-existe' };
+      // A razão social NÃO entra no log — é dado de cliente, igual ao CNPJ.
+      // Saber a origem já basta pra explicar de onde o campo se preencheu.
+      log.info(`razão social do CNPJ ${fimDoCnpj(n)} veio da ${nome}.`);
+      return { estado: 'achou', dados };
+    } catch (err) {
+      // Timeout, DNS, rede caída: a tela segue viva sem a razão social. A
+      // mensagem do erro costuma trazer a URL, e a URL tem o CNPJ inteiro.
+      log.warn(
+        `${nome} não respondeu pelo CNPJ ${fimDoCnpj(n)}: ` +
+          semCnpj(this.censurar(errorMessage(err)), n)
+      );
+      return { estado: 'indisponivel' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Grava no cache com o prazo que o RESULTADO merece — ver CACHE_CNPJ_LIMITE_MS. */
+  private guardarNoCache(cnpj: string, apurado: ApuracaoCnpj): void {
+    // Map guarda ordem de inserção: o mais antigo é o primeiro da fila e sai
+    // quando o teto estoura. Reinserir move a chave pro fim, então o delete
+    // antes do set mantém a ordem honesta.
+    this.cacheCnpj.delete(cnpj);
+    if (this.cacheCnpj.size >= CACHE_CNPJ_MAX) {
+      const maisAntigo = this.cacheCnpj.keys().next();
+      if (!maisAntigo.done) this.cacheCnpj.delete(maisAntigo.value);
+    }
+    this.cacheCnpj.set(cnpj, {
+      expiraEm: Date.now() + validadeDoCache(apurado),
+      dados: apurado.dados,
+    });
+  }
+
   // ─── Encanamento ───────────────────────────────────────────────────────────
 
   /** GET que nunca lança: leitura falhando não pode derrubar o atendimento. */
@@ -1000,9 +1430,16 @@ export class PainelClient {
         // A diferença está no corpo: com `error`, quem falou foi o painel.
         if (resposta.status === 404 && formato !== 'nao-json') {
           const bruto: unknown = await resposta.json().catch(() => undefined);
-          const doPainel = texto(objeto(bruto)?.error);
-          if (doPainel) {
-            log.debug(`painel respondeu 404 em ${operacao}: ${this.censurar(doPainel)}`);
+          const corpo = objeto(bruto);
+          const doPainel = texto(corpo?.error);
+          // `found:false` é a OUTRA cara do "não achei" de negócio: é assim que
+          // o /migracao/status responde CNPJ sem checklist, e sem `error`
+          // nenhum. Tratar isso como rota errada faria cada prospect digitado
+          // gritar "confira PAINEL_API_URL" — mandando consertar o que está bom.
+          if (doPainel || (corpo && 'found' in corpo)) {
+            log.debug(
+              `painel respondeu 404 em ${operacao}: ${doPainel ? this.censurar(doPainel) : 'não encontrado'}`
+            );
             return undefined;
           }
           this.avisarConfiguracao(operacao, mensagemRotaInexistente(caminho));

@@ -90,6 +90,21 @@ export const clienteSchema = z.object({
   clientType: z.enum(['base', 'prospect']).optional(),
   /** Implantação e CS não sobem sem isto — o painel devolve 422. */
   provedor: z.enum(['starter', 'cloud_api', 'api_disparos']).optional(),
+  /**
+   * E-mail do cliente. É por ele que o painel manda o convite com `.ics` — sem
+   * ele o cliente só fica sabendo pelo WhatsApp.
+   */
+  email: z.string().email('E-mail do cliente inválido.').optional(),
+  /** `true` quando o atendente marcou "não enviar e-mail" (vira skip_email). */
+  semEmail: z.boolean().optional(),
+  /**
+   * `cs_reason` — só o CS usa, e ele EXIGE. Não tem padrão razoável:
+   * "treinamento de IA" e "retenção" são atendimentos diferentes, e escolher
+   * por conta própria classificaria a reunião errado no relatório do painel.
+   */
+  csReason: z
+    .enum(['treinamento_ia', 'treinamento_chat', 'treinamento_oficial', 'retencao', 'duvidas'])
+    .optional(),
 });
 
 export type DadosCliente = z.infer<typeof clienteSchema>;
@@ -143,8 +158,18 @@ export const iniciarSchema = z.object({
    * sair no nome de quem conduziu, em vez do usuário único do `.env`.
    */
   atendenteUserId: z.string().max(120).nullish(),
-  /** Vendedor escolhido no seletor da APRESENTAÇÃO agendada. */
+  /**
+   * `vendedor_email` — o vendedor DONO da conta. A migração exige; os outros
+   * tipos aceitam. Não confundir com quem vai conduzir a reunião.
+   */
   vendedorEmail: z.string().email('vendedorEmail deve ser um e-mail válido.').nullish(),
+  /**
+   * `assignee_email` — quem vai CONDUZIR. A aba só manda quando o `/me` disse
+   * que a pessoa pode escolher (`can_choose_assignee`); mandar sem isso volta
+   * 403 do painel ("Só supervisor pode escolher o responsável"). Quem manda a
+   * regra é o painel, então aqui a gente só repassa.
+   */
+  assigneeEmail: z.string().email('assigneeEmail deve ser um e-mail válido.').nullish(),
   cliente: clienteSchema.nullish(),
 }).superRefine((corpo, ctx) => {
   // Implantação, CS e migração são reuniões SOBRE uma conta que já existe (ou
@@ -329,6 +354,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const atendenteEmail = parsed.data.atendenteEmail ?? null;
       const atendenteUserId = parsed.data.atendenteUserId ?? null;
       const vendedorEmail = parsed.data.vendedorEmail ?? null;
+      const assigneeEmail = parsed.data.assigneeEmail ?? null;
       const cliente = parsed.data.cliente ?? null;
 
       // ─── 1. A reunião nasce NO PAINEL ────────────────────────────────
@@ -345,14 +371,20 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       // O caminho do Google Calendar continua vivo como PLANO B, pra quando o
       // painel não está configurado (ou a reunião não tem os dados que ele
       // exige) — é o que mantém o botão útil em ambiente de teste.
-      let meet: { meetUrl: string; eventId: string; meetingCode: string | null };
+      let meet: { meetUrl: string; eventId: string; meetingCode: string | null } | null = null;
       let painelMeetingId: string | null = null;
       let responsavel = atendenteEmail;
+      /**
+       * Preenchido quando o painel respondeu 5xx. A reunião acontece pelo plano
+       * B, mas NÃO está registrada lá — e a resposta precisa dizer isso.
+       */
+      let painelIndisponivel: string | null = null;
 
       const dadosDoPainel = montarDadosDoPainel({
         tipo,
         atendenteEmail,
         vendedorEmail,
+        assigneeEmail,
         cliente,
         contato,
         quando,
@@ -409,19 +441,52 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
 
           // 409 = horário ocupado entre consultar a grade e confirmar. É
           // esperado, e a tela precisa saber pra recarregar os horários.
-          res.status(status === 409 ? 409 : 502).json({
-            error:
-              status === 409
-                ? 'Esse horário acabou de ser ocupado.'
-                : 'O painel não conseguiu marcar a reunião.',
-            detail: errorMessage(err),
-            recarregarHorarios: status === 409,
-          });
-          return;
+          if (status === 409) {
+            res.status(409).json({
+              error: 'Esse horário acabou de ser ocupado.',
+              detail: errorMessage(err),
+              recarregarHorarios: true,
+            });
+            return;
+          }
+
+          // 5xx: o painel está com problema DELE. Recusa de negócio (4xx) é
+          // outra história e cai no `else` abaixo — ali a reunião não deve
+          // mesmo acontecer, e insistir seria contornar a regra deles.
+          //
+          // Aqui não: o atendente está com o cliente na linha e o problema não
+          // é dele nem do pedido. Então criamos o link por conta própria
+          // (Google Calendar), mandamos pro cliente e gravamos igual — e
+          // marcamos a reunião como PENDENTE DE REGISTRO no painel, pra
+          // ninguém achar que ela está lá quando não está.
+          //
+          // O que NÃO fazemos: fingir que deu certo. A resposta diz, com todas
+          // as letras, que a reunião não entrou no painel e precisa ser
+          // lançada lá depois.
+          if (status >= 500 || status === 0) {
+            log.warn(
+              `painel respondeu ${status} — caindo no plano B (link pelo Google). ` +
+                'A reunião NÃO fica registrada no painel.'
+            );
+            painelIndisponivel = errorMessage(err);
+          } else {
+            res.status(502).json({
+              error: 'O painel não conseguiu marcar a reunião.',
+              detail: errorMessage(err),
+            });
+            return;
+          }
         }
-      } else {
+      }
+
+      if (!meet) {
         // PLANO B: link na agenda de quem clicou, via Google Calendar.
-        if (quando && tipo === 'apresentacao') responsavel = vendedorEmail ?? atendenteEmail;
+        // `assigneeEmail` primeiro: quando a aba pôde escolher quem conduz, foi
+        // ali que a escolha aconteceu. O `vendedorEmail` fica como segunda
+        // opção porque, no fluxo antigo, era ele que carregava essa escolha.
+        if (quando && tipo === 'apresentacao') {
+          responsavel = assigneeEmail ?? vendedorEmail ?? atendenteEmail;
+        }
         try {
           const accessToken = await contas.accessToken(deviceId);
           meet = await criarLink({
@@ -567,6 +632,19 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         // A reunião EXISTE no painel. É o que impede a tela de oferecer
         // "tentar de novo" e duplicar um compromisso real.
         ...(painelMeetingId ? { painelMeetingId, naoRepetir: true } : {}),
+        // O painel estava fora: a reunião aconteceu, mas NÃO está lá. Dizer
+        // isso é o que separa "resolvi" de "escondi" — alguém precisa lançar
+        // essa reunião no painel depois, e a tela tem que pedir isso.
+        ...(painelIndisponivel
+          ? {
+              pendenteNoPainel: true,
+              avisoPainel:
+                'O painel de reuniões não respondeu, então a reunião foi criada por aqui: ' +
+                'o link já existe e o cliente foi avisado, mas ela NÃO está registrada no ' +
+                'painel. Lance manualmente por lá.',
+              detalhePainel: painelIndisponivel,
+            }
+          : {}),
         ...(mensagemFalhou
           ? {
               avisoMensagem:
@@ -641,11 +719,15 @@ export function codigoDoMeet(url: string): string | null {
  * - migração distingue `base` de `prospect`: são pools diferentes
  * - apresentação sempre vira `prospect` no banco do painel
  * - implantação e CS exigem `provedor`
+ * - CS exige `cs_reason`
+ * - migração exige `vendedor_email` (e checklist ativo pro CNPJ, que quem
+ *   confere é o painel)
  */
 export function montarDadosDoPainel(entrada: {
   tipo: string | null;
   atendenteEmail: string | null;
   vendedorEmail: string | null;
+  assigneeEmail?: string | null;
   cliente: DadosCliente | null;
   contato: string | null;
   quando: Date | null;
@@ -676,12 +758,28 @@ export function montarDadosDoPainel(entrada: {
     ...(cliente?.cnpj ? { cnpj: cliente.cnpj } : {}),
     ...(cliente?.instancia ? { instanceCode: cliente.instancia } : {}),
     ...(cliente?.provedor ? { provedor: cliente.provedor } : {}),
+    ...(cliente?.csReason ? { csReason: cliente.csReason } : {}),
     ...(entrada.vendedorEmail ? { vendedorEmail: entrada.vendedorEmail } : {}),
+    // Vai EXATAMENTE quando a aba mandou — e ela só manda quando o `/me`
+    // liberou. Preencher aqui por conta própria (com o atendente, por exemplo)
+    // daria 403 pra todo mundo que não é supervisor.
+    ...(entrada.assigneeEmail ? { assigneeEmail: entrada.assigneeEmail } : {}),
+    // É o e-mail que faz o painel mandar o convite com `.ics` pro cliente.
+    ...(cliente?.email ? { clientEmail: cliente.email } : {}),
+    // Só quando é verdade: mandar `false` é ruído, e o painel já trata a
+    // ausência como "pode mandar".
+    ...(cliente?.semEmail ? { skipEmail: true } : {}),
   };
 
   // Implantação e CS não sobem sem provedor — o painel devolve 422.
   if ((tipo === 'implantacao' || tipo === 'cs') && !base.provedor) return null;
 
+  // `cs_reason` (CS) e `vendedor_email` (migração) NÃO ganham uma trava dessas,
+  // de propósito. Quem exige é o painel, e quem pede na tela é o formulário da
+  // aba — que agora pede os dois. Repetir a regra aqui como desvio pro plano B
+  // criaria a pior das saídas pra um pedido malformado: uma reunião que existe
+  // pro cliente e não existe no painel, em silêncio. Sem a trava, o painel
+  // recusa com 422 dizendo qual campo falta, e a aba mostra essa frase.
   return base;
 }
 

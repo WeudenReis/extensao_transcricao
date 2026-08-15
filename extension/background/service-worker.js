@@ -104,6 +104,9 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
             ...(msg.atendenteUserId ? { atendenteUserId: msg.atendenteUserId } : {}),
             ...(msg.cliente ? { cliente: msg.cliente } : {}),
             ...(msg.vendedorEmail ? { vendedorEmail: msg.vendedorEmail } : {}),
+            // `assignee_email` é o único campo que a aba só manda com permissão
+            // do painel: quem não pode escolher o responsável leva 403.
+            ...(msg.assigneeEmail ? { assigneeEmail: msg.assigneeEmail } : {}),
           }),
         });
         if (r.ok) {
@@ -170,6 +173,35 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         const cnpj = String(msg.cnpj || '').replace(/\D/g, '');
         const r = await chamar(`/api/painel/onboarding?cnpj=${encodeURIComponent(cnpj)}`);
         responder(r.ok ? r.corpo : { encontrado: false });
+        return;
+      }
+
+      // Razão social pelo CNPJ, pra aba preencher o campo Empresa sozinha
+      // quando ele está vazio.
+      //
+      // Aqui NADA é erro: a rota é nova (servidor antigo devolve 404), o CNPJ
+      // pode não estar em lugar nenhum, e o painel pode estar fora do ar. Os
+      // três terminam no mesmo lugar — `encontrado:false`, campo continua vazio,
+      // a pessoa digita. Deixar um desses virar erro na tela transformaria uma
+      // conveniência em obstáculo no meio do formulário.
+      if (msg?.tipo === 'PAINEL_CNPJ') {
+        const cnpj = String(msg.cnpj || '').replace(/\D/g, '');
+        if (cnpj.length !== 14) {
+          responder({ encontrado: false });
+          return;
+        }
+        const r = await chamar(`/api/painel/cnpj?cnpj=${encodeURIComponent(cnpj)}`);
+        if (!r.ok) {
+          responder({ encontrado: false, semRota: r.status === 404 });
+          return;
+        }
+        // O corpo manda no `encontrado`: se a rota já responde `false`, é isso
+        // que vale — o espalhamento vem depois do padrão de propósito.
+        responder(
+          r.corpo && typeof r.corpo === 'object'
+            ? { encontrado: true, ...r.corpo }
+            : { encontrado: false }
+        );
         return;
       }
 
