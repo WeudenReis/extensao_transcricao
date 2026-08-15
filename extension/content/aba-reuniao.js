@@ -105,6 +105,18 @@
 .copilot--reuniao .cpm-nota{
   padding:var(--padding-xs);border-radius:var(--radius-md);
   background:hsl(var(--gray-10));font-size:.8125rem;line-height:1.45}
+/* Os dois botões de ícone do cabeçalho. O .button--empty do chatPro tem
+   padding pensado pra texto (0 .5em), o que deixa o ícone descentralizado e o
+   alvo de clique estreito. Aqui vira um quadrado de 40px com o ícone no meio —
+   a mesma proporção dos ícones do Copiloto. */
+.copilot--reuniao .copilot-header .button--empty{
+  width:40px;padding:0;flex:0 0 auto}
+.copilot--reuniao .copilot-header .button--empty svg{display:block}
+/* Voltar escondido continua ocupando o lugar: sem isso o h1 sai do centro
+   quando a seta some, e o título "pula" a cada passo. */
+.copilot--reuniao .copilot-header .button--empty[hidden]{
+  display:inline-flex;visibility:hidden}
+
 .copilot--reuniao .cpm-caixa{display:flex;align-items:flex-start;gap:.5rem;
   margin:-4px 0 14px;cursor:pointer}
 .copilot--reuniao .cpm-caixa input{width:auto;height:auto;margin:2px 0 0;flex:0 0 auto}
@@ -158,6 +170,33 @@
   }
 
   // ─── Peças, com as classes deles ───────────────────────────────────────────
+
+  /**
+   * Ícone de 20px no traço, como os do Copiloto.
+   *
+   * Antes eram os caracteres "‹" e "✕": eles herdam a métrica da fonte, saem
+   * pequenos, desalinhados na vertical e com peso diferente do resto da barra —
+   * é o que fazia a seta de voltar parecer um erro de digitação. SVG resolve
+   * porque o tamanho e a espessura são nossos, e `currentColor` mantém a cor
+   * vindo do `.button--empty` deles.
+   */
+  function icone(caminho) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '20');
+    svg.setAttribute('height', '20');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', caminho);
+    svg.appendChild(p);
+    return svg;
+  }
 
   function el(tag, classe, texto) {
     const n = document.createElement(tag);
@@ -251,7 +290,7 @@
     const esquerda = el('div', '');
     const voltar = el('button', 'button button--empty button--inv');
     voltar.type = 'button';
-    voltar.textContent = '‹';
+    voltar.appendChild(icone('M15 18l-6-6 6-6'));
     voltar.setAttribute('aria-label', 'Voltar');
     voltar.hidden = true;
     esquerda.appendChild(voltar);
@@ -260,7 +299,7 @@
 
     const fecharBtn = el('button', 'button button--empty button--inv');
     fecharBtn.type = 'button';
-    fecharBtn.textContent = '✕';
+    fecharBtn.appendChild(icone('M18 6 6 18M6 6l12 12'));
     fecharBtn.setAttribute('aria-label', 'Fechar');
     fecharBtn.addEventListener('click', fechar);
     cabecalho.append(esquerda, titulo, fecharBtn);
