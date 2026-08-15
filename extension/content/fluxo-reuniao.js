@@ -335,6 +335,23 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
 
+  /**
+   * `2026-08-17` + `09:00` → `2026-08-17T09:00:00-03:00`.
+   *
+   * O offset é obrigatório no servidor, e o motivo é concreto: sem ele a data
+   * é lida como UTC e o cliente recebe um horário três horas antes do
+   * combinado. Sai do próprio navegador (`getTimezoneOffset`), então acompanha
+   * horário de verão e quem estiver em outro fuso.
+   */
+  function comFuso(data, hora) {
+    const minutos = -new Date(`${data}T${hora}:00`).getTimezoneOffset();
+    const sinal = minutos >= 0 ? '+' : '-';
+    const abs = Math.abs(minutos);
+    const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+    const mm = String(abs % 60).padStart(2, '0');
+    return `${data}T${hora}:00${sinal}${hh}:${mm}`;
+  }
+
   function diaLegivel(iso) {
     const [a, m, d] = iso.split('-').map(Number);
     const data = new Date(a, m - 1, d);
@@ -432,9 +449,13 @@
 .copilot--reuniao .cpm-secao{margin-top:1rem}
 
 /* ── A tira ── */
+/* Sem barra de rolagem: numa coluna de 450px ela ocupa espaço, some e volta
+   conforme o número de dias, e ficou feia na tela. Os dias entram em GRADE e
+   quebram linha sozinhos; quem quiser mais dias usa o botão, que é explícito.
+   O overflow fica escondido em vez de rolável pelo mesmo motivo. */
 .copilot--reuniao .cpm-dias{
-  display:flex;gap:.5rem;overflow-x:auto;padding:2px 2px .5rem;
-  scroll-behavior:smooth;scrollbar-width:thin}
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(4.25rem,1fr));
+  gap:.5rem;padding:2px}
 /* O dia escolhido é PREENCHIDO de verde vivo, com texto escuro — é assim no
    painel. Um tingido translúcido some no meio dos outros; o preenchido é o que
    deixa claro qual dia está valendo.
@@ -442,7 +463,7 @@
    O verde é --lime-green-50 (167 100% 40%), não --cool-green-70: aquele é o
    teal apagado dos botões secundários, e o painel usa o vivo na seleção. */
 .copilot--reuniao .cpm-dia{
-  flex:0 0 auto;min-width:4.25rem;padding:.5rem .375rem .4375rem;
+  min-width:0;padding:.5rem .375rem .4375rem;
   display:flex;flex-direction:column;align-items:center;gap:.0625rem;
   border:1px solid hsl(var(--gray-10));border-radius:var(--radius-md);
   background:hsl(var(--gray-00));color:hsl(var(--gray-80));
@@ -484,8 +505,7 @@
    diferentes uma da outra. */
 
 @media (prefers-reduced-motion:reduce){
-  .copilot--reuniao .cpm-esqueleto{animation:none}
-  .copilot--reuniao .cpm-dias{scroll-behavior:auto}}
+  .copilot--reuniao .cpm-esqueleto{animation:none}}
 `;
     document.head.appendChild(st);
   }
@@ -1632,7 +1652,10 @@
               b.classList.add('cpm-horario--escolhido');
               estado.data = data;
               estado.hora = hora;
-              confirmar(`${data}T${hora}:00`);
+              // COM o fuso do navegador. O servidor exige offset de propósito:
+              // "2026-08-17T09:00:00" solto seria lido como UTC, e o cliente
+              // receberia "reunião às 6h" — três horas antes do combinado.
+              confirmar(comFuso(data, hora));
             });
             grelha.appendChild(b);
           }
