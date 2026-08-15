@@ -35,6 +35,18 @@
     ['api_disparos', 'API de disparos'],
   ];
   /**
+   * Plano Oficial contratado (`oficial_plan`) — só a migração usa, e é
+   * opcional. Os valores vieram do próprio 422 da API, não de suposição:
+   * "expected one of oficial_1|oficial_2|oficial_3|base_sem_creditos".
+   * Os créditos nos rótulos são os da tela do painel.
+   */
+  const PLANOS_OFICIAL = [
+    ['oficial_1', 'Oficial 1 — 500 créditos'],
+    ['oficial_2', 'Oficial 2 — 1000 créditos'],
+    ['oficial_3', 'Oficial 3 — 2000 créditos'],
+    ['base_sem_creditos', 'Sem adição de créditos — Base'],
+  ];
+  /**
    * Motivos que o CS aceita (`cs_reason`). Sem um deles a API devolve 422 — e
    * até hoje a pessoa só descobria isso depois de preencher o formulário todo.
    */
@@ -810,6 +822,7 @@
         let clientType = null;
         let motivoCs = null;
         let vendedorConta = null;
+        let planoOficial = null;
 
         if (precisaCadastro) {
           cnpj = api.campo('CNPJ *', { placeholder: '00.000.000/0000-00' });
@@ -999,10 +1012,19 @@
           // é o vendedor DONO da conta, que o painel usa pra atribuição
           // comercial. Sem ele a API devolve 422.
           if (estado.tipo === 'migracao') {
-            vendedorConta = api.campo('Vendedor da conta', { select: true });
-            opcoesDo(vendedorConta, [], 'Selecione o vendedor');
+            vendedorConta = api.campo('Especialista em vendas responsável *', { select: true });
+            opcoesDo(vendedorConta, [], 'Selecione o especialista em vendas');
             carregarVendedores(vendedorConta, estado.vendedorEmail);
             api.corpo.appendChild(vendedorConta.wrap);
+
+            // Plano Oficial: OPCIONAL na API (o 422 não reclama da ausência) e
+            // opcional na tela do painel também. Fica sem exigência aqui.
+            planoOficial = api.campo('Plano Oficial contratado', { select: true });
+            opcoesDo(planoOficial, PLANOS_OFICIAL, 'Selecione o plano');
+            if (jaTinha && jaTinha.oficialPlan) {
+              planoOficial.entrada.value = jaTinha.oficialPlan;
+            }
+            api.corpo.appendChild(planoOficial.wrap);
           }
 
           // ── A consulta do CNPJ ─────────────────────────────────────────
@@ -1297,6 +1319,9 @@
             if (provedor) estado.cliente.provedor = provedor.entrada.value;
             if (clientType) estado.cliente.clientType = clientType.entrada.value;
             if (motivoCs) estado.cliente.csReason = motivoCs.entrada.value;
+            if (planoOficial && planoOficial.entrada.value) {
+              estado.cliente.oficialPlan = planoOficial.entrada.value;
+            }
             if (emailCliente && !semEmail.entrada.checked) {
               estado.cliente.email = emailCliente.entrada.value.trim();
             }
@@ -1964,9 +1989,41 @@
           // consultar e confirmar. Voltar pra grade é a saída certa.
           if (resposta.recarregarHorarios) {
             api.acao('Escolher outro horário', passoHorario);
-          } else {
-            api.acao('Tentar de novo', passoDados);
+            return;
           }
+
+          // Checklist de migração faltando. "Tentar de novo" aqui falharia
+          // igual — o que resolve é gerar o onboarding, e o link é gerado
+          // DURANTE a migração no fluxo do time. Então o botão é esse, na
+          // própria tela do erro, em vez de mandar a pessoa embora.
+          const textoDoErro = `${msg || ''} ${detalhe || ''}`;
+          const faltaChecklist = /checklist/i.test(textoDoErro) && estado.tipo === 'migracao';
+          if (faltaChecklist && estado.cliente && estado.cliente.cnpj) {
+            const btn = api.acao('Gerar o link do onboarding', async () => {
+              btn.disabled = true;
+              btn.textContent = 'Gerando…';
+              const r = await pedir('PAINEL_GERAR_MIGRACAO', {
+                cnpj: estado.cliente.cnpj,
+                vendedorEmail: estado.vendedorEmail || '',
+                instanceCode: estado.cliente.instancia || '',
+              }).catch(() => null);
+
+              if (r && r.ok) {
+                // Gerado: repete a marcação, que agora tem o que faltava.
+                confirmar(quandoIso);
+                return;
+              }
+              btn.disabled = false;
+              btn.textContent = 'Gerar o link do onboarding';
+              nota(
+                (r && (r.detail || r.error)) || 'Não deu pra gerar o link agora.',
+                'perigo'
+              );
+            });
+            return;
+          }
+
+          api.acao('Tentar de novo', passoDados);
           return;
         }
 

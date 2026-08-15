@@ -98,6 +98,11 @@ export const clienteSchema = z.object({
   /** `true` quando o atendente marcou "não enviar e-mail" (vira skip_email). */
   semEmail: z.boolean().optional(),
   /**
+   * Plano Oficial contratado — só a migração usa, e é opcional. Os valores
+   * saíram do próprio 422 da API, não de suposição.
+   */
+  oficialPlan: z.enum(['oficial_1', 'oficial_2', 'oficial_3', 'base_sem_creditos']).optional(),
+  /**
    * `cs_reason` — só o CS usa, e ele EXIGE. Não tem padrão razoável:
    * "treinamento de IA" e "retenção" são atendimentos diferentes, e escolher
    * por conta própria classificaria a reunião errado no relatório do painel.
@@ -766,6 +771,7 @@ export function montarDadosDoPainel(entrada: {
     ...(entrada.assigneeEmail ? { assigneeEmail: entrada.assigneeEmail } : {}),
     // É o e-mail que faz o painel mandar o convite com `.ics` pro cliente.
     ...(cliente?.email ? { clientEmail: cliente.email } : {}),
+    ...(cliente?.oficialPlan ? { oficialPlan: cliente.oficialPlan } : {}),
     // Só quando é verdade: mandar `false` é ruído, e o painel já trata a
     // ausência como "pode mandar".
     ...(cliente?.semEmail ? { skipEmail: true } : {}),
