@@ -683,6 +683,11 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
     expect(reuniao?.atendente_email).toBe('distribuido@time.com');
     // E o elo com o painel, sem o qual a transcrição não teria pra onde voltar.
     expect(reuniao?.painel_meeting_id).toBe('reuniao-no-painel-1');
+
+    // chatpro_session_id: é ELE que faz o resumo da reunião voltar pro
+    // atendimento certo quando a transcrição fica pronta. Sem ele o painel só
+    // conhece essa ligação se alguém disparar um template pela tela.
+    expect((criacao?.body as Record<string, unknown>).chatpro_session_id).toBe(SESSION);
   });
 
   it('mensagem falhando com a reunião JÁ criada no painel NÃO oferece repetir', async () => {

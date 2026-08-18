@@ -393,6 +393,10 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         cliente,
         contato,
         quando,
+        // A conversa de onde a reunião saiu. É por ela que o resumo volta pro
+        // atendimento certo quando a transcrição fica pronta — o painel pede
+        // pra mandar sempre, e aqui a gente sempre sabe.
+        chatproSessionId: sessionId,
       });
 
       if (painel?.estaConfigurado() && dadosDoPainel) {
@@ -736,6 +740,8 @@ export function montarDadosDoPainel(entrada: {
   cliente: DadosCliente | null;
   contato: string | null;
   quando: Date | null;
+  /** Conversa do chatPro — o elo que devolve o resumo ao atendimento. */
+  chatproSessionId?: string | null;
 }): DadosNovaReuniao | null {
   const { tipo, atendenteEmail, cliente } = entrada;
   if (!ehTipoReuniao(tipo) || !atendenteEmail) return null;
@@ -765,6 +771,7 @@ export function montarDadosDoPainel(entrada: {
     ...(cliente?.provedor ? { provedor: cliente.provedor } : {}),
     ...(cliente?.csReason ? { csReason: cliente.csReason } : {}),
     ...(entrada.vendedorEmail ? { vendedorEmail: entrada.vendedorEmail } : {}),
+    ...(entrada.chatproSessionId ? { chatproSessionId: entrada.chatproSessionId } : {}),
     // Vai EXATAMENTE quando a aba mandou — e ela só manda quando o `/me`
     // liberou. Preencher aqui por conta própria (com o atendente, por exemplo)
     // daria 403 pra todo mundo que não é supervisor.

@@ -120,6 +120,16 @@ export interface DadosNovaReuniao {
   oficialPlan?: string | undefined;
   clientEmail?: string | undefined;
   skipEmail?: boolean | undefined;
+  /**
+   * A conversa do chatPro de onde a reunião foi marcada.
+   *
+   * É o elo que faz o RESUMO da reunião voltar pro atendimento certo quando a
+   * transcrição fica pronta. Sem ele o painel só conhece essa ligação se
+   * alguém disparar um template pela tela — o que não acontece na maioria das
+   * conversas. A doc do painel pede: 'mande sempre que a extensão souber qual
+   * conversa está aberta'. E ela sempre sabe.
+   */
+  chatproSessionId?: string | undefined;
 }
 
 /** Erro de escrita no painel — carrega o status pra quem chama decidir. */
@@ -1012,6 +1022,7 @@ export class PainelClient {
       ['oficial_plan', dados.oficialPlan],
       ['client_email', dados.clientEmail],
       ['skip_email', dados.skipEmail],
+      ['chatpro_session_id', dados.chatproSessionId],
     ];
     for (const [chave, valor] of opcionais) {
       if (valor !== undefined && valor !== '') corpo[chave] = valor;
