@@ -1,97 +1,119 @@
-# `POST /api/ext/agenda/meetings` devolve 500 em toda tentativa
+# `POST /api/ext/agenda/meetings` → 500 em toda tentativa
 
 > Para quem cuida do `painel-reunioes.chatpro.com.br`.
-> Testado em 14/08/2026 contra produção, com o `EXT_AGENDA_TOKEN`.
+> Reproduzido em **18/08/2026, 23h15 UTC**, contra produção, com o
+> `EXT_AGENDA_TOKEN` — na versão que responde `uptime: 2061s` no healthcheck.
 
 ## O sintoma
-
-Toda tentativa de criar reunião responde:
 
 ```
 HTTP 500
 {"error":"Erro ao criar reunião."}
 ```
 
-A **validação passa** (não é 422 — os campos estão certos). O erro acontece
-depois, na criação em si.
+**A validação passa.** Não é 422: o corpo está correto. O erro acontece depois,
+na criação em si.
 
-## O que já foi descartado
+## O que já foi descartado — cada linha é uma tentativa real
 
-Cada linha abaixo é uma tentativa real, com a resposta que veio:
+| Variável testada | Valores | Resultado |
+|---|---|---|
+| Usuário (`actor_email`) | `weuden.filho@` (n2), `anna.souza@` (vendedor) | 500 nos dois |
+| Tipo | `cs`, `migracao`, `apresentacao` | 500 nos três |
+| Data | +1 dia útil, +3 dias, +20 dias | 500 em todas |
+| Horário | 09:00, 11:00, 15:00, 16:00, 17:00 (todos confirmados livres) | 500 em todos |
+| `client_type` | `base`, `prospect` | 500 nos dois |
+| Payload | **idêntico ao exemplo da collection** | 500 |
 
-| Tentativa | Resposta |
-|---|---|
-| CS, 03/09 17:00, `client_type: base` | 500 |
-| CS, 17/08 09:00 (outro dia e hora) | 500 |
-| CS, `client_type: prospect` | 500 |
-| CS com `cnpj` + `instance_code` | 500 |
-| CS sem `cs_reason` | **422** — pediu o enum (validação viva) |
-| Migração sem `vendedor_email` | **422** — pediu o campo |
-| Migração sem checklist | **422** — "Gere o link do onboarding antes" |
-| Migração **com** checklist ativo | 500 |
-| `assignee_email` sendo n2 | **403** — "Só supervisor pode escolher" |
+O último é o que fecha a questão do nosso lado: o corpo abaixo é o exemplo
+`POST meetings — apresentação` da collection de vocês, com o próximo dia útil e
+o primeiro horário que o `available-slots` devolveu como livre.
 
-Ou seja: **as validações todas funcionam.** O 500 só aparece quando o pedido
-está completo e correto — que é justamente o caminho de produção.
-
-## O que funciona na mesma API, com o mesmo token
-
-| Endpoint | Resultado |
-|---|---|
-| `GET /api/healthcheck` | `{"ok":true}`, Supabase em 55 ms |
-| `GET /api/ext/agenda/me` | devolve `actor` + `capabilities` |
-| `GET /api/ext/agenda/available-slots` | 7 a 9 horários por dia, `max_date` +3 meses |
-| `GET /api/retaguarda/vendedores` | 11 vendedores ativos |
-| `POST /api/retaguarda/migracao/link` | **201**, criou o checklist e devolveu a razão social |
-
-O `POST` da retaguarda **funciona**. Só o `POST` de reunião falha — o que
-sugere algo no caminho específico dele (distribuição? criação do evento no
-Calendar? geração do Meet? notificação do Slack?), não infraestrutura.
-
-## Como reproduzir
+## Reprodução
 
 ```bash
-curl -X POST https://painel-reunioes.chatpro.com.br/api/ext/agenda/meetings \
+# 1. confirma que o horário está livre
+curl -s -H "Authorization: Bearer $EXT_AGENDA_TOKEN" \
+  "https://painel-reunioes.chatpro.com.br/api/ext/agenda/available-slots?type=apresentacao&date=2026-08-19&actor_email=anna.souza@chatpro.com.br"
+# → {"available_slots":["09:00","10:00",...],"max_date":"2026-11-16"}
+
+# 2. marca no primeiro horário livre
+curl -s -X POST https://painel-reunioes.chatpro.com.br/api/ext/agenda/meetings \
   -H "Authorization: Bearer $EXT_AGENDA_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "type":"cs",
-    "actor_email":"weuden.filho@chatpro.com.br",
-    "client_name":"TESTE (APAGAR)",
-    "company_name":"chatPro Teste",
-    "phone":"(62) 99999-8888",
-    "client_type":"base",
-    "provedor":"starter",
-    "cs_reason":"duvidas",
-    "scheduled_date":"2026-09-03",
-    "scheduled_time":"17:00",
+    "type":"apresentacao",
+    "actor_email":"anna.souza@chatpro.com.br",
+    "client_name":"João Silva (TESTE)",
+    "company_name":"Silva Comércio",
+    "phone":"(11) 99999-9999",
+    "client_type":"prospect",
+    "scheduled_date":"2026-08-19",
+    "scheduled_time":"09:00",
     "skip_email":true
   }'
+# → HTTP 500 {"error":"Erro ao criar reunião."}
 ```
 
-## O que ajudaria
+## O que FUNCIONA, com o mesmo token e no mesmo minuto
 
-O corpo do 500 não diz nada além de "Erro ao criar reunião." — **o log do
-servidor é o único lugar onde a causa existe.** Um `error.message` ou um código
-no corpo já resolveria o diagnóstico daqui.
+| Endpoint | Resultado |
+|---|---|
+| `GET /api/healthcheck` | `{"ok":true}`, Supabase em 275 ms |
+| `GET /api/ext/agenda/me` | devolve `actor` + `capabilities` |
+| `GET /api/ext/agenda/available-slots` | 7 a 9 horários por dia, `max_date` +3 meses |
+| `GET /api/retaguarda/vendedores` | 11 vendedores ativos |
+| `POST /api/retaguarda/migracao/link` | **201** — criou o checklist e devolveu a razão social |
 
-## Sobre o `skip_email`
+As validações do próprio endpoint também respondem certo, o que mostra que a
+rota está viva e o token vale:
 
-Todos os testes acima usaram `"skip_email": true` e nomearam o cliente como
-`TESTE (APAGAR)`, seguindo a orientação do README da collection. **Nenhuma
-reunião foi criada** (todas falharam), então não há nada a limpar do lado de
-vocês — exceto **um checklist de migração** que foi gerado no caminho:
+| Tentativa | Resposta |
+|---|---|
+| CS sem `cs_reason` | **422** com o enum completo |
+| Migração sem `vendedor_email` | **422** pedindo o campo |
+| Migração sem checklist | **422** "Gere o link do onboarding antes" |
+| `assignee_email` sendo n2 | **403** "Só supervisor pode escolher" |
+| `oficial_plan` inválido | **422** com as quatro opções |
 
-```
-CNPJ 11.222.333/0001-81 · id e7bf0af1-5d7d-4901-9632-a5c3ebb65802
-```
+Ou seja: **só o caminho de sucesso falha.** Tudo que recusa, recusa
+corretamente.
 
-Esse é o CNPJ de teste do próprio environment do Postman de vocês, mas se
-quiserem limpar, é esse.
+## Hipótese
 
-## Enquanto isso
+O `POST /api/retaguarda/migracao/link` — que também escreve — **funciona**. O
+que o `POST /meetings` faz a mais é criar o evento no Google Calendar, gerar o
+Meet, mandar o `.ics` e avisar no Slack.
 
-A extensão está pronta e validada até o `POST`: identifica o atendente, lê as
-capacidades do `/me`, mostra só os tipos que o papel permite, carrega a grade
-real de horários e monta o corpo correto por tipo. O `POST` é o único passo que
-não completa — e ele depende de vocês.
+E o `/api/healthcheck` cobre **só `app` e `supabase`**. Se a credencial do
+Google (ou do Slack) estiver faltando ou vencida no `.env.production`, o
+healthcheck continua verde e a criação de reunião falha exatamente assim.
+
+Vale conferir nesta ordem:
+
+1. O log do servidor no instante de uma tentativa — é o único lugar onde a
+   causa existe hoje.
+2. As credenciais do Google Calendar no `.env.production` da VM.
+3. Se o `lib/google/meet.ts` consegue criar um espaço isolado, fora do fluxo de
+   reunião.
+
+## Dois pedidos pequenos, independentes do bug
+
+**O corpo do 500 não diz nada.** `{"error":"Erro ao criar reunião."}` é a
+mesma resposta para credencial vencida, cota do Google, Slack fora e erro de
+banco. Um `code` ou o `error.message` no corpo economizaria toda esta
+investigação.
+
+**O 422 de campo desconhecido vem com `details: {}` vazio.** Descobrimos quais
+campos existem por tentativa e erro, um a um — `cc_emails`, `observacoes`,
+`oficial_legado` e mais nove. Dizer qual campo sobrou resolveria em uma
+requisição.
+
+## Enquanto isso, o atendimento não para
+
+A extensão detecta o 5xx e cria a reunião por conta própria (link pelo Google
+Calendar do atendente), manda pro cliente e avisa **na tela, em vermelho**, que
+a reunião **não** ficou registrada no painel e precisa ser lançada manualmente.
+
+Recusa de negócio (4xx) **não** entra nesse desvio — aí a regra é de vocês e
+contorná-la seria errado.
