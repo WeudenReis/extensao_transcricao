@@ -2262,6 +2262,12 @@
         // A sala abriu, mas o bot não entrou: sem isto, a pessoa só descobre
         // que não há transcrição quando for procurar por ela.
         if (resposta.avisoGravacao) nota(String(resposta.avisoGravacao), 'perigo');
+        // Quando quem grava é o painel, dizer isso importa: a transcrição vai
+        // aparecer LÁ, não aqui, e quem for procurar no lugar errado conclui
+        // que a reunião não foi gravada.
+        else if (resposta.gravadoPeloPainel) {
+          nota('A gravação e a transcrição ficam no painel de reuniões.');
+        }
 
         // ── O resumo pra colar na conversa ─────────────────────────────────
         //

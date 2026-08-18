@@ -64,6 +64,8 @@ async function montarApp(
     painelQuebradoNoPost?: boolean;
     /** O painel RECUSA por regra de negócio (403, 422): não é pra contornar. */
     painelRecusa?: number;
+    /** Quem grava é o painel — este servidor não pode criar bot nenhum. */
+    gravacaoPeloPainel?: boolean;
   } = {}
 ): Promise<App> {
   const db = new Db(':memory:');
@@ -161,6 +163,7 @@ async function montarApp(
       painel,
       recall: new RecallClient({ apiKey: 'k', fetchImpl }),
       botName: 'chatPro (gravando)',
+      gravacaoPeloPainel: options.gravacaoPeloPainel === true,
       criarLink: (opcoes: CriarMeetOptions) => {
         linkOpcoes.push(opcoes);
         return options.linkFalha
@@ -778,6 +781,66 @@ describe('fluxo do time comercial (tipo, atendente, cliente, responsável)', () 
 
     // Nada foi gravado como se tivesse dado certo.
     expect(app.db.listMeetings()).toHaveLength(0);
+  });
+
+  it('com a gravação do PAINEL, nenhum bot nosso é criado', async () => {
+    // O painel implementou o ciclo inteiro do Recall (cron, webhook, download,
+    // comentário). Os dois lados ligados poriam DOIS bots na mesma sala: dois
+    // robôs entrando na frente do cliente e a hora cobrada em dobro.
+    const app = await montarApp({ gravacaoPeloPainel: true });
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(res.status).toBe(201);
+    // O que mais importa: NADA foi pedido ao Recall.
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(false);
+
+    const corpo = (await res.json()) as { gravadoPeloPainel?: boolean; avisoGravacao?: string };
+    expect(corpo.gravadoPeloPainel).toBe(true);
+    // E NÃO aparece "o bot não entrou" — seria alarme falso em toda reunião.
+    expect(corpo.avisoGravacao).toBeUndefined();
+  });
+
+  it('a reunião continua registrada aqui, só sem bot', async () => {
+    // A linha local não é opcional: é ela que o convite agendado cancela se a
+    // reunião for desmarcada, e é ela que aparece no painel de revisão.
+    const app = await montarApp({ gravacaoPeloPainel: true });
+
+    await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    const reuniao = app.db.listMeetings()[0];
+    expect(reuniao).toBeDefined();
+    expect(reuniao?.bot_id).toBeNull();
+    expect(reuniao?.session_id).toBe(SESSION);
+    // 'done', não 'created': 'created' é reunião esperando um bot NOSSO, e a
+    // reconciliação iria atrás dele pra sempre.
+    expect(reuniao?.status).toBe('done');
+  });
+
+  it('sem a gravação do painel, o bot volta a ser nosso', async () => {
+    const app = await montarApp();
+
+    await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      tipo: 'apresentacao',
+      atendenteEmail: 'quem@marcou.com',
+      cliente,
+    });
+
+    expect(app.chamadas.some((c) => c.url.endsWith('/bot'))).toBe(true);
   });
 
   it('painel com defeito (5xx) NÃO trava o atendimento — cai no plano B avisando', async () => {

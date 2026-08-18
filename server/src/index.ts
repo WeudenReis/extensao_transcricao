@@ -205,6 +205,7 @@ function main(): void {
       recall,
       botName: config.recallBotName,
       painel,
+      gravacaoPeloPainel: config.gravacaoPeloPainel,
     })
   );
   app.use(createPainelInternoRouter({ painel }));
@@ -262,9 +263,22 @@ function main(): void {
   eventQueue.startWorker();
   eventQueue.poke(); // retoma eventos pendentes que sobraram de antes do restart
   audioPipeline.resumePending(); // retoma capturas 'pending'/'transcribing' interrompidas
-  recallQueue.startWorker();
+  // A fila do Recall só faz sentido se o bot for NOSSO. Com o painel gravando
+  // não chega webhook nenhum aqui, e o worker ficaria acordando a cada 15 s pra
+  // varrer uma tabela que não recebe mais nada.
+  //
+  // Não é remoção: o dia em que a gravação voltar pra cá, é uma variável de
+  // ambiente. O que fica desligado é o motor, não o código.
+  if (config.gravacaoPeloPainel) {
+    log.info(
+      'gravação é do PAINEL: não criamos bot, e a fila do Recall fica parada. ' +
+        'Os dois lados ligados poriam dois robôs na mesma sala.'
+    );
+  } else {
+    recallQueue.startWorker();
+    recallQueue.resumePending(); // webhooks do Recall que ficaram pendentes
+  }
   enviosAgendados.startWorker();
-  recallQueue.resumePending(); // webhooks do Recall que ficaram pendentes
 
   // Pré-carrega o modelo de STT em segundo plano (não bloqueia o boot).
   if (stt?.warmup) {

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { Db } from '../db.js';
+import type { Db, MeetingRow } from '../db.js';
 import type { RecallClient } from '../recall/client.js';
 import type { ChatproClient } from '../chatpro/client.js';
 import {
@@ -262,12 +262,20 @@ export interface ReunioesRouterDeps {
    */
   painel?: PainelClient;
   botName: string;
+  /**
+   * `true` = a GRAVAÇÃO É DO PAINEL. Este servidor não cria bot nenhum.
+   *
+   * Os dois lados ligados poriam DOIS bots na mesma sala — dois robôs entrando
+   * na frente do cliente, e a hora do Recall cobrada em dobro.
+   */
+  gravacaoPeloPainel?: boolean;
   /** Injetável nos testes — evita bater no Google de verdade. */
   criarLink?: typeof criarLinkDoMeet;
 }
 
 export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
   const { db, contas, chatpro, recall, botName } = deps;
+  const gravacaoPeloPainel = deps.gravacaoPeloPainel === true;
   const painel =
     deps.painel ??
     new PainelClient({ baseUrl: undefined, extAgendaToken: undefined });
@@ -584,9 +592,24 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         }
       }
 
-      // 3. Bot na sala. Falhar aqui não desfaz o atendimento — a reunião fica
-      //    registrada como 'failed' no painel e dá pra reenviar de lá.
-      const r = await criarReuniao(
+      // 3. Bot na sala — SE a gravação for nossa.
+      //
+      // Quando o painel grava, ele tem o próprio cron que cria o bot ~15 min
+      // antes, sobrevive a reagendamento e garante um bot por reunião. Criar
+      // outro aqui poria dois robôs na mesma sala. Então nem chamamos: a linha
+      // local nasce só como registro do que foi marcado.
+      const r = gravacaoPeloPainel
+        ? registrarSemBot(db, {
+            meetingUrl: meet.meetUrl,
+            sessionId,
+            chatproInstanceId: instanceId,
+            atendenteEmail: responsavel,
+            tipo,
+            clienteJson: cliente ? JSON.stringify(cliente) : null,
+            painelMeetingId,
+            atendenteUserId,
+          })
+        : await criarReuniao(
         { db, recall, botName },
         {
           meetingUrl: meet.meetUrl,
@@ -601,10 +624,10 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
           clienteJson: cliente ? JSON.stringify(cliente) : null,
           // O elo com o painel: é por ele que a transcrição volta pra lá no
           // fim da reunião. Sem isto, grava e não tem pra onde ir.
-          painelMeetingId,
-          atendenteUserId,
-        }
-      );
+            painelMeetingId,
+            atendenteUserId,
+          }
+        );
 
       // 4. Agendada: o convite entra na fila DEPOIS da reunião existir, pra
       //    carregar o meeting_id (é ele que cancela o convite se a reunião for
@@ -662,7 +685,10 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
                 'senão vira reunião duplicada.',
             }
           : {}),
+        // Quem grava. A tela usa isto pra dizer a verdade em vez de prometer
+        // uma gravação que não é nossa.
         gravando: r.ok,
+        gravadoPeloPainel: gravacaoPeloPainel,
         // A extensão usa isto pra não abrir a sala de uma reunião que é depois.
         agendadaPara: quando ? quando.toISOString() : null,
         quandoTexto: quando ? formatarQuando(quando) : null,
@@ -671,6 +697,9 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         ...(r.ok
           ? { meeting: resumirReuniao(r.meeting) }
           : {
+              // Só é aviso quando a gravação era NOSSA e falhou. Com o painel
+              // gravando não há bot daqui pra dar errado, e mostrar "o bot não
+              // entrou" seria alarme falso em toda reunião.
               avisoGravacao: quando
                 ? `A reunião foi marcada, mas o bot não foi agendado: ${r.erro}`
                 : `A reunião abriu, mas o bot não entrou: ${r.erro}`,
@@ -708,6 +737,54 @@ function escapar(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/**
+ * Grava a reunião SEM criar bot — o caminho de quando quem grava é o painel.
+ *
+ * A linha local continua existindo, e existe por três motivos concretos: o
+ * convite agendado precisa de um `meeting_id` pra ser cancelado se a reunião
+ * for desmarcada; o painel de revisão mostra o que foi marcado por aqui; e o
+ * dia em que a gravação voltar pra cá não haverá um buraco no histórico.
+ *
+ * Devolve o mesmo formato de `criarReuniao` pra quem chama não precisar saber
+ * qual dos dois caminhos rodou.
+ */
+function registrarSemBot(
+  db: Db,
+  entrada: {
+    meetingUrl: string;
+    sessionId: string;
+    chatproInstanceId: string | null;
+    atendenteEmail: string | null;
+    tipo: string | null;
+    clienteJson: string | null;
+    painelMeetingId: string | null;
+    atendenteUserId: string | null;
+  }
+): { ok: true; criada: true; meeting: MeetingRow } {
+  const meeting = db.createMeeting({
+    id: randomUUID(),
+    botId: null,
+    sessionId: entrada.sessionId,
+    meetingUrl: entrada.meetingUrl,
+    meetingCode: codigoDoMeet(entrada.meetingUrl),
+    // 'done' e não 'created': 'created' é a reunião esperando um bot NOSSO, e
+    // o worker de reconciliação iria atrás dele pra sempre. Aqui não há bot a
+    // esperar — a gravação acontece do outro lado.
+    status: 'done',
+    botName: null,
+    chatproInstanceId: entrada.chatproInstanceId,
+    atendenteEmail: entrada.atendenteEmail,
+    tipo: entrada.tipo,
+    clienteJson: entrada.clienteJson,
+    painelMeetingId: entrada.painelMeetingId,
+    atendenteUserId: entrada.atendenteUserId,
+  });
+  // A transcrição virá do painel, não daqui: marcar como entregue evita que a
+  // fila fique cutucando uma reunião que nunca vai ter transcript nosso.
+  db.setMeetingChatproStatus(meeting.id, 'skipped-no-url', 0);
+  return { ok: true, criada: true, meeting };
 }
 
 /** Código `abc-defg-hij` do link — é ele que casa a reunião com o bot. */

@@ -106,6 +106,20 @@ const envSchema = z.object({
   // Todas opcionais: sem elas o servidor sobe normalmente e o caminho Recall
   // fica desligado (ver recallConfigWarnings abaixo).
   RECALL_API_KEY: z.string().optional(),
+  /**
+   * 'true' = quem grava é o PAINEL, não este servidor.
+   *
+   * O painel implementou o ciclo inteiro do Recall (cron que cria o bot,
+   * webhook com Svix, download da transcrição e o comentário no chatPro), e os
+   * dois lados ligados ao mesmo tempo colocariam DOIS bots na mesma sala: dois
+   * robôs entrando na frente do cliente e a hora cobrada em dobro.
+   *
+   * Existe como chave própria em vez de ser deduzido de "RECALL_API_KEY vazia"
+   * porque as duas coisas significam o oposto na tela: chave faltando é defeito
+   * de instalação e merece alarme; painel gravando é o desenho combinado e não
+   * merece aviso nenhum.
+   */
+  GRAVACAO_PELO_PAINEL: z.string().optional(),
   RECALL_REGION: z.enum(RECALL_REGIONS).default('us-west-2'),
   RECALL_WEBHOOK_SECRET: z.string().optional(),
   // Sobrescreve a base derivada da região. Existe pra teste de ponta a ponta
@@ -212,6 +226,8 @@ export interface Config {
   captureRetentionDays: number;
   autoSendVoreo: boolean;
   recallApiKey: string | undefined;
+  /** Quem grava é o painel — este servidor não cria bot. */
+  gravacaoPeloPainel: boolean;
   recallRegion: RecallRegion;
   recallWebhookSecret: string | undefined;
   recallBaseUrl: string | undefined;
@@ -347,6 +363,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     captureRetentionDays: e.CAPTURE_RETENTION_DAYS,
     autoSendVoreo: e.AUTO_SEND_VOREO === 'true',
     recallApiKey: e.RECALL_API_KEY,
+    gravacaoPeloPainel: e.GRAVACAO_PELO_PAINEL === 'true',
     recallRegion: e.RECALL_REGION,
     recallWebhookSecret: e.RECALL_WEBHOOK_SECRET,
     recallBaseUrl: e.RECALL_BASE_URL,
