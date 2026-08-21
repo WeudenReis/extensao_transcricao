@@ -85,6 +85,35 @@ O `/webhooks/pubsub` precisa de HTTPS público: em local, túnel via ngrok ou Cl
 - **Nunca logar o transcript inteiro** — transcrição de reunião é dado sensível de cliente (LGPD). Retenção local mínima; para a Voreo, só o payload necessário.
 - SQLite sempre com prepared statements; rate limiting no webhook e nas rotas `/api/*`.
 
+## Contexto e Custo (medido neste repositório)
+
+Antes de varrer o repositório com `grep`, leia **`docs/MAPA.md`** — índice
+gerado de 63 arquivos com o que cada um resolve e o que exporta. Regerar:
+`node scripts/gerar-mapa.mjs`.
+
+Antes de sondar a API do painel por tentativa e erro, leia
+**`docs/CAMPOS-DO-PAINEL.md`** — o schema já foi mapeado campo a campo,
+inclusive os doze nomes que **não** existem.
+
+Regras que saíram de medição, não de gosto:
+
+| Faça | Em vez de | Por quê |
+|---|---|---|
+| `npx vitest run --reporter=dot 2>&1 \| tail -4` | a saída inteira | 55 mil chars contra 367 mil |
+| `grep -n` + `sed -n 'X,Yp'` | `cat` no arquivo | `fluxo-reuniao.js` tem 104 mil chars |
+| `npx tsc --noEmit 2>&1 \| head -5` | a lista completa | os primeiros erros bastam |
+| Exigir formato curto do subagente | prosa livre | cada workflow devolveu 600 mil+ tokens |
+
+A suíte roda com `LOG_LEVEL=warn` (`server/vitest.config.ts`): 2.481 das 2.611
+linhas de log eram `[INFO]` da aplicação e não diziam se o teste passou. `warn`
+e `error` continuam ligados porque há testes que os verificam.
+
+**O que NÃO cortar:** o porquê de uma decisão, o risco identificado, a correção
+de uma premissa errada, o resultado real de um teste, e os comentários do
+código. Cada comentário longo deste repo corresponde a um bug que já aconteceu.
+
+Skills: `.claude/skills/economia` (contexto) e `.claude/skills/enxuto` (código).
+
 ## Protocolos de Skills
 
 | Situação | Skill | Arquivo |
