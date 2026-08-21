@@ -478,7 +478,9 @@ describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
     // O link já vai resolvido, mas o {quando} fica CRU de propósito: quem
     // resolve é o worker, no instante do envio. Congelar aqui mandaria
     // "amanhã às 10h" pro cliente no próprio dia da reunião.
-    expect(fila[0]?.message).toContain('Reunião marcada para');
+    // A mensagem é um RESUMO, não um link solto: quem recebe "segue o link" no
+    // meio de um atendimento não sabe de que reunião se trata nem quando.
+    expect(fila[0]?.message).toContain('*Reunião marcada*');
     expect(fila[0]?.message).toContain('{quando}');
     expect(fila[0]?.message).toContain(MEET_URL);
     // O horário da REUNIÃO viaja junto — é a partir dele que o worker escreve

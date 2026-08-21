@@ -364,6 +364,29 @@
     return `${data}T${hora}:00${sinal}${hh}:${mm}`;
   }
 
+  /**
+   * "hoje às 14h", "ontem às 9h", "12/08 às 15h30" — o formato curto da lista.
+   * Data por extenso em cada linha empurraria o resto pra fora numa coluna de
+   * 450px.
+   */
+  function quandoLegivel(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    const hora = d.getMinutes() === 0 ? `${d.getHours()}h` : `${d.getHours()}h${p(d.getMinutes())}`;
+    const hoje = new Date();
+    const dia = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+    if (dia(d) === dia(hoje)) return `hoje às ${hora}`;
+    const ontem = new Date(hoje);
+    ontem.setDate(ontem.getDate() - 1);
+    if (dia(d) === dia(ontem)) return `ontem às ${hora}`;
+    const amanha = new Date(hoje);
+    amanha.setDate(amanha.getDate() + 1);
+    if (dia(d) === dia(amanha)) return `amanhã às ${hora}`;
+    return `${p(d.getDate())}/${p(d.getMonth() + 1)} às ${hora}`;
+  }
+
   function diaLegivel(iso) {
     const [a, m, d] = iso.split('-').map(Number);
     const data = new Date(a, m - 1, d);
@@ -739,6 +762,43 @@
             passoTipo();
           }
         );
+
+        mostrarUltimas();
+      }
+
+      /**
+       * As últimas reuniões marcadas por quem está com a aba aberta.
+       *
+       * Fica DEPOIS das duas ações, e não antes: quem abre a aba quer marcar
+       * uma reunião — a lista é referência ("já marquei pra esse cliente?"),
+       * não o assunto principal.
+       *
+       * Carrega em segundo plano e só aparece se vier alguma: uma seção vazia
+       * escrita "nenhuma reunião" ocuparia a tela sem dizer nada útil.
+       */
+      async function mostrarUltimas() {
+        if (!estado.eu || !estado.eu.email) return;
+        const r = await pedir('PAINEL_MINHAS_REUNIOES', { email: estado.eu.email }).catch(
+          () => null
+        );
+        const reunioes = (r && r.reunioes) || [];
+        if (reunioes.length === 0) return;
+        // A pessoa pode ter avançado de passo enquanto a lista carregava.
+        if (iniciar.passoAtual !== passoModo) return;
+
+        const secao = api.secao('Últimas que você marcou');
+        for (const reuniao of reunioes) {
+          const quem = reuniao.cliente || reuniao.empresa || 'Cliente';
+          const rotuloTipo = TIPOS[reuniao.tipo] ? TIPOS[reuniao.tipo].rotulo : '';
+          const partes = [quandoLegivel(reuniao.quando), rotuloTipo].filter(Boolean);
+          // Reunião que não chegou ao painel precisa ser lançada lá — e a
+          // pessoa só descobre isso se a lista contar.
+          if (!reuniao.noPainel) partes.push('fora do painel');
+
+          api.cartao(secao, quem, partes.join(' · '), () => {
+            if (reuniao.meetUrl) window.open(reuniao.meetUrl, '_blank', 'noopener');
+          });
+        }
       }
 
       // ── Passo 2: tipo, só o que este atendente pode ──────────────────────

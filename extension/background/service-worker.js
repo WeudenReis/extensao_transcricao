@@ -183,6 +183,16 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'PAINEL_MINHAS_REUNIOES') {
+        const r = await chamar(
+          `/api/painel/minhas-reunioes?email=${encodeURIComponent(msg.email || '')}`
+        );
+        // Lista vazia quando falha: as últimas reuniões são um atalho, e um
+        // erro aqui não pode impedir de marcar uma nova.
+        responder(r.ok ? r.corpo : { reunioes: [] });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_VENDEDORES') {
         const r = await chamar('/api/painel/vendedores');
         responder(r.ok ? r.corpo : { vendedores: [] });

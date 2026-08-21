@@ -208,7 +208,7 @@ function main(): void {
       gravacaoPeloPainel: config.gravacaoPeloPainel,
     })
   );
-  app.use(createPainelInternoRouter({ painel }));
+  app.use(createPainelInternoRouter({ painel, db }));
   app.use(
     createChatproHookRouter({
       db,

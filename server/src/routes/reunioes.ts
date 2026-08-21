@@ -45,14 +45,46 @@ import { createLogger, errorMessage } from '../log.js';
 
 const log = createLogger('routes/reunioes');
 
-/** Texto que vai pro cliente. `{link}` é trocado pela URL da reunião. */
-export const MENSAGEM_PADRAO = 'Segue o link da nossa reunião: {link}';
+/**
+ * O que o CLIENTE recebe no WhatsApp.
+ *
+ * É um resumo da reunião, não só o link solto: quem recebe "segue o link" no
+ * meio de uma conversa de atendimento não sabe de que reunião se trata, com
+ * quem é, nem quando. Com dia, hora e responsável na mensagem, ela se explica
+ * sozinha meses depois, quando alguém rolar a conversa pra cima.
+ *
+ * Formatação de WhatsApp: `*negrito*` (um asterisco de cada lado), sem
+ * markdown de tabela e sem link entre colchetes — o WhatsApp mostra tudo isso
+ * cru. Os placeholders são {quando}, {link}, {tipo} e {responsavel}.
+ */
+export const MENSAGEM_PADRAO =
+  '*Reunião iniciada*{tipo}\n\n' +
+  'Entre por aqui:\n{link}';
 
 /**
- * Texto da reunião MARCADA. `{quando}` vira "quinta, 21/08, às 14h" — sem isso
- * o cliente receberia "segue o link" e entraria numa sala vazia agora.
+ * Texto da reunião MARCADA.
+ *
+ * O `{quando}` fica CRU até o envio: a mensagem é montada quando o atendente
+ * marca e entregue ~5 min antes do horário. Congelar "amanhã às 10h" aqui
+ * faria o cliente ler isso no PRÓPRIO dia da reunião e entender o seguinte.
  */
-export const MENSAGEM_AGENDADA_PADRAO = 'Reunião marcada para {quando}: {link}';
+export const MENSAGEM_AGENDADA_PADRAO =
+  '*Reunião marcada*{tipo}\n\n' +
+  '📅 {quando}{responsavel}\n\n' +
+  'O link para entrar:\n{link}\n\n' +
+  'Até lá!';
+
+/**
+ * Como cada tipo aparece PRA O CLIENTE. Os valores da API (`cs`,
+ * `apresentacao`) são nomes internos — mandá-los crus no WhatsApp obrigaria o
+ * cliente a adivinhar.
+ */
+const ROTULO_DO_TIPO: Record<string, string> = {
+  apresentacao: 'de apresentação',
+  migracao: 'de migração',
+  implantacao: 'de implantação',
+  cs: 'de acompanhamento',
+};
 
 /** Fuso do atendimento. O cliente lê a hora dele, não UTC. */
 export const FUSO = 'America/Sao_Paulo';
@@ -554,9 +586,16 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       // worker, no instante do envio. Congelar aqui produziria "amanhã às 10h"
       // chegando no próprio dia da reunião — o cliente entende o dia seguinte
       // e perde a reunião que começa em 5 minutos.
-      const texto = quando
-        ? modelo.replace('{link}', meet.meetUrl)
-        : modelo.replace('{quando}', '').replace('{link}', meet.meetUrl);
+      // {tipo} e {responsavel} já dá pra resolver agora: não mudam com o tempo.
+      // O {quando} é que fica cru nas agendadas, porque "amanhã" depende do dia
+      // em que a mensagem for ENTREGUE, não do dia em que foi montada.
+      const rotuloTipo = tipo ? ` ${ROTULO_DO_TIPO[tipo] ?? ''}`.trimEnd() : '';
+      const nomeResponsavel = nomeDoResponsavel(responsavel);
+      const comBase = modelo
+        .replace('{tipo}', rotuloTipo)
+        .replace('{responsavel}', nomeResponsavel ? `\ncom ${nomeResponsavel}` : '')
+        .replace('{link}', meet.meetUrl);
+      const texto = quando ? comBase : comBase.replace('{quando}', '');
       const enviarEm = quando
         ? new Date(Math.max(Date.now(), quando.getTime() - ANTECEDENCIA_CONVITE_MS))
         : null;
@@ -785,6 +824,22 @@ function registrarSemBot(
   // fila fique cutucando uma reunião que nunca vai ter transcript nosso.
   db.setMeetingChatproStatus(meeting.id, 'skipped-no-url', 0);
   return { ok: true, criada: true, meeting };
+}
+
+/**
+ * O primeiro nome de quem vai conduzir, a partir do e-mail.
+ *
+ * O painel devolve o nome completo no 201, mas ele não chega até aqui em todos
+ * os caminhos (plano B não passa pelo painel). O prefixo do e-mail resolve na
+ * maioria dos casos — `anna.souza@` vira "Anna". E quando não der pra ter um
+ * nome apresentável, a linha inteira some da mensagem em vez de sair torta.
+ */
+export function nomeDoResponsavel(email: string | null): string | null {
+  if (!email || !email.includes('@')) return null;
+  const local = email.split('@')[0] ?? '';
+  const primeiro = local.split(/[._-]/)[0] ?? '';
+  if (primeiro.length < 2 || /\d/.test(primeiro)) return null;
+  return primeiro.charAt(0).toUpperCase() + primeiro.slice(1).toLowerCase();
 }
 
 /** Código `abc-defg-hij` do link — é ele que casa a reunião com o bot. */

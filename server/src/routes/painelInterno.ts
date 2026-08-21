@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Db } from '../db.js';
 import type { PainelClient } from '../painel/client.js';
 import { ehTipoReuniao, validarCnpj, normalizarCnpj } from '../painel/client.js';
 import { assincrono } from './reunioes.js';
@@ -26,6 +27,8 @@ const log = createLogger('routes/painelInterno');
 
 export interface PainelInternoRouterDeps {
   painel: PainelClient;
+  /** Pra listar as últimas reuniões — o painel não expõe listagem. */
+  db: Db;
 }
 
 export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router {
@@ -131,6 +134,51 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
         return;
       }
       res.json({ ok: true, publicUrl: r.publicUrl, razaoSocial: r.razaoSocial });
+    })
+  );
+
+  // As últimas reuniões de quem está com a aba aberta. Vem do NOSSO banco:
+  // o painel não expõe listagem, e a linha local existe mesmo quando quem
+  // grava é ele.
+  router.get(
+    '/api/painel/minhas-reunioes',
+    assincrono(async (req, res) => {
+      const email = String(req.query.email ?? '').trim();
+      if (!email || !email.includes('@')) {
+        res.status(400).json({ error: 'Informe ?email= do atendente.' });
+        return;
+      }
+      const limite = Math.min(Math.max(Number(req.query.limite) || 5, 1), 20);
+      const linhas = deps.db.reunioesDoAtendente(email, limite);
+      res.json({
+        reunioes: linhas.map((r) => {
+          // O nome do cliente mora no JSON dos dados cadastrais; JSON quebrado
+          // não pode derrubar a listagem inteira.
+          let cliente: string | null = null;
+          let empresa: string | null = null;
+          try {
+            const c = r.cliente_json ? JSON.parse(r.cliente_json) : null;
+            if (c && typeof c === 'object') {
+              cliente = typeof c.nome === 'string' ? c.nome : null;
+              empresa = typeof c.empresa === 'string' ? c.empresa : null;
+            }
+          } catch {
+            // segue sem o nome
+          }
+          return {
+            id: r.id,
+            tipo: r.tipo,
+            cliente,
+            empresa,
+            meetUrl: r.meeting_url,
+            quando: r.started_at ?? r.created_at,
+            // A reunião chegou ao painel? É o que separa "marcada" de
+            // "aconteceu por aqui e precisa ser lançada lá".
+            noPainel: Boolean(r.painel_meeting_id),
+            sessionId: r.session_id,
+          };
+        }),
+      });
     })
   );
 

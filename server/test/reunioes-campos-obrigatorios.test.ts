@@ -1,3 +1,4 @@
+import { Db } from '../src/db.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import express from 'express';
 import type { Server } from 'node:http';
@@ -150,7 +151,7 @@ describe('GET /api/painel/onboarding — temChecklist', () => {
       timeoutMs: 50,
     });
     const app = express();
-    app.use(createPainelInternoRouter({ painel }));
+    app.use(createPainelInternoRouter({ painel, db: new Db(":memory:") }));
     const server = await new Promise<Server>((resolve) => {
       const s = app.listen(0, () => resolve(s));
     });

@@ -1269,6 +1269,28 @@ export class Db {
       .get(meetingCode, desdeIso, semBotDesdeIso);
   }
 
+  /**
+   * As últimas reuniões que ESTE atendente marcou.
+   *
+   * Sai do nosso banco e não do painel porque o painel não tem endpoint de
+   * listagem — só `/me`, `available-slots` e os dois POST. E a linha local
+   * existe mesmo quando quem grava é o painel: `registrarSemBot` a cria.
+   *
+   * Ordena por `started_at` quando existe (o horário MARCADO) e cai em
+   * `created_at` quando não: ordenar só pela criação misturaria uma reunião
+   * marcada pra semana que vem com uma que já aconteceu.
+   */
+  reunioesDoAtendente(email: string, limite = 5): MeetingRow[] {
+    return this.db
+      .prepare<[string, number], MeetingRow>(
+        `SELECT * FROM meetings
+          WHERE atendente_email = ?
+          ORDER BY COALESCE(started_at, created_at) DESC
+          LIMIT ?`
+      )
+      .all(email, limite);
+  }
+
   listMeetings(limit = 50): MeetingRow[] {
     return this.db
       .prepare<[number], MeetingRow>('SELECT * FROM meetings ORDER BY created_at DESC LIMIT ?')
