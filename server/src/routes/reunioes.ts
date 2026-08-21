@@ -46,33 +46,54 @@ import { createLogger, errorMessage } from '../log.js';
 const log = createLogger('routes/reunioes');
 
 /**
- * O que o CLIENTE recebe no WhatsApp.
+ * O RESUMO da reunião — o texto que o cliente recebe no WhatsApp.
  *
- * É um resumo da reunião, não só o link solto: quem recebe "segue o link" no
- * meio de uma conversa de atendimento não sabe de que reunião se trata, com
- * quem é, nem quando. Com dia, hora e responsável na mensagem, ela se explica
- * sozinha meses depois, quando alguém rolar a conversa pra cima.
+ * É um resumo, não o link solto: quem recebe "segue o link" no meio de uma
+ * conversa de atendimento não sabe de que reunião se trata, com quem é, nem
+ * quando. Com cliente, dia, hora e responsável, a mensagem se explica sozinha
+ * meses depois, quando alguém rolar a conversa pra cima.
  *
- * Formatação de WhatsApp: `*negrito*` (um asterisco de cada lado), sem
- * markdown de tabela e sem link entre colchetes — o WhatsApp mostra tudo isso
- * cru. Os placeholders são {quando}, {link}, {tipo} e {responsavel}.
+ * É o MESMO texto que o atendente copia pelo botão "Copiar resumo" na aba, e
+ * de propósito: antes eram dois, montados em arquivos diferentes. Texto gêmeo
+ * escrito duas vezes diverge — já aconteceu três vezes neste repositório, com
+ * a máscara de CNPJ e com regra de CSS. A aba copia o que a rota devolve.
+ *
+ * Formatação de WhatsApp: sem markdown de tabela e sem link entre colchetes,
+ * que o WhatsApp mostra crus.
+ *
+ * NÃO leva dado interno — telefone, CNPJ, código da instância e e-mail de quem
+ * atende ficam na tela do atendente. O cliente recebe o que é dele.
  */
-export const MENSAGEM_PADRAO =
-  '*Reunião iniciada*{tipo}\n\n' +
-  'Entre por aqui:\n{link}';
-
-/**
- * Texto da reunião MARCADA.
- *
- * O `{quando}` fica CRU até o envio: a mensagem é montada quando o atendente
- * marca e entregue ~5 min antes do horário. Congelar "amanhã às 10h" aqui
- * faria o cliente ler isso no PRÓPRIO dia da reunião e entender o seguinte.
- */
-export const MENSAGEM_AGENDADA_PADRAO =
-  '*Reunião marcada*{tipo}\n\n' +
-  '📅 {quando}{responsavel}\n\n' +
-  'O link para entrar:\n{link}\n\n' +
-  'Até lá!';
+export function montarResumo(dados: {
+  tipo: string | null;
+  clienteNome: string | null;
+  empresa: string | null;
+  /**
+   * O texto pronto ("hoje às 15h"). Nas AGENDADAS vem `null` de propósito: o
+   * `{quando}` fica cru até o envio, porque a mensagem é montada quando o
+   * atendente marca e entregue ~5 min antes do horário. Congelar "amanhã às
+   * 10h" faria o cliente ler isso no PRÓPRIO dia da reunião e entender o
+   * seguinte — quem resolve é o worker, no instante do envio.
+   */
+  quandoTexto: string | null;
+  agendada: boolean;
+  responsavel: string | null;
+  meetUrl: string;
+}): string {
+  const rotulo = dados.tipo ? ROTULO_DO_TIPO[dados.tipo] : null;
+  const cliente = [dados.clienteNome, dados.empresa].filter(Boolean).join(' · ');
+  return [
+    `✅ ${rotulo ? `Reunião de ${rotulo}` : 'Reunião'} ${
+      dados.agendada ? 'marcada' : 'criada'
+    }`,
+    cliente ? `Cliente: ${cliente}` : null,
+    `Quando: ${dados.agendada ? '{quando}' : (dados.quandoTexto ?? 'agora')}`,
+    dados.responsavel ? `Responsável: ${dados.responsavel}` : null,
+    `Link: ${dados.meetUrl}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
 /**
  * Como cada tipo aparece PRA O CLIENTE. Os valores da API (`cs`,
@@ -80,10 +101,10 @@ export const MENSAGEM_AGENDADA_PADRAO =
  * cliente a adivinhar.
  */
 const ROTULO_DO_TIPO: Record<string, string> = {
-  apresentacao: 'de apresentação',
-  migracao: 'de migração',
-  implantacao: 'de implantação',
-  cs: 'de acompanhamento',
+  apresentacao: 'Apresentação',
+  migracao: 'Migração',
+  implantacao: 'Implantação',
+  cs: 'CS',
 };
 
 /** Fuso do atendimento. O cliente lê a hora dele, não UTC. */
@@ -420,6 +441,13 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       let painelMeetingId: string | null = null;
       let responsavel = atendenteEmail;
       /**
+       * Nome completo de quem conduz, como o PAINEL o escreve ("Weuden Filho").
+       * Só o e-mail daria "Weuden" — e quando a reunião é distribuída pra outra
+       * pessoa, o e-mail do atendente nem é o certo. Fica `null` no plano B,
+       * que não passa pelo painel, e aí o primeiro nome resolve.
+       */
+      let responsavelNome: string | null = null;
+      /**
        * Preenchido quando o painel respondeu 5xx. A reunião acontece pelo plano
        * B, mas NÃO está registrada lá — e a resposta precisa dizer isso.
        */
@@ -458,6 +486,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
           };
           painelMeetingId = criada.id;
           responsavel = criada.responsavelEmail ?? atendenteEmail;
+          responsavelNome = criada.responsavelNome ?? null;
           log.info(
             `reunião ${criada.id} criada no painel (${criada.assignmentMode ?? 'modo?'}) ` +
               `para ${criada.responsavelNome ?? responsavel ?? '?'}.`
@@ -580,22 +609,30 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       //    o worker dispara ~5 min antes do horário — link mandado dias antes
       //    se perde na conversa, e o cliente clicaria numa sala vazia. Se o
       //    "5 min antes" já passou (marcaram pra daqui a 3 min), sai já.
-      const modelo =
-        parsed.data.mensagem ?? (quando ? MENSAGEM_AGENDADA_PADRAO : MENSAGEM_PADRAO);
-      // Agendada guarda o modelo com `{quando}` AINDA CRU: quem resolve é o
-      // worker, no instante do envio. Congelar aqui produziria "amanhã às 10h"
-      // chegando no próprio dia da reunião — o cliente entende o dia seguinte
-      // e perde a reunião que começa em 5 minutos.
-      // {tipo} e {responsavel} já dá pra resolver agora: não mudam com o tempo.
-      // O {quando} é que fica cru nas agendadas, porque "amanhã" depende do dia
-      // em que a mensagem for ENTREGUE, não do dia em que foi montada.
-      const rotuloTipo = tipo ? ` ${ROTULO_DO_TIPO[tipo] ?? ''}`.trimEnd() : '';
-      const nomeResponsavel = nomeDoResponsavel(responsavel);
-      const comBase = modelo
-        .replace('{tipo}', rotuloTipo)
-        .replace('{responsavel}', nomeResponsavel ? `\ncom ${nomeResponsavel}` : '')
-        .replace('{link}', meet.meetUrl);
-      const texto = quando ? comBase : comBase.replace('{quando}', '');
+      // A mensagem ao cliente É o resumo — o mesmo texto que a aba mostra e
+      // copia. `mensagem` no corpo continua sobrescrevendo, pra quem precisar
+      // de um texto próprio; nesse caso os placeholders seguem valendo.
+      const resumo = montarResumo({
+        tipo,
+        clienteNome: cliente?.nome ?? contato,
+        empresa: cliente?.empresa ?? null,
+        quandoTexto: quando ? formatarQuando(quando) : null,
+        agendada: Boolean(quando),
+        responsavel: responsavelNome ?? nomeDoResponsavel(responsavel),
+        meetUrl: meet.meetUrl,
+      });
+      const texto = parsed.data.mensagem
+        ? parsed.data.mensagem
+            .replace('{tipo}', tipo ? ` ${ROTULO_DO_TIPO[tipo] ?? ''}`.trimEnd() : '')
+            .replace(
+              '{responsavel}',
+              responsavelNome ?? nomeDoResponsavel(responsavel)
+                ? `\ncom ${responsavelNome ?? nomeDoResponsavel(responsavel)}`
+                : ''
+            )
+            .replace('{link}', meet.meetUrl)
+            .replace('{quando}', quando ? '{quando}' : '')
+        : resumo;
       const enviarEm = quando
         ? new Date(Math.max(Date.now(), quando.getTime() - ANTECEDENCIA_CONVITE_MS))
         : null;
@@ -732,6 +769,11 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         agendadaPara: quando ? quando.toISOString() : null,
         quandoTexto: quando ? formatarQuando(quando) : null,
         responsavel,
+        responsavelNome,
+        // O texto que foi pro cliente. A aba copia ESTE, não um gêmeo dela.
+        // Nas agendadas o {quando} ainda está cru aqui, então a aba troca pelo
+        // `quandoTexto` que já vem ao lado.
+        resumo,
         ...(enviarEm ? { conviteAgendadoPara: enviarEm.toISOString() } : {}),
         ...(r.ok
           ? { meeting: resumirReuniao(r.meeting) }

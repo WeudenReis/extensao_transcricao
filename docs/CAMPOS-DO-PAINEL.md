@@ -1,11 +1,23 @@
 # Campos aceitos por `POST /api/ext/agenda/meetings`
 
 > Mapeado em 14/08/2026 contra a API de produção, por tentativa e erro.
-> O schema é **estrito**: um campo desconhecido derruba o pedido inteiro com
-> `422 {"error":"Dados inválidos.","details":{}}` — sem dizer qual campo.
+> Revisado em **21/08/2026**, depois da correção do 500 no painel.
 >
-> Como ler: enquanto o bug do 500 existir, **`500` = o campo passou pela
-> validação** e a requisição morreu depois; **`422` = o campo não existe**.
+> O schema é **estrito**: um campo desconhecido derruba o pedido inteiro.
+>
+> **Como ler a resposta** (a regra mudou — o painel passou a preencher o
+> `details` para erro de valor, e isso separa os dois casos):
+>
+> | Resposta | O que significa |
+> |---|---|
+> | `201` | o campo existe e foi aceito — **e criou reunião de verdade** |
+> | `422` com `details: { "campo": [...] }` | o campo existe; o **valor** está errado |
+> | `422` com `details: {}` vazio | tem **chave desconhecida** no corpo |
+>
+> Cuidado ao sondar: um payload com erro de valor de propósito (hora `99:99`,
+> por exemplo) **mascara** a chave desconhecida — o `details` volta preenchido
+> só com o erro de valor, e a chave inválida passa despercebida. Pra testar se
+> um campo existe, o resto do payload precisa estar **válido**.
 
 ## Aceitos
 
@@ -59,3 +71,19 @@ não tem como marcar verificação.
 3. **CC e Observações**, se fizerem parte do fluxo — hoje a API não os aceita.
 4. Um detalhe menor: o `422` de campo desconhecido vem com `details: {}`
    vazio. Dizer qual campo sobrou economizaria bastante tentativa e erro.
+
+## Enums (confirmados em 21/08/2026 pelo `details` do 422)
+
+O painel devolve as opções válidas na própria mensagem de erro:
+
+| Campo | Valores aceitos |
+|---|---|
+| `client_type` | `base`, `prospect` |
+| `provedor` | `starter`, `cloud_api`, `api_disparos` |
+
+Tudo minúsculo. `"Starter"` com maiúscula e `"novo"` são recusados.
+
+## Ainda fora do schema (reconfirmado em 21/08/2026)
+
+`observacoes`, `notes`, `cc_emails`, `cc_email` e o tipo `verificacao`.
+Cada um responde `422` com `details` vazio, em payload válido no resto.

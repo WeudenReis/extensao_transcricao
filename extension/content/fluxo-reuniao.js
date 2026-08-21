@@ -845,9 +845,22 @@
         const precisaCadastro = COM_DADOS.includes(estado.tipo);
 
         const nome = api.campo('Nome do cliente *', { placeholder: 'Quem vai participar' });
+        // O CNPJ vem ANTES da razão social porque é ele que a preenche: digitou
+        // o CNPJ, a consulta traz o nome da empresa sozinha. Na ordem antiga a
+        // pessoa digitava à mão um campo que o de baixo ia preencher, e via o
+        // que tinha escrito ser trocado — parece que o formulário apagou o
+        // trabalho dela. O campo que preenche vem primeiro.
+        const cnpj = precisaCadastro
+          ? api.campo('CNPJ *', { placeholder: '00.000.000/0000-00' })
+          : null;
         const empresa = api.campo('Nome da empresa *', { placeholder: 'Razão social' });
         const telefone = api.campo('Telefone *', { placeholder: '(11) 90000-0000' });
-        api.corpo.append(nome.wrap, empresa.wrap, telefone.wrap);
+        api.corpo.append(
+          nome.wrap,
+          ...(cnpj ? [cnpj.wrap] : []),
+          empresa.wrap,
+          telefone.wrap
+        );
 
         /**
          * O que a pessoa JÁ preencheu numa passagem anterior por aqui.
@@ -874,7 +887,6 @@
         // formatador, e o valor que veio da conversa já entra formatado.
         instalarFormatacao(telefone, formatarTelefone);
 
-        let cnpj = null;
         let instancia = null;
         let emailCliente = null;
         let semEmail = null;
@@ -885,7 +897,6 @@
         let planoOficial = null;
 
         if (precisaCadastro) {
-          cnpj = api.campo('CNPJ *', { placeholder: '00.000.000/0000-00' });
           instancia = api.campo('Código da instância *', {
             placeholder: 'chatpro-xxxxxxxxxx',
           });
@@ -915,7 +926,7 @@
             emailCliente.entrada.disabled = dispensado;
             if (dispensado) emailCliente.erro.style.display = 'none';
           });
-          api.corpo.append(cnpj.wrap, instancia.wrap);
+          api.corpo.appendChild(instancia.wrap);
 
           // Os cadastrais de uma passagem anterior. O CNPJ entra ANTES de
           // `instalarFormatacao` logo abaixo: é ela que formata o valor que já
@@ -2331,19 +2342,31 @@
 
         // ── O resumo pra colar na conversa ─────────────────────────────────
         //
-        // Este texto vai pro WhatsApp DO CLIENTE: nada de markdown (o WhatsApp
-        // não renderiza tabela) e nada de dado interno — telefone, CNPJ, código
-        // da instância e e-mail de quem atende ficam no cartão, não aqui.
-        const textoResumo = [
-          `✅ ${rotuloTipo ? `Reunião de ${rotuloTipo}` : 'Reunião'} ` +
-            `${quandoIso ? 'marcada' : 'criada'}`,
-          cliente ? `Cliente: ${cliente}` : null,
-          quandoTexto ? `Quando: ${quandoTexto}` : null,
-          responsavel ? `Responsável: ${responsavel}` : null,
-          resposta.meetUrl ? `Link: ${resposta.meetUrl}` : null,
-        ]
-          .filter(Boolean)
-          .join('\n');
+        // É o MESMO texto que o servidor já mandou pro cliente, devolvido em
+        // `resposta.resumo`. Remontar aqui criaria dois textos gêmeos em
+        // arquivos diferentes, e gêmeo escrito duas vezes diverge — foi assim
+        // que a máscara de CNPJ e a regra de CSS do horário divergiram neste
+        // repositório. Copiar o que foi enviado também garante que o atendente
+        // veja exatamente o que o cliente recebeu.
+        //
+        // Nas AGENDADAS o servidor deixa `{quando}` cru de propósito (quem
+        // resolve "amanhã às 10h" é o worker, na hora do envio) — na tela isso
+        // não serve, então entra o `quandoTexto` que veio junto.
+        //
+        // A montagem local fica como plano B: servidor antigo, ou plano B do
+        // Google Calendar, não devolvem `resumo`.
+        const textoResumo = resposta.resumo
+          ? resposta.resumo.replace('{quando}', quandoTexto || 'em breve')
+          : [
+              `✅ ${rotuloTipo ? `Reunião de ${rotuloTipo}` : 'Reunião'} ` +
+                `${quandoIso ? 'marcada' : 'criada'}`,
+              cliente ? `Cliente: ${cliente}` : null,
+              quandoTexto ? `Quando: ${quandoTexto}` : null,
+              responsavel ? `Responsável: ${responsavel}` : null,
+              resposta.meetUrl ? `Link: ${resposta.meetUrl}` : null,
+            ]
+              .filter(Boolean)
+              .join('\n');
 
         const copiarResumo = api.botao('Copiar resumo');
         copiarResumo.style.cssText = 'width:100%;margin-top:1rem';

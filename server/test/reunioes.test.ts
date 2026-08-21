@@ -9,6 +9,7 @@ import { ContasGoogle, ContaGoogleExpirada } from '../src/google/contas.js';
 import {
   createReunioesRouter,
   formatarQuando,
+  montarResumo,
   ANTECEDENCIA_CONVITE_MS,
 } from '../src/routes/reunioes.js';
 import {
@@ -480,7 +481,10 @@ describe('POST /api/reunioes/iniciar com `quando` (reunião marcada)', () => {
     // "amanhã às 10h" pro cliente no próprio dia da reunião.
     // A mensagem é um RESUMO, não um link solto: quem recebe "segue o link" no
     // meio de um atendimento não sabe de que reunião se trata nem quando.
-    expect(fila[0]?.message).toContain('*Reunião marcada*');
+    expect(fila[0]?.message).toContain('Reunião marcada');
+    // O resumo leva o LINK e a linha de quando; é o que diferencia de um
+    // 'segue o link' solto.
+    expect(fila[0]?.message).toContain('Quando:');
     expect(fila[0]?.message).toContain('{quando}');
     expect(fila[0]?.message).toContain(MEET_URL);
     // O horário da REUNIÃO viaja junto — é a partir dele que o worker escreve
@@ -1126,5 +1130,83 @@ describe('GET /api/google/status', () => {
 
     expect(res.status).toBe(200);
     expect(corpo.conectado).toBe(false);
+  });
+});
+
+describe('montarResumo', () => {
+  /**
+   * O formato exato que o cliente lê no WhatsApp. Está travado aqui porque é
+   * texto que sai da empresa pra fora: mexer sem querer manda um formato novo
+   * pra todo mundo, e ninguém percebe até um cliente estranhar.
+   */
+  it('monta o resumo da reunião imediata', () => {
+    expect(
+      montarResumo({
+        tipo: 'cs',
+        clienteNome: 'Luís Neto',
+        empresa: 'COCA COLA INDUSTRIAS LTDA',
+        quandoTexto: null,
+        agendada: false,
+        responsavel: 'Weuden Filho',
+        meetUrl: 'https://meet.google.com/cpb-onci-oiy',
+      })
+    ).toBe(
+      [
+        '✅ Reunião de CS criada',
+        'Cliente: Luís Neto · COCA COLA INDUSTRIAS LTDA',
+        'Quando: agora',
+        'Responsável: Weuden Filho',
+        'Link: https://meet.google.com/cpb-onci-oiy',
+      ].join('\n')
+    );
+  });
+
+  // O {quando} fica CRU nas agendadas: quem resolve "amanhã às 10h" é o worker,
+  // no instante do envio. Resolver aqui mandaria o texto de ontem pro cliente
+  // no próprio dia da reunião.
+  it('deixa o {quando} cru quando a reunião é agendada', () => {
+    const t = montarResumo({
+      tipo: 'migracao',
+      clienteNome: 'Fulano',
+      empresa: null,
+      quandoTexto: 'amanhã às 10h',
+      agendada: true,
+      responsavel: 'Anna Souza',
+      meetUrl: 'https://meet.google.com/abc-defg-hij',
+    });
+    expect(t).toContain('Quando: {quando}');
+    expect(t).not.toContain('amanhã às 10h');
+    expect(t).toContain('✅ Reunião de Migração marcada');
+  });
+
+  // Sem responsável a linha some inteira, em vez de sair "Responsável: null".
+  // O plano B (Google Calendar) não passa pelo painel e chega exatamente assim.
+  it('some com a linha do responsável quando não há nome', () => {
+    const t = montarResumo({
+      tipo: null,
+      clienteNome: 'Fulano',
+      empresa: null,
+      quandoTexto: null,
+      agendada: false,
+      responsavel: null,
+      meetUrl: 'https://meet.google.com/abc-defg-hij',
+    });
+    expect(t).not.toContain('Responsável');
+    expect(t.split('\n')[0]).toBe('✅ Reunião criada');
+  });
+
+  // Nada de dado interno: telefone, CNPJ, instância e e-mail de quem atende
+  // ficam na tela do atendente. Isto aqui vai pro WhatsApp de um cliente.
+  it('não leva dado interno', () => {
+    const t = montarResumo({
+      tipo: 'cs',
+      clienteNome: 'Fulano',
+      empresa: 'Empresa LTDA',
+      quandoTexto: null,
+      agendada: false,
+      responsavel: 'Anna Souza',
+      meetUrl: 'https://meet.google.com/abc-defg-hij',
+    });
+    expect(t).not.toMatch(/@chatpro|CNPJ|chatpro-|\d{2}\.\d{3}\.\d{3}/);
   });
 });

@@ -50,7 +50,7 @@
 | `server/src/routes/painelInterno.ts` (254) | Consultas ao painel interno que a EXTENSÃO precisa fazer: GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada) GET /api/painel/onboar | PainelInternoRouterDeps, createPainelInternoRouter |
 | `server/src/routes/pubsub.ts` (202) | Endpoint push do Cloud Pub/Sub (Workspace Events → tópico → push aqui). | DecodedPushMessage, decodePubSubPush, OidcTokenInfo, TokenVerifier, GoogleOidcVerifier, PubSubRouterDeps +1 |
 | `server/src/routes/recallHook.ts` (127) | Webhook do Recall.ai: POST /webhooks/recall Regras do fornecedor: responder 2xx em até 15 s, reentrega por 24 h, endpoint que falha 5 dias seguidos é DESATIVADO | WebhookAnalisado, analisarCorpoWebhook, RecallHookRouterDeps, createRecallHookRouter |
-| `server/src/routes/reunioes.ts` (956) | O botão "Entrar na reunião" do chatPro. | MENSAGEM_PADRAO, MENSAGEM_AGENDADA_PADRAO, FUSO, MAX_DIAS_AGENDAMENTO, ANTECEDENCIA_CONVITE_MS, TIPOS_REUNIAO +12 |
+| `server/src/routes/reunioes.ts` (998) | O botão "Entrar na reunião" do chatPro. | montarResumo, FUSO, MAX_DIAS_AGENDAMENTO, ANTECEDENCIA_CONVITE_MS, TIPOS_REUNIAO, TipoReuniao +11 |
 | `server/src/routes/review.ts` (118) | Painel de revisão local: o atendente/admin VÊ a transcrição (e ouve o áudio) ANTES de enviar pra Voreo. | ReviewRouterDeps, createReviewRouter |
 | `server/src/routes/reviewPage.ts` (1672) | HTML do painel (servido em GET /). | reviewPageHtml |
 | `server/src/stt/assemblyai.ts` (111) | Provedor AssemblyAI (alternativa mais barata). | AssemblyAiProvider |
@@ -69,8 +69,8 @@
 |---|---|---|
 | `extension/content/aba-reuniao.js` (495) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
 | `extension/content/atendente.js` (349) | Quem é o atendente que está usando o chatPro agora. | __cpmAtendente |
-| `extension/content/botao-reuniao.js` (648) | Botão "reunião" na barra do chatPro. | __cpmDiag |
-| `extension/content/fluxo-reuniao.js` (2379) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
+| `extension/content/botao-reuniao.js` (659) | Botão "reunião" na barra do chatPro. | __cpmDiag |
+| `extension/content/fluxo-reuniao.js` (2402) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
 
 ## extension/background
 

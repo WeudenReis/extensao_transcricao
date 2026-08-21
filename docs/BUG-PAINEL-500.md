@@ -1,4 +1,11 @@
-# `POST /api/ext/agenda/meetings` → 500 em toda tentativa
+# ~~`POST /api/ext/agenda/meetings` → 500 em toda tentativa~~ — RESOLVIDO
+
+> **21/08/2026: corrigido pelo dev do painel.** O mesmo payload que dava 500
+> agora responde **201** com link do Meet. Verificado contra produção.
+>
+> O histórico abaixo fica registrado porque o método de investigação vale — foi
+> ele que isolou o caminho de sucesso como único ponto quebrado.
+
 
 > Para quem cuida do `painel-reunioes.chatpro.com.br`.
 > Reproduzido em **18/08/2026, 23h15 UTC**, contra produção, com o

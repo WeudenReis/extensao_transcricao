@@ -122,12 +122,23 @@
   /** Tamanho usado quando não dá pra medir o ícone vizinho. */
   const TAMANHO_PADRAO = 20;
 
+  /**
+   * Câmera do Phosphor (`video-camera`, peso fill) — o mesmo desenho que o
+   * chatPro usa na barra, então o botão não parece enxertado de outro produto.
+   *
+   * `fill="currentColor"` NÃO é detalhe: o arquivo baixado vinha com
+   * `fill="#000000"` cravado, e cor literal aqui some no tema escuro, onde a
+   * barra é preta. Herdando a cor do texto, o ícone acompanha os vizinhos nos
+   * dois temas — foi assim que a seta de voltar foi resolvida.
+   */
   function svgCamera(tamanho) {
     return (
       `<svg xmlns="http://www.w3.org/2000/svg" width="${tamanho}" height="${tamanho}" ` +
-      'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-      '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>'
+      'viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">' +
+      '<path d="M251.77,73a8,8,0,0,0-8.21.39L208,97.05V72a16,16,0,0,0-16-16H32A16,16,0,0,0,' +
+      '16,72V184a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V159l35.56,23.71A8,8,0,0,0,248,184a8,' +
+      '8,0,0,0,8-8V80A8,8,0,0,0,251.77,73ZM192,184H32V72H192V184Zm48-22.95-32-21.33V116.28L240,' +
+      '95Z"></path></svg>'
     );
   }
 
