@@ -900,6 +900,11 @@
           instancia = api.campo('Código da instância *', {
             placeholder: 'chatpro-xxxxxxxxxx',
           });
+          // Entra logo aqui, colado no telefone: instância e CNPJ são os dois
+          // cadastrais, e o e-mail abaixo vem grudado no checkbox 'Não enviar'.
+          // Enfiar a instância no meio desse par separava a caixa da pergunta
+          // que ela responde.
+          api.corpo.appendChild(instancia.wrap);
 
           // E-mail do cliente. A API aceita como OPCIONAL, mas a tela do painel
           // marca como obrigatório em migração e CS — e é por ele que sai o
@@ -926,8 +931,6 @@
             emailCliente.entrada.disabled = dispensado;
             if (dispensado) emailCliente.erro.style.display = 'none';
           });
-          api.corpo.appendChild(instancia.wrap);
-
           // Os cadastrais de uma passagem anterior. O CNPJ entra ANTES de
           // `instalarFormatacao` logo abaixo: é ela que formata o valor que já
           // está no campo (numa microtarefa) e que dispara a consulta da razão
