@@ -90,6 +90,8 @@ export class LocalWhisperProvider implements SttProvider {
   private async getPipeline(): Promise<AsrPipeline> {
     if (!this.pipelinePromise) {
       this.pipelinePromise = (async () => {
+        // @ts-ignore  opcional: ver a mesma nota em stt/decode.ts. O catch
+        // de quem chama já traduz a ausência numa mensagem legível.
         const mod = (await import('@xenova/transformers')) as unknown as {
           pipeline: (task: string, model: string) => Promise<AsrPipeline>;
           env: { cacheDir?: string; allowLocalModels?: boolean };

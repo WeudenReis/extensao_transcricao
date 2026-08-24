@@ -22,6 +22,9 @@ let ffmpegPathCache: string | null | undefined;
 async function acharFfmpeg(): Promise<string | null> {
   if (ffmpegPathCache !== undefined) return ffmpegPathCache;
   try {
+    // @ts-ignore  o pacote é OPCIONAL e pode não estar instalado; o tsc exige
+    // os tipos mesmo em import dinâmico, e sem isto `npm run build` falha com
+    // TS2307 em toda máquina que instalou sem as dependências opcionais.
     const mod = (await import('ffmpeg-static')) as unknown as { default?: string };
     ffmpegPathCache = (mod.default ?? (mod as unknown as string)) || null;
   } catch {

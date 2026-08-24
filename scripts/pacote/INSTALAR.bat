@@ -42,9 +42,14 @@ echo [ok] Arquivo de configuracao encontrado.
 echo.
 
 rem 2) Instala as dependencias do servidor (demora alguns minutos na 1a vez).
-echo [..] Instalando dependencias do servidor (pode demorar)...
+rem --omit=optional corta 267 MB: Whisper (@xenova 45MB), onnxruntime (92MB),
+rem ffmpeg-static (80MB) e sharp (50MB). Sao restos do fluxo antigo, em que a
+rem transcricao rodava na maquina do atendente. Hoje quem grava e transcreve
+rem e o PAINEL - nada disso e carregado. Os dois imports que usam esses
+rem pacotes sao dinamicos e avisam sozinhos se um dia faltarem.
+echo [..] Instalando dependencias do servidor...
 pushd server
-call npm install
+call npm install --omit=optional
 if errorlevel 1 (
   echo.
   echo [X] Falha ao instalar dependencias.
