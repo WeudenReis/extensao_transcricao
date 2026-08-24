@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "chatPro ReuniÃµes",
+  "name": "chatPro Reuniões",
   "version": "3.6.0",
-  "description": "BotÃ£o de reuniÃ£o no chatPro: abre a aba lateral pra marcar agora ou agendar, manda o link pro cliente e grava a chamada.",
+  "description": "Botão de reunião no chatPro: abre a aba lateral pra marcar agora ou agendar, manda o link pro cliente e grava a chamada.",
   "permissions": [
     "storage",
     "tabs"
@@ -30,7 +30,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "chatPro ReuniÃµes",
+    "default_title": "chatPro Reuniões",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
