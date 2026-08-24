@@ -1,19 +1,41 @@
 ========================================================
-  chatPro Transcricao - Como instalar (5 minutos)
+  chatPro Reunioes - Como instalar
 ========================================================
 
-Voce so faz isso UMA vez. Depois e automatico.
+O que isso faz: coloca um botao "Reuniao" dentro do chatPro.
+Voce clica nele durante um atendimento, escolhe o tipo e o
+horario, e a extensao marca a reuniao no painel, gera o link
+do Meet e manda pro cliente na propria conversa.
+
+A gravacao e a transcricao ficam no PAINEL DE REUNIOES, nao
+na sua maquina.
+
+Voce so instala UMA vez.
+
+--------------------------------------------------------
+ANTES DE COMECAR - peca o arquivo de configuracao
+--------------------------------------------------------
+Peca ao Weuden o arquivo ".env" e guarde ele dentro da
+pasta "server" deste pacote.
+
+  server\.env
+
+Sem esse arquivo o botao aparece, mas nao consegue marcar
+nada - ele e quem da acesso ao painel.
+
+NAO mande esse arquivo pra ninguem e nao poste em grupo:
+ele da acesso ao painel em nome da empresa.
 
 --------------------------------------------------------
 PASSO 1 - Instalar o servidor
 --------------------------------------------------------
-- De dois cliques no arquivo:  INSTALAR.bat
+- De dois cliques em:  INSTALAR.bat
 - Se pedir para instalar o Node.js, instale a versao "LTS",
-  reinicie o PC e rode o INSTALAR.bat de novo.
-- Espere ele terminar (na 1a vez demora alguns minutos).
+  reinicie o computador e rode o INSTALAR.bat de novo.
+- Na primeira vez demora alguns minutos.
 
-  >> O servidor passa a LIGAR SOZINHO toda vez que voce liga o
-     computador. Voce NAO precisa abrir terminal nenhum de novo.
+  >> Depois disso o servidor LIGA SOZINHO toda vez que voce
+     liga o computador. Nao precisa abrir terminal nunca mais.
 
 --------------------------------------------------------
 PASSO 2 - Instalar a extensao no Chrome
@@ -22,19 +44,39 @@ PASSO 2 - Instalar a extensao no Chrome
       chrome://extensions
 2) Ligue o "Modo do desenvolvedor" (canto superior direito).
 3) Clique em "Carregar sem compactacao".
-4) Escolha a pasta "extension" (que veio junto neste pacote).
+4) Escolha a pasta "extension" (que veio neste pacote).
 
 --------------------------------------------------------
-PRONTO!
+PRONTO - como usar
 --------------------------------------------------------
-- Entre numa reuniao do Google Meet e converse normalmente.
-- A transcricao aparece em:  http://localhost:3333
-- A legenda liga sozinha e nao pode ser desligada.
+1) Abra um atendimento no chatPro (app.chatpro.com.br).
+2) Na barra de acoes da conversa, clique em "Reuniao".
+3) Escolha o tipo (CS, Migracao, Implantacao...).
+4) Preencha os dados do cliente. Digite o CNPJ que a razao
+   social vem sozinha.
+5) Escolha "agora" ou um horario da agenda.
+6) Confirme. O cliente recebe o resumo com o link no WhatsApp.
+
+--------------------------------------------------------
+SE ALGO NAO FUNCIONAR
+--------------------------------------------------------
+- O botao "Reuniao" nao aparece:
+  recarregue a pagina do chatPro (F5). Se continuar, va em
+  chrome://extensions e clique no icone de recarregar da
+  extensao.
+
+- Diz que nao reconheceu voce:
+  seu e-mail precisa estar cadastrado no painel de reunioes.
+  Fale com o Weuden.
+
+- Diz que o painel nao respondeu:
+  confira se o arquivo server\.env esta no lugar e rode o
+  INSTALAR.bat de novo.
 
 Precisa de ajuda? Fale com o Weuden.
 
 --------------------------------------------------------
-Para DESLIGAR tudo (se algum dia precisar):
+Para DESLIGAR tudo (se algum dia precisar)
 --------------------------------------------------------
 - Rode:  server\autostart\DESINSTALAR-inicializacao.vbs
 - E remova a extensao em chrome://extensions

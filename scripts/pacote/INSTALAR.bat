@@ -24,6 +24,23 @@ for /f "delims=" %%v in ('node --version') do set NODEV=%%v
 echo [ok] Node.js encontrado: %NODEV%
 echo.
 
+rem 1.5) Sem o .env o servidor sobe, o botao aparece, e nada funciona - o
+rem      painel recusa toda chamada. Avisar AGORA, e nao depois de tres
+rem      minutos compilando, e a diferenca entre um susto e um retrabalho.
+if not exist "server\.env" (
+  echo [!] Falta o arquivo de configuracao:  server\.env
+  echo.
+  echo     Peca ele ao Weuden e coloque dentro da pasta "server",
+  echo     depois rode este instalador de novo.
+  echo.
+  echo     Sem ele o botao Reuniao aparece mas nao marca nada.
+  echo.
+  pause
+  exit /b 1
+)
+echo [ok] Arquivo de configuracao encontrado.
+echo.
+
 rem 2) Instala as dependencias do servidor (demora alguns minutos na 1a vez).
 echo [..] Instalando dependencias do servidor (pode demorar)...
 pushd server
@@ -63,9 +80,8 @@ echo   3) Clique em "Carregar sem compactacao"
 echo   4) Escolha a pasta:  %~dp0extension
 echo ============================================================
 echo.
-echo Abrindo o painel de transcricoes em alguns segundos...
-timeout /t 6 /nobreak >nul
-start "" "http://localhost:3333"
+echo Abrindo a tela de extensoes do Chrome...
+timeout /t 4 /nobreak >nul
 start "" "chrome://extensions"
 echo.
 echo Pronto! Pode fechar esta janela.
