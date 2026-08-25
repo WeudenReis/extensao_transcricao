@@ -7,6 +7,16 @@
  */
 
 const PADRAO = {
+  // AINDA localhost, de propósito.
+  //
+  // O servidor hospedado já está liberado no manifest
+  // (https://painel-reunioes.chatpro.com.br/extensao), mas só vira o padrão
+  // quando o deploy estiver no ar. Trocar antes quebraria quem usa hoje: no
+  // primeiro reload da extensão o fetch iria pra uma URL que responde 404, e o
+  // botão pararia de marcar reunião sem nada explicando o porquê.
+  //
+  // Quando o painel confirmar que subiu, é esta linha que muda — e a partir daí
+  // ninguém precisa instalar servidor nenhum.
   backendUrl: 'http://localhost:3333',
   panelToken: '',
   deviceId: '',

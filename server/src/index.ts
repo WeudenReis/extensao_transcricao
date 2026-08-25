@@ -239,8 +239,10 @@ function main(): void {
   );
 
   const googleConfigured = config.googleClientId !== '' && config.googleClientSecret !== '';
-  const server = app.listen(config.port, () => {
-    log.info(`servidor ouvindo em http://localhost:${config.port}`);
+  const server = app.listen(config.port, config.host, () => {
+    // O host aparece no log de propósito: "ouvindo em 0.0.0.0" numa máquina de
+    // produção é achado de segurança, e só dá pra ver se estiver escrito.
+    log.info(`servidor ouvindo em http://${config.host}:${config.port}`);
     log.info(`Painel de revisão: http://localhost:${config.port}/`);
     if (googleConfigured) {
       log.info(`OAuth Google: http://localhost:${config.port}/oauth/start`);

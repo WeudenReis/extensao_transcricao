@@ -85,6 +85,18 @@ const envSchema = z.object({
     .int('PORT deve ser um inteiro.')
     .positive('PORT deve ser positivo.')
     .default(3333),
+  /**
+   * Interface em que o Express escuta.
+   *
+   * O padrão do Express é `0.0.0.0`, que publica a porta em TODA interface.
+   * Numa VM com IP público isso deixa o app alcançável por fora do proxy
+   * reverso — sem TLS e sem os cabeçalhos que o proxy acrescenta.
+   *
+   * Em produção atrás de proxy isto vale `127.0.0.1`: só o proxy, que roda na
+   * mesma máquina, chega no app. O padrão continua aberto porque em
+   * desenvolvimento é comum acessar de outro aparelho na mesma rede.
+   */
+  HOST: z.string().min(1).default('0.0.0.0'),
   DATABASE_PATH: z.string().min(1).default('./data/app.db'),
   TOKEN_ENCRYPTION_KEY: z.string().optional(),
   // ─── Captura de áudio + STT (caminho ANTIGO, da extensão que gravava) ───
@@ -216,6 +228,7 @@ export interface Config {
   voreoWebhookUrl: string | undefined;
   voreoApiKey: string | undefined;
   port: number;
+  host: string;
   databasePath: string;
   tokenEncryptionKey: string | undefined;
   sttProvider: 'local' | 'deepgram' | 'assemblyai' | 'whisper' | 'none';
@@ -353,6 +366,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     voreoWebhookUrl: e.VOREO_WEBHOOK_URL,
     voreoApiKey: e.VOREO_API_KEY,
     port: e.PORT,
+    host: e.HOST,
     databasePath: e.DATABASE_PATH,
     tokenEncryptionKey: e.TOKEN_ENCRYPTION_KEY,
     sttProvider: e.STT_PROVIDER,
