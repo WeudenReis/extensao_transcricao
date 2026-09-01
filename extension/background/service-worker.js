@@ -7,16 +7,20 @@
  */
 
 const PADRAO = {
-  // AINDA localhost, de propósito.
+  // localhost e token vazio AQUI NO FONTE, de propósito — este repositório é
+  // público no GitHub, e valor de produção escrito aqui iria parar lá em texto
+  // claro.
   //
-  // O servidor hospedado já está liberado no manifest
-  // (https://painel-reunioes.chatpro.com.br/extensao), mas só vira o padrão
-  // quando o deploy estiver no ar. Trocar antes quebraria quem usa hoje: no
-  // primeiro reload da extensão o fetch iria pra uma URL que responde 404, e o
-  // botão pararia de marcar reunião sem nada explicando o porquê.
+  // Quem preenche os dois é o empacotador, na cópia que vai pros atendentes:
   //
-  // Quando o painel confirmar que subiu, é esta linha que muda — e a partir daí
-  // ninguém precisa instalar servidor nenhum.
+  //   powershell -File scripts\empacotar.ps1 -Producao
+  //
+  // Ele injeta a URL hospedada e o PANEL_TOKEN (lido de server/.env) SÓ dentro
+  // do ZIP — o fonte nunca muda. As duas linhas abaixo são os marcadores da
+  // injeção: mudou o texto delas, o empacotador aborta em vez de gerar um
+  // pacote silenciosamente sem token.
+  //
+  // Pra quem desenvolve, o padrão localhost é o certo e nada precisa ser feito.
   backendUrl: 'http://localhost:3333',
   panelToken: '',
   deviceId: '',

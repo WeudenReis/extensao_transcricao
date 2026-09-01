@@ -1,0 +1,46 @@
+========================================================
+  chatPro Reunioes - Como instalar (2 minutos)
+========================================================
+
+Nao precisa instalar servidor, Node, nem configurar nada.
+Ja vem tudo pronto.
+
+1) Extraia esta pasta em algum lugar que NAO seja apagado
+   (ex.: Documentos). O Chrome vai ler dela sempre.
+
+2) Abra o Chrome e digite na barra de endereco:
+      chrome://extensions
+
+3) Ligue o "Modo do desenvolvedor" (canto superior direito).
+
+4) Clique em "Carregar sem compactacao" e escolha a pasta
+   "extension" (que veio neste pacote).
+
+PRONTO.
+
+--------------------------------------------------------
+Como usar
+--------------------------------------------------------
+1) Abra um atendimento no chatPro (app.chatpro.com.br).
+2) Na barra de acoes da conversa, clique em "Reuniao".
+3) Escolha o tipo, preencha os dados (digite o CNPJ que a
+   razao social vem sozinha) e escolha o horario.
+4) Confirme. O cliente recebe o resumo com o link no
+   WhatsApp.
+
+--------------------------------------------------------
+Se algo nao funcionar
+--------------------------------------------------------
+- O botao "Reuniao" nao aparece: recarregue a pagina do
+  chatPro (F5). Se continuar, va em chrome://extensions e
+  clique no icone de recarregar da extensao.
+- Diz que nao reconheceu voce: seu e-mail precisa estar
+  cadastrado no painel de reunioes. Fale com o Weuden.
+
+Precisa de ajuda? Fale com o Weuden.
+
+--------------------------------------------------------
+IMPORTANTE - nao repasse este pacote
+--------------------------------------------------------
+Ele contem uma credencial da empresa. Se alguem mais
+precisar, peca ao Weuden que ele manda direto.
