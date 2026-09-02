@@ -176,6 +176,14 @@ export type ChatproStatus =
   | 'aviso-enviado';
 
 export interface MeetingRow {
+  /**
+   * Quando a reunião VAI ACONTECER (ISO), null quando foi "agora".
+   *
+   * É diferente de created_at (quando foi marcada) e de started_at (quando o
+   * bot entrou). Sem esta coluna, a reunião de segunda marcada na sexta era
+   * inencontrável: o histórico só sabia a data da sexta.
+   */
+  agendada_para: string | null;
   id: string;
   bot_id: string | null;
   session_id: string | null;
@@ -489,6 +497,7 @@ export class Db {
     // (POST /api/ext/agenda/meetings/{id}/transcript) — sem isso a reunião
     // grava e a transcrição não tem pra onde ir.
     this.garantirColuna('meetings', 'painel_meeting_id', 'TEXT');
+    this.garantirColuna('meetings', 'agendada_para', 'TEXT');
     this.garantirColuna('meetings', 'painel_status', 'TEXT');
     // Por que a última entrega ao painel terminou naquele estado. Vale sobretudo
     // pro 'incerto': quem for reenviar na mão precisa saber que o motivo foi
@@ -1186,6 +1195,7 @@ export class Db {
     clienteJson?: string | null;
     painelMeetingId?: string | null;
     atendenteUserId?: string | null;
+    agendadaPara?: string | null;
     status?: MeetingStatus;
     createdAt?: string;
   }): MeetingRow {
@@ -1195,11 +1205,11 @@ export class Db {
            (id, bot_id, session_id, meeting_url, meeting_code, status, bot_name,
             chatpro_status, chatpro_instance_id, chatpro_parts_sent,
             atendente_email, tipo, cliente_json, painel_meeting_id,
-            atendente_user_id, created_at)
+            atendente_user_id, agendada_para, created_at)
          VALUES (@id, @botId, @sessionId, @meetingUrl, @meetingCode, @status, @botName,
             'pending', @chatproInstanceId, 0,
             @atendenteEmail, @tipo, @clienteJson, @painelMeetingId,
-            @atendenteUserId, @createdAt)`
+            @atendenteUserId, @agendadaPara, @createdAt)`
       )
       .run({
         id: input.id,
@@ -1215,6 +1225,7 @@ export class Db {
         clienteJson: input.clienteJson ?? null,
         painelMeetingId: input.painelMeetingId ?? null,
         atendenteUserId: input.atendenteUserId ?? null,
+        agendadaPara: input.agendadaPara ?? null,
         createdAt: input.createdAt ?? new Date().toISOString(),
       });
     const row = this.getMeeting(input.id);
@@ -1285,10 +1296,78 @@ export class Db {
       .prepare<[string, number], MeetingRow>(
         `SELECT * FROM meetings
           WHERE atendente_email = ?
-          ORDER BY COALESCE(started_at, created_at) DESC
+          ORDER BY COALESCE(agendada_para, started_at, created_at) DESC
           LIMIT ?`
       )
       .all(email, limite);
+  }
+
+  /**
+   * Busca reuniões por nome do cliente, empresa (razão social), CNPJ ou
+   * código de instância — o "cadê aquela reunião que marquei?" da extensão.
+   *
+   * O filtro roda em JS, não em LIKE no SQL, por dois motivos que já morderam
+   * este projeto: acento ("São"/"sao" têm que se encontrar, e o unicode61 do
+   * SQLite não se aplica a LIKE) e máscara ("12.345.678/0001-90" tem que casar
+   * com "12345678" digitado). O volume não pede índice: ~400 reuniões/mês —
+   * iterar alguns milhares de linhas estreitas custa milissegundos no
+   * better-sqlite3, e o iterate() para na cota sem carregar o resto.
+   *
+   * transcript_json fica FORA do SELECT de propósito: é a coluna gigante, e a
+   * busca não precisa dela.
+   */
+  buscarReunioes(termo: string, limite = 30): Array<{
+    id: string;
+    session_id: string | null;
+    meeting_url: string;
+    tipo: string | null;
+    cliente_json: string | null;
+    atendente_email: string | null;
+    painel_meeting_id: string | null;
+    agendada_para: string | null;
+    started_at: string | null;
+    created_at: string;
+  }> {
+    const semAcento = (t: string) =>
+      t
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+    const chave = semAcento(termo.trim());
+    const digitos = termo.replace(/\D/g, '');
+    if (chave.length < 2 && digitos.length < 4) return [];
+
+    const resultado: ReturnType<Db['buscarReunioes']> = [];
+    const linhas = this.db
+      .prepare(
+        `SELECT id, session_id, meeting_url, tipo, cliente_json, atendente_email,
+                painel_meeting_id, agendada_para, started_at, created_at
+           FROM meetings
+          WHERE cliente_json IS NOT NULL
+          ORDER BY COALESCE(agendada_para, started_at, created_at) DESC`
+      )
+      .iterate() as IterableIterator<ReturnType<Db['buscarReunioes']>[number]>;
+
+    for (const linha of linhas) {
+      let c: Record<string, unknown> | null = null;
+      try {
+        c = linha.cliente_json ? (JSON.parse(linha.cliente_json) as Record<string, unknown>) : null;
+      } catch {
+        continue; // JSON quebrado não pode derrubar a busca inteira
+      }
+      if (!c) continue;
+      const textos = [c.nome, c.empresa, c.instancia]
+        .filter((v): v is string => typeof v === 'string' && v !== '')
+        .map(semAcento);
+      const cnpj = typeof c.cnpj === 'string' ? c.cnpj.replace(/\D/g, '') : '';
+      const casa =
+        (chave.length >= 2 && textos.some((t) => t.includes(chave))) ||
+        (digitos.length >= 4 && cnpj.includes(digitos));
+      if (!casa) continue;
+      resultado.push(linha);
+      if (resultado.length >= limite) break;
+    }
+    return resultado;
   }
 
   listMeetings(limit = 50): MeetingRow[] {

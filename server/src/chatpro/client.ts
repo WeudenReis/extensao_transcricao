@@ -86,7 +86,28 @@ export type ResultadoEntrega =
     };
 
 /** Canais que o chatPro aceita em sendMessage. */
-export const PROVIDERS = ['whatsapp', 'facebook', 'instagram', 'cloud'] as const;
+export const PROVIDERS = ['whatsapp', 'telegram', 'facebook', 'instagram', 'cloud'] as const;
+
+/**
+ * O conjunto que `/messages/sendMessage` ACEITA — copiado do próprio 400 que a
+ * API devolveu em 02/09/2026, não deduzido da documentação.
+ */
+const PROVIDERS_DO_ENVIO = new Set<string>(PROVIDERS);
+
+/**
+ * O que `getSessionById` reporta mas o envio RECUSA.
+ *
+ * A mesma plataforma usa dois vocabulários: a sessão do WhatsApp Não Oficial
+ * se apresenta como `'chatpro'`, e o envio para essa mesma sessão exige
+ * `'whatsapp'` (medido em 02/09/2026 — o repasse fiel do valor da sessão
+ * tomou `400 provider must be one of ...` e o cliente ficou sem a mensagem).
+ *
+ * Só entra aqui o que foi VISTO em resposta real. Chutar mapeamento é trocar
+ * um 400 barulhento por mensagem indo pro canal errado em silêncio.
+ */
+const TRADUCAO_DE_PROVIDER: Record<string, string> = {
+  chatpro: 'whatsapp',
+};
 export type ChatproProvider = (typeof PROVIDERS)[number];
 
 /** Base oficial da API de Chat do chatPro. */
@@ -423,8 +444,25 @@ export class ChatproClient {
       const dados = (raiz.session ?? raiz.data ?? raiz) as Record<string, unknown>;
       const p = dados?.provider;
       if (typeof p === 'string' && p !== '') {
-        log.info(`sessão ${sessionId} usa provider '${p}'`);
-        return p;
+        // O valor da sessão NÃO vai direto pro envio: primeiro traduz o
+        // vocabulário ('chatpro' → 'whatsapp'), depois confere se o resultado
+        // é um canal que o sendMessage aceita. Sem isso, o valor cru da sessão
+        // vira 400 e o cliente fica sem o link — aconteceu em 02/09/2026.
+        const bruto = p.trim().toLowerCase();
+        const traduzido = TRADUCAO_DE_PROVIDER[bruto] ?? bruto;
+        if (PROVIDERS_DO_ENVIO.has(traduzido)) {
+          log.info(
+            `sessão ${sessionId} usa provider '${traduzido}'` +
+              (traduzido !== bruto ? ` (sessão reportou '${bruto}')` : '')
+          );
+          return traduzido;
+        }
+        log.warn(
+          `sessão ${sessionId} reporta provider '${bruto}', que o envio não ` +
+            `aceita — usando '${this.provider}'. Se a mensagem não chegar, o ` +
+            `valor precisa entrar na tradução em chatpro/client.ts.`
+        );
+        return this.provider;
       }
       log.warn(`sessão ${sessionId} não informou provider — usando '${this.provider}'.`);
     } catch (err) {

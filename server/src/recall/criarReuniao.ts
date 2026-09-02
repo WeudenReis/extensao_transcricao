@@ -237,6 +237,7 @@ export async function criarReuniao(
     clienteJson: entrada.clienteJson ?? null,
     painelMeetingId: entrada.painelMeetingId ?? null,
     atendenteUserId: entrada.atendenteUserId ?? null,
+    agendadaPara: entrada.joinAt ? entrada.joinAt.toISOString() : null,
     status: 'created',
   });
 

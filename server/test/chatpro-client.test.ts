@@ -300,3 +300,42 @@ describe('entrega', () => {
     expect(r.motivo).not.toContain(TOKEN);
   });
 });
+
+describe('tradução de provider no envio', () => {
+  // O caso real de 02/09/2026: a sessão do WhatsApp Não Oficial se apresenta
+  // como 'chatpro', e o sendMessage recusa esse valor com 400 — o cliente
+  // ficou sem a mensagem da reunião. O envio tem que traduzir pra 'whatsapp'.
+  it("sessão que reporta 'chatpro' envia como 'whatsapp'", async () => {
+    const { fetchImpl, chamadas } = gravador([
+      new Response(JSON.stringify({ session: { provider: 'chatpro' } }), { status: 200 }),
+      ok(),
+    ]);
+    const r = await cliente(fetchImpl).enviarMensagem({
+      sessionId: SESSION,
+      message: 'oi',
+    });
+    expect(r.ok).toBe(true);
+    expect(chamadas[1]?.url).toContain('/messages/sendMessage');
+    expect(chamadas[1]?.body.provider).toBe('whatsapp');
+  });
+
+  it("provider válido ('cloud') passa intacto", async () => {
+    const { fetchImpl, chamadas } = gravador([
+      new Response(JSON.stringify({ session: { provider: 'cloud' } }), { status: 200 }),
+      ok(),
+    ]);
+    await cliente(fetchImpl).enviarMensagem({ sessionId: SESSION, message: 'oi' });
+    expect(chamadas[1]?.body.provider).toBe('cloud');
+  });
+
+  // Valor desconhecido NÃO vai cru pro envio: iria tomar 400 e o cliente
+  // ficaria sem a mensagem. Cai no padrão e o log aponta o valor novo.
+  it('provider desconhecido cai no padrão whatsapp', async () => {
+    const { fetchImpl, chamadas } = gravador([
+      new Response(JSON.stringify({ session: { provider: 'canal-novo-x' } }), { status: 200 }),
+      ok(),
+    ]);
+    await cliente(fetchImpl).enviarMensagem({ sessionId: SESSION, message: 'oi' });
+    expect(chamadas[1]?.body.provider).toBe('whatsapp');
+  });
+});

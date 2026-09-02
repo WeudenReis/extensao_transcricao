@@ -171,11 +171,63 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
             cliente,
             empresa,
             meetUrl: r.meeting_url,
-            quando: r.started_at ?? r.created_at,
+            // O horário DA REUNIÃO quando há um: é ele que lembra o atendente
+            // da reunião de segunda, não a data em que clicou pra marcar.
+            quando: r.agendada_para ?? r.started_at ?? r.created_at,
+            agendada: Boolean(r.agendada_para),
             // A reunião chegou ao painel? É o que separa "marcada" de
             // "aconteceu por aqui e precisa ser lançada lá".
             noPainel: Boolean(r.painel_meeting_id),
             sessionId: r.session_id,
+          };
+        }),
+      });
+    })
+  );
+
+  // A BUSCA do histórico: nome, razão social, CNPJ ou código de instância.
+  // Procura no NOSSO banco (o painel não expõe listagem), em TODAS as
+  // reuniões, não só as de quem pergunta — o caso real é "o cliente ligou e
+  // ninguém lembra quem marcou".
+  router.get(
+    '/api/painel/buscar',
+    assincrono(async (req, res) => {
+      const q = String(req.query.q ?? '').trim();
+      if (q.length < 2) {
+        res.status(400).json({ error: 'Digite ao menos 2 caracteres.' });
+        return;
+      }
+      const linhas = deps.db.buscarReunioes(q, 30);
+      res.json({
+        reunioes: linhas.map((r) => {
+          let cliente: string | null = null;
+          let empresa: string | null = null;
+          let cnpj: string | null = null;
+          let instancia: string | null = null;
+          try {
+            const c = r.cliente_json ? JSON.parse(r.cliente_json) : null;
+            if (c && typeof c === 'object') {
+              cliente = typeof c.nome === 'string' ? c.nome : null;
+              empresa = typeof c.empresa === 'string' ? c.empresa : null;
+              cnpj = typeof c.cnpj === 'string' ? c.cnpj : null;
+              instancia = typeof c.instancia === 'string' ? c.instancia : null;
+            }
+          } catch {
+            // JSON quebrado: a linha aparece sem os dados cadastrais
+          }
+          return {
+            id: r.id,
+            tipo: r.tipo,
+            cliente,
+            empresa,
+            cnpj,
+            instancia,
+            meetUrl: r.meeting_url,
+            quando: r.agendada_para ?? r.started_at ?? r.created_at,
+            agendada: Boolean(r.agendada_para),
+            noPainel: Boolean(r.painel_meeting_id),
+            sessionId: r.session_id,
+            atendente: r.atendente_email,
           };
         }),
       });

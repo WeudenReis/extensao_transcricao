@@ -763,7 +763,103 @@
           }
         );
 
+        montarBusca();
         mostrarUltimas();
+      }
+
+      /**
+       * A busca do HISTÓRICO: nome, razão social, CNPJ ou código de instância.
+       *
+       * O caso que a motivou: reunião marcada na sexta PARA segunda — na
+       * segunda ninguém lembra em qual conversa foi. Digitou qualquer pedaço
+       * que se lembre do cliente, aparecem as reuniões dele, e o clique abre a
+       * PRÓPRIA CONVERSA pelo session_id, que é onde o atendente precisa
+       * chegar (o link do Meet fica de segundo plano, num clique longo não —
+       * simplesmente no cartão certo).
+       *
+       * Procura em TODAS as reuniões, não só nas de quem busca: o caso real é
+       * "o cliente ligou e ninguém lembra quem marcou".
+       */
+      function montarBusca() {
+        const campo = api.campo('Buscar cliente', {
+          placeholder: 'Nome, empresa, CNPJ ou instância',
+        });
+        api.corpo.appendChild(campo.wrap);
+        const area = api.el('div', '');
+        api.corpo.appendChild(area);
+
+        let timer = null;
+        let ultimaQ = '';
+        campo.entrada.addEventListener('input', () => {
+          const q = campo.entrada.value.trim();
+          if (timer) clearTimeout(timer);
+          if (q.length < 2) {
+            area.textContent = '';
+            ultimaQ = '';
+            return;
+          }
+          // 350ms de pausa: buscar a cada tecla enfileiraria respostas fora
+          // de ordem e faria a lista piscar com resultado velho.
+          timer = setTimeout(() => {
+            ultimaQ = q;
+            void pedir('PAINEL_BUSCAR', { q })
+              .then((r) => {
+                // Resposta atrasada de um termo antigo não pode sobrescrever
+                // a do termo atual — nem desenhar numa tela que já mudou.
+                if (ultimaQ !== q || !area.isConnected) return;
+                mostrarResultados(area, q, (r && r.reunioes) || []);
+              })
+              .catch(() => {
+                if (ultimaQ !== q || !area.isConnected) return;
+                mostrarResultados(area, q, []);
+              });
+          }, 350);
+        });
+      }
+
+      function mostrarResultados(area, termo, reunioes) {
+        area.textContent = '';
+        if (reunioes.length === 0) {
+          area.appendChild(
+            api.el(
+              'div',
+              `font:400 12px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:6px 2px`,
+              `Nada encontrado para "${termo}".`
+            )
+          );
+          return;
+        }
+        const meuEmail = (estado.eu && estado.eu.email) || '';
+        const secao = api.secao(`Histórico — ${reunioes.length} reunião(ões)`);
+        // api.secao pendura DOIS nós no corpo (header + article) e devolve só
+        // o article. Os dois precisam vir pra DENTRO da área que é limpa a
+        // cada tecla — mover só o article deixaria um cabeçalho "Histórico"
+        // órfão se acumulando na tela a cada busca.
+        const cabecalhoSecao = secao.previousElementSibling;
+        if (cabecalhoSecao) area.appendChild(cabecalhoSecao);
+        area.appendChild(secao);
+        for (const r of reunioes) {
+          const quem = [r.cliente, r.empresa].filter(Boolean).join(' · ') || 'Cliente';
+          const rotuloTipo = TIPOS[r.tipo] ? TIPOS[r.tipo].rotulo : '';
+          const partes = [quandoLegivel(r.quando), rotuloTipo].filter(Boolean);
+          if (r.agendada) partes.push('agendada');
+          if (!r.noPainel) partes.push('fora do painel');
+          // De quem foi: só quando NÃO foi de quem está olhando — pra própria
+          // pessoa a informação é ruído.
+          if (r.atendente && r.atendente !== meuEmail) {
+            partes.push(`por ${String(r.atendente).split('@')[0]}`);
+          }
+          api.cartao(secao, quem, partes.join(' · '), () => {
+            // O destino é a CONVERSA — é nela que o atendente cola o link,
+            // confere o combinado e fala com o cliente. Sem session_id
+            // (registro antigo), o link do Meet é o que resta.
+            if (r.sessionId) {
+              window.location.href = `https://app.chatpro.com.br/chat/${r.sessionId}`;
+            } else if (r.meetUrl) {
+              window.open(r.meetUrl, '_blank', 'noopener');
+            }
+          });
+        }
       }
 
       /**

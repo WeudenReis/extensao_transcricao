@@ -684,6 +684,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
             clienteJson: cliente ? JSON.stringify(cliente) : null,
             painelMeetingId,
             atendenteUserId,
+            agendadaPara: quando ? quando.toISOString() : null,
           })
         : await criarReuniao(
         { db, recall, botName },
@@ -842,6 +843,8 @@ function registrarSemBot(
     clienteJson: string | null;
     painelMeetingId: string | null;
     atendenteUserId: string | null;
+    /** Horário da reunião (ISO) quando agendada; null quando é "agora". */
+    agendadaPara: string | null;
   }
 ): { ok: true; criada: true; meeting: MeetingRow } {
   const meeting = db.createMeeting({
@@ -861,6 +864,7 @@ function registrarSemBot(
     clienteJson: entrada.clienteJson,
     painelMeetingId: entrada.painelMeetingId,
     atendenteUserId: entrada.atendenteUserId,
+    agendadaPara: entrada.agendadaPara,
   });
   // A transcrição virá do painel, não daqui: marcar como entregue evita que a
   // fila fique cutucando uma reunião que nunca vai ter transcript nosso.

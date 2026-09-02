@@ -207,6 +207,14 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'PAINEL_BUSCAR') {
+        const r = await chamar(`/api/painel/buscar?q=${encodeURIComponent(msg.q || '')}`);
+        // Vazio quando falha: a busca é referência — errar aqui não pode
+        // atrapalhar quem veio marcar uma reunião nova.
+        responder(r.ok ? r.corpo : { reunioes: [] });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_VENDEDORES') {
         const r = await chamar('/api/painel/vendedores');
         responder(r.ok ? r.corpo : { vendedores: [] });
