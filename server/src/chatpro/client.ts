@@ -474,6 +474,59 @@ export class ChatproClient {
     return this.provider;
   }
 
+  /**
+   * Nome e telefone do CONTATO da conversa — pro formulário nascer preenchido.
+   *
+   * A sessão não carrega o contato; só o `lead_id`. O contato mora em
+   * `POST /leads/findById` (estrutura conferida contra a API real em
+   * 04/09/2026). Prioridade do nome: `nome_personalizado` (posto pela equipe,
+   * vale mais) > `contact_name` > `push_name` (o nome que o próprio cliente
+   * exibe no WhatsApp — existe sempre, mas pode ser "😎 Zé"). O `number` vem
+   * como `5511...@s.whatsapp.net`: só os dígitos antes do @ interessam.
+   *
+   * É consulta AUXILIAR: qualquer falha devolve nulos. Palpite de formulário
+   * não pode impedir ninguém de marcar reunião.
+   */
+  async contatoDaSessao(
+    sessionId: string
+  ): Promise<{ nome: string | null; telefone: string | null }> {
+    const vazio = { nome: null, telefone: null };
+    if (!this.instanceToken || !this.instanceId) return vazio;
+    try {
+      const s = (await this.postar('/sessions/getSessionById', {
+        instanceId: this.instanceId,
+        sessionId,
+      })) as Record<string, unknown> | null;
+      const sessao = ((s?.session ?? s?.data ?? s) ?? {}) as Record<string, unknown>;
+      const leadId = sessao.lead_id;
+      if (typeof leadId !== 'string' || leadId === '') return vazio;
+
+      const l = (await this.postar('/leads/findById', {
+        instanceId: this.instanceId,
+        leadId,
+      })) as Record<string, unknown> | null;
+      const lead = ((l?.lead ?? l?.data ?? l) ?? {}) as Record<string, unknown>;
+
+      const nome =
+        [lead.nome_personalizado, lead.contact_name, lead.push_name, lead.name].find(
+          (v): v is string => typeof v === 'string' && v.trim() !== ''
+        ) ?? null;
+      const numero =
+        typeof lead.number === 'string'
+          ? (lead.number.split('@')[0] ?? '').replace(/\D/g, '')
+          : '';
+      return {
+        nome: nome ? nome.trim() : null,
+        // Menos de 8 dígitos não é telefone — é lixo de id que só atrapalharia
+        // o campo. Melhor vazio que errado.
+        telefone: numero.length >= 8 ? numero : null,
+      };
+    } catch (err) {
+      log.warn(`não deu pra ler o contato da sessão ${sessionId}: ${errorMessage(err)}`);
+      return vazio;
+    }
+  }
+
   /** POST autenticado no chatPro Chat. Lança com o motivo em caso de erro. */
   private async postar(caminho: string, corpo: Record<string, unknown>): Promise<unknown> {
     const controller = new AbortController();

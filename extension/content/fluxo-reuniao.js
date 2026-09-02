@@ -191,6 +191,31 @@
    * navegador, e o próprio `paste` nos navegadores em que o preventDefault não
    * pega.
    */
+  /**
+   * Caixa vermelha no campo inválido + a mensagem embaixo.
+   *
+   * A borda aponta O CAMPO; só o texto embaixo obrigava a pessoa a caçar qual
+   * dos dez campos ele descrevia. E a marcação se desfaz sozinha na primeira
+   * tecla: vermelho gritando sobre um valor que a pessoa já está corrigindo
+   * vira ruído — e ruído ensina a ignorar o vermelho.
+   */
+  function marcarInvalido(campo, texto) {
+    campo.entrada.classList.add('cpm-invalido');
+    campo.erro.textContent = texto;
+    campo.erro.style.display = 'block';
+    if (!campo.entrada.dataset.cpmLimpaErro) {
+      campo.entrada.dataset.cpmLimpaErro = '1';
+      const limpar = () => desmarcarInvalido(campo);
+      campo.entrada.addEventListener('input', limpar);
+      campo.entrada.addEventListener('change', limpar);
+    }
+  }
+
+  function desmarcarInvalido(campo) {
+    campo.entrada.classList.remove('cpm-invalido');
+    campo.erro.style.display = 'none';
+  }
+
   function instalarFormatacao(campo, formatar, aoFormatar) {
     const entrada = campo.entrada;
     // O que estava no campo ANTES da tecla atual — é como se descobre que o
@@ -983,6 +1008,26 @@
         // formatador, e o valor que veio da conversa já entra formatado.
         instalarFormatacao(telefone, formatarTelefone);
 
+        // O contato da CONVERSA ABERTA preenche nome e telefone sozinho, pelo
+        // lead da sessão (via servidor). Regras que importam:
+        //   1. Só entra em campo ainda VAZIO — o que a pessoa digitou, ou o que
+        //      voltou de uma passagem anterior, vale mais que o palpite.
+        //   2. Continua 100% editável: é um input comum, nada trava.
+        //   3. Falha silenciosa: é atalho — o formulário funciona sem ele.
+        if (contexto.sessionId && (!nome.entrada.value.trim() || !telefone.entrada.value.trim())) {
+          void pedir('CONTATO_DA_SESSAO', { sessionId: contexto.sessionId })
+            .then((r) => {
+              // A pessoa pode ter trocado de passo — ou digitado — enquanto a
+              // consulta viajava. O palpite atrasado nunca sobrescreve.
+              if (!r || iniciar.passoAtual !== passoDados) return;
+              if (r.nome && !nome.entrada.value.trim()) nome.entrada.value = r.nome;
+              if (r.telefone && !telefone.entrada.value.trim()) {
+                telefone.entrada.value = formatarTelefone(r.telefone);
+              }
+            })
+            .catch(() => {});
+        }
+
         let instancia = null;
         let emailCliente = null;
         let semEmail = null;
@@ -1025,7 +1070,7 @@
             const dispensado = semEmail.entrada.checked;
             emailCliente.wrap.style.opacity = dispensado ? '.5' : '1';
             emailCliente.entrada.disabled = dispensado;
-            if (dispensado) emailCliente.erro.style.display = 'none';
+            if (dispensado) desmarcarInvalido(emailCliente);
           });
           // Os cadastrais de uma passagem anterior. O CNPJ entra ANTES de
           // `instalarFormatacao` logo abaixo: é ela que formata o valor que já
@@ -1127,13 +1172,12 @@
 
             const completo = digitos.length === 14;
             if (completo && !cnpjValido(valor)) {
-              cnpj.erro.textContent = 'CNPJ inválido — confira os dígitos.';
-              cnpj.erro.style.display = 'block';
+              marcarInvalido(cnpj, 'CNPJ inválido — confira os dígitos.');
               cancelarConsulta();
               avisarChecklist(false);
               return;
             }
-            cnpj.erro.style.display = 'none';
+            desmarcarInvalido(cnpj);
             if (!completo) {
               cancelarConsulta();
               avisarChecklist(false);
@@ -1441,11 +1485,10 @@
           let ok = true;
           const exigir = (c, texto) => {
             if (c.entrada.value.trim() === '') {
-              c.erro.textContent = texto;
-              c.erro.style.display = 'block';
+              marcarInvalido(c, texto);
               ok = false;
             } else {
-              c.erro.style.display = 'none';
+              desmarcarInvalido(c);
             }
           };
           exigir(nome, 'Informe o nome do contato.');
@@ -1455,8 +1498,7 @@
             exigir(cnpj, 'Informe o CNPJ.');
             exigir(instancia, 'Informe o código da instância.');
             if (cnpj.entrada.value && !cnpjValido(cnpj.entrada.value)) {
-              cnpj.erro.textContent = 'CNPJ inválido — confira os dígitos.';
-              cnpj.erro.style.display = 'block';
+              marcarInvalido(cnpj, 'CNPJ inválido — confira os dígitos.');
               ok = false;
             }
             // Os campos que a API exige e o formulário não pedia.
@@ -1470,8 +1512,7 @@
               exigir(emailCliente, 'Informe o e-mail do cliente.');
               const valor = emailCliente.entrada.value.trim();
               if (valor !== '' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(valor)) {
-                emailCliente.erro.textContent = 'E-mail inválido.';
-                emailCliente.erro.style.display = 'block';
+                marcarInvalido(emailCliente, 'E-mail inválido.');
                 ok = false;
               }
             }

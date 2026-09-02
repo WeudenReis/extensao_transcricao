@@ -339,3 +339,62 @@ describe('tradução de provider no envio', () => {
     expect(chamadas[1]?.body.provider).toBe('whatsapp');
   });
 });
+
+describe('contatoDaSessao', () => {
+  // Estrutura real medida em 04/09/2026: a sessão só tem lead_id; o contato
+  // mora em /leads/findById, com o number no formato 55...@s.whatsapp.net.
+  it('resolve nome e telefone via lead, limpando o sufixo do número', async () => {
+    const { fetchImpl, chamadas } = gravador([
+      new Response(JSON.stringify({ session: { lead_id: 'lead-1' } }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          lead: {
+            push_name: 'Zé do Zap',
+            nome_personalizado: null,
+            contact_name: null,
+            number: '5511987654321@s.whatsapp.net',
+          },
+        }),
+        { status: 201 }
+      ),
+    ]);
+    const r = await cliente(fetchImpl).contatoDaSessao(SESSION);
+    expect(r).toEqual({ nome: 'Zé do Zap', telefone: '5511987654321' });
+    expect(chamadas[1]?.url).toContain('/leads/findById');
+    expect(chamadas[1]?.body.leadId).toBe('lead-1');
+  });
+
+  // O nome posto pela EQUIPE vale mais que o apelido que o cliente exibe no
+  // WhatsApp — "😎 Zé" não é nome de convite de reunião.
+  it('prefere nome_personalizado ao push_name', async () => {
+    const { fetchImpl } = gravador([
+      new Response(JSON.stringify({ session: { lead_id: 'lead-2' } }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          lead: { push_name: '😎 Zé', nome_personalizado: 'José da Silva', number: '' },
+        }),
+        { status: 201 }
+      ),
+    ]);
+    const r = await cliente(fetchImpl).contatoDaSessao(SESSION);
+    expect(r.nome).toBe('José da Silva');
+    // number vazio: melhor telefone nenhum que telefone lixo.
+    expect(r.telefone).toBeNull();
+  });
+
+  // Consulta auxiliar: falha vira nulos, nunca erro — palpite de formulário
+  // não pode impedir ninguém de marcar reunião.
+  it('falha do chatPro devolve nulos', async () => {
+    const { fetchImpl } = gravador([new Response('erro', { status: 500 })]);
+    const r = await cliente(fetchImpl).contatoDaSessao(SESSION);
+    expect(r).toEqual({ nome: null, telefone: null });
+  });
+
+  it('sessão sem lead_id devolve nulos', async () => {
+    const { fetchImpl } = gravador([
+      new Response(JSON.stringify({ session: {} }), { status: 200 }),
+    ]);
+    const r = await cliente(fetchImpl).contatoDaSessao(SESSION);
+    expect(r).toEqual({ nome: null, telefone: null });
+  });
+});

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Db } from '../db.js';
+import type { ChatproClient } from '../chatpro/client.js';
 import type { PainelClient } from '../painel/client.js';
 import { ehTipoReuniao, validarCnpj, normalizarCnpj } from '../painel/client.js';
 import { assincrono } from './reunioes.js';
@@ -29,6 +30,8 @@ export interface PainelInternoRouterDeps {
   painel: PainelClient;
   /** Pra listar as últimas reuniões — o painel não expõe listagem. */
   db: Db;
+  /** Pra ler o contato (lead) da conversa e pré-preencher o formulário. */
+  chatpro: ChatproClient;
 }
 
 export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router {
@@ -182,6 +185,20 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
           };
         }),
       });
+    })
+  );
+
+  // Nome e telefone do contato da conversa — o formulário nasce preenchido
+  // e EDITÁVEL: é palpite bom, não verdade; quem confirma é o atendente.
+  router.get(
+    '/api/painel/contato',
+    assincrono(async (req, res) => {
+      const sessionId = String(req.query.sessionId ?? '').trim();
+      if (!sessionId) {
+        res.status(400).json({ error: 'Informe ?sessionId=.' });
+        return;
+      }
+      res.json(await deps.chatpro.contatoDaSessao(sessionId));
     })
   );
 

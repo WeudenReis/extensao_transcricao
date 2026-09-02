@@ -102,6 +102,9 @@
 /* ── O que o Copiloto não tem ── */
 .copilot--reuniao .cpm-erro{
   display:none;font-size:.6875rem;color:hsl(var(--color-red,0 72% 51%))}
+.copilot--reuniao .cpm-invalido{
+  border-color:hsl(var(--color-red,0 72% 51%))!important;
+  box-shadow:0 0 0 1px hsl(var(--color-red,0 72% 51%) / .30)}
 .copilot--reuniao .cpm-nota{
   padding:var(--padding-xs);border-radius:var(--radius-md);
   background:hsl(var(--gray-10));font-size:.8125rem;line-height:1.45}

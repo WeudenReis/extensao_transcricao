@@ -207,6 +207,15 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'CONTATO_DA_SESSAO') {
+        const r = await chamar(
+          `/api/painel/contato?sessionId=${encodeURIComponent(msg.sessionId || '')}`
+        );
+        // Nulos quando falha: pré-preenchimento é atalho, não requisito.
+        responder(r.ok ? r.corpo : { nome: null, telefone: null });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_BUSCAR') {
         const r = await chamar(`/api/painel/buscar?q=${encodeURIComponent(msg.q || '')}`);
         // Vazio quando falha: a busca é referência — errar aqui não pode
