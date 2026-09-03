@@ -34,6 +34,56 @@ export interface PainelInternoRouterDeps {
   chatpro: ChatproClient;
 }
 
+/**
+ * A linha do banco vira o cartão que a aba desenha.
+ *
+ * Uma função só para agenda e busca: as duas telas mostram o mesmo cartão, e
+ * quando isso eram dois mapeamentos gêmeos um campo novo aparecia só numa
+ * delas. Já aconteceu neste repositório com a máscara de CNPJ e com CSS.
+ */
+function paraCartao(r: {
+  id: string;
+  session_id: string | null;
+  meeting_url: string;
+  tipo: string | null;
+  cliente_json: string | null;
+  atendente_email: string | null;
+  painel_meeting_id: string | null;
+  agendada_para: string | null;
+  started_at: string | null;
+  created_at: string;
+}) {
+  let cliente: string | null = null;
+  let empresa: string | null = null;
+  let cnpj: string | null = null;
+  let instancia: string | null = null;
+  try {
+    const c = r.cliente_json ? JSON.parse(r.cliente_json) : null;
+    if (c && typeof c === 'object') {
+      cliente = typeof c.nome === 'string' ? c.nome : null;
+      empresa = typeof c.empresa === 'string' ? c.empresa : null;
+      cnpj = typeof c.cnpj === 'string' ? c.cnpj : null;
+      instancia = typeof c.instancia === 'string' ? c.instancia : null;
+    }
+  } catch {
+    // JSON quebrado: o cartão aparece sem os dados cadastrais, mas aparece.
+  }
+  return {
+    id: r.id,
+    tipo: r.tipo,
+    cliente,
+    empresa,
+    cnpj,
+    instancia,
+    meetUrl: r.meeting_url,
+    quando: r.agendada_para ?? r.started_at ?? r.created_at,
+    agendada: Boolean(r.agendada_para),
+    noPainel: Boolean(r.painel_meeting_id),
+    sessionId: r.session_id,
+    atendente: r.atendente_email,
+  };
+}
+
 export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router {
   const { painel } = deps;
   const router = Router();
@@ -202,6 +252,30 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
     })
   );
 
+  // A AGENDA de quem está com a aba aberta: tudo que ele conduz, futuro e
+  // passado, pra decidir onde cabe a próxima reunião.
+  //
+  // Sai do NOSSO banco, e por isso só enxerga o que foi marcado PELA EXTENSÃO
+  // — reunião criada direto no painel não aparece aqui. O painel não expõe
+  // listagem (medido: 404 no GET por id, 405 na coleção), então não há como
+  // completar essa lista hoje. A tela diz isso, em vez de deixar a pessoa
+  // concluir que a agenda está vazia.
+  router.get(
+    '/api/painel/agenda',
+    assincrono(async (req, res) => {
+      const email = String(req.query.email ?? '').trim();
+      if (!email || !email.includes('@')) {
+        res.status(400).json({ error: 'Informe ?email= do atendente.' });
+        return;
+      }
+      const LIMITE = 100;
+      const linhas = deps.db.agendaDoAtendente(email, LIMITE);
+      // `total` é contado no banco, não no array: a lista vem cortada em 100,
+      // e a tela precisa do número REAL pra dizer quantas não couberam.
+      res.json({ reunioes: linhas.map(paraCartao), total: deps.db.contarAgendaDoAtendente(email) });
+    })
+  );
+
   // A BUSCA do histórico: nome, razão social, CNPJ ou código de instância.
   // Procura no NOSSO banco (o painel não expõe listagem), em TODAS as
   // reuniões, não só as de quem pergunta — o caso real é "o cliente ligou e
@@ -215,39 +289,7 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
         return;
       }
       const linhas = deps.db.buscarReunioes(q, 30);
-      res.json({
-        reunioes: linhas.map((r) => {
-          let cliente: string | null = null;
-          let empresa: string | null = null;
-          let cnpj: string | null = null;
-          let instancia: string | null = null;
-          try {
-            const c = r.cliente_json ? JSON.parse(r.cliente_json) : null;
-            if (c && typeof c === 'object') {
-              cliente = typeof c.nome === 'string' ? c.nome : null;
-              empresa = typeof c.empresa === 'string' ? c.empresa : null;
-              cnpj = typeof c.cnpj === 'string' ? c.cnpj : null;
-              instancia = typeof c.instancia === 'string' ? c.instancia : null;
-            }
-          } catch {
-            // JSON quebrado: a linha aparece sem os dados cadastrais
-          }
-          return {
-            id: r.id,
-            tipo: r.tipo,
-            cliente,
-            empresa,
-            cnpj,
-            instancia,
-            meetUrl: r.meeting_url,
-            quando: r.agendada_para ?? r.started_at ?? r.created_at,
-            agendada: Boolean(r.agendada_para),
-            noPainel: Boolean(r.painel_meeting_id),
-            sessionId: r.session_id,
-            atendente: r.atendente_email,
-          };
-        }),
-      });
+      res.json({ reunioes: linhas.map(paraCartao) });
     })
   );
 

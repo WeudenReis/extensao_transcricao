@@ -216,6 +216,18 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'PAINEL_AGENDA') {
+        const r = await chamar(
+          `/api/painel/agenda?email=${encodeURIComponent(msg.email || '')}`
+        );
+        // Falha NÃO vira lista vazia aqui: numa tela cuja função é evitar
+        // marcar em cima de outra reunião, "não consegui consultar" e "você
+        // não tem nada" precisam ser distinguíveis. Sem `reunioes`, a tela
+        // mostra o aviso de falha em vez de afirmar que a agenda está livre.
+        responder(r.ok ? r.corpo : { erro: true });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_BUSCAR') {
         const r = await chamar(`/api/painel/buscar?q=${encodeURIComponent(msg.q || '')}`);
         // Vazio quando falha: a busca é referência — errar aqui não pode

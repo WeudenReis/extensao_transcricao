@@ -87,3 +87,90 @@ describe('buscarReunioes', () => {
     expect(db.buscarReunioes('cliente bom').map((x) => x.id)).toEqual(['g7']);
   });
 });
+
+describe('agendaDoAtendente', () => {
+  it('traz só quem VAI CONDUZIR, não quem marcou', () => {
+    db = new Db(':memory:');
+    comCliente('minha', { nome: 'Cliente A' });
+    // Mesma pessoa marcou, mas o painel distribuiu pra outra: a agenda é
+    // de quem conduz, senão a lista viraria "o que eu marquei pros outros".
+    db.createMeeting({
+      id: 'da-outra',
+      botId: null,
+      sessionId: 'sessao-x',
+      meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      meetingCode: null,
+      botName: null,
+      atendenteEmail: 'anna.souza@chatpro.com.br',
+      tipo: 'cs',
+      clienteJson: JSON.stringify({ nome: 'Cliente B' }),
+    });
+
+    const agenda = db.agendaDoAtendente('weuden.filho@chatpro.com.br');
+    expect(agenda.map((r) => r.id)).toEqual(['minha']);
+  });
+
+  it('ordena por data efetiva DESC — as futuras no topo', () => {
+    db = new Db(':memory:');
+    comCliente('passada', { nome: 'C' }, '2026-01-10T13:00:00.000Z');
+    comCliente('futura', { nome: 'C' }, '2099-01-10T13:00:00.000Z');
+    comCliente('meio', { nome: 'C' }, '2050-01-10T13:00:00.000Z');
+
+    // A tela separa passado/futuro no corte do "agora"; o banco só garante a
+    // ordem. Futura mais distante primeiro, porque a data é a mais alta.
+    expect(db.agendaDoAtendente('weuden.filho@chatpro.com.br').map((r) => r.id)).toEqual([
+      'futura',
+      'meio',
+      'passada',
+    ]);
+  });
+
+  it('respeita o limite', () => {
+    db = new Db(':memory:');
+    for (let i = 0; i < 5; i += 1) comCliente(`r${i}`, { nome: 'C' });
+    expect(db.agendaDoAtendente('weuden.filho@chatpro.com.br', 2).length).toBe(2);
+  });
+
+  // A coluna gigante não pode viajar numa lista de 100 linhas.
+  it('não traz o transcript_json', () => {
+    db = new Db(':memory:');
+    comCliente('t1', { nome: 'C' });
+    const linha = db.agendaDoAtendente('weuden.filho@chatpro.com.br')[0];
+    expect(linha).toBeDefined();
+    expect('transcript_json' in (linha as object)).toBe(false);
+  });
+});
+
+describe('contarAgendaDoAtendente', () => {
+  // Existe porque a agenda vem paginada: contar o array devolvido daria um
+  // numero menor que o real, com cara de exato. O rodape 'N mais antigas'
+  // depende deste total.
+  it('conta TODAS do atendente, alem do limite da pagina', () => {
+    db = new Db(':memory:');
+    for (let i = 0; i < 7; i += 1) comCliente(`c${i}`, { nome: 'C' });
+    expect(db.agendaDoAtendente('weuden.filho@chatpro.com.br', 3).length).toBe(3);
+    expect(db.contarAgendaDoAtendente('weuden.filho@chatpro.com.br')).toBe(7);
+  });
+
+  it('nao conta reuniao de outro atendente', () => {
+    db = new Db(':memory:');
+    comCliente('minha', { nome: 'C' });
+    db.createMeeting({
+      id: 'alheia',
+      botId: null,
+      sessionId: 's',
+      meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      meetingCode: null,
+      botName: null,
+      atendenteEmail: 'anna.souza@chatpro.com.br',
+      tipo: 'cs',
+      clienteJson: JSON.stringify({ nome: 'B' }),
+    });
+    expect(db.contarAgendaDoAtendente('weuden.filho@chatpro.com.br')).toBe(1);
+  });
+
+  it('email sem reuniao devolve 0', () => {
+    db = new Db(':memory:');
+    expect(db.contarAgendaDoAtendente('ninguem@chatpro.com.br')).toBe(0);
+  });
+});

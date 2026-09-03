@@ -1303,6 +1303,61 @@ export class Db {
   }
 
   /**
+   * A AGENDA de um atendente: o que ele tem pela frente e o que já passou.
+   *
+   * Filtra por `atendente_email`, que guarda quem VAI CONDUZIR — não quem
+   * clicou. Numa reunião distribuída pelo painel para outra pessoa, o dono da
+   * agenda é ela, e é isso que faz esta lista responder "o que EU tenho
+   * marcado" em vez de "o que eu marquei para os outros".
+   *
+   * Ordena por data efetiva DESC: as futuras, que têm a data mais alta, saem
+   * primeiro — e quem chama separa passado de futuro no corte do "agora".
+   * Ordenar no SQL evita trazer tudo pra memória só pra ordenar.
+   *
+   * `transcript_json` fica fora do SELECT: é a coluna gigante, e uma agenda
+   * de 100 linhas com transcrição inteira em cada uma travaria a aba.
+   */
+  agendaDoAtendente(email: string, limite = 100): Array<{
+    id: string;
+    session_id: string | null;
+    meeting_url: string;
+    tipo: string | null;
+    cliente_json: string | null;
+    atendente_email: string | null;
+    painel_meeting_id: string | null;
+    agendada_para: string | null;
+    started_at: string | null;
+    created_at: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT id, session_id, meeting_url, tipo, cliente_json, atendente_email,
+                painel_meeting_id, agendada_para, started_at, created_at
+           FROM meetings
+          WHERE atendente_email = ?
+          ORDER BY COALESCE(agendada_para, started_at, created_at) DESC
+          LIMIT ?`
+      )
+      .all(email, limite) as ReturnType<Db['agendaDoAtendente']>;
+  }
+
+  /**
+   * Quantas reuniões esse atendente tem, no total.
+   *
+   * Existe porque a agenda vem paginada (LIMIT 100) e a tela precisa dizer
+   * quantas ficaram de fora. Contar o que CHEGOU daria um número menor que o
+   * real — e com cara de contagem exata, que é pior que não contar.
+   */
+  contarAgendaDoAtendente(email: string): number {
+    const linha = this.db
+      .prepare<[string], { n: number }>(
+        'SELECT COUNT(*) AS n FROM meetings WHERE atendente_email = ?'
+      )
+      .get(email);
+    return linha ? linha.n : 0;
+  }
+
+  /**
    * Busca reuniões por nome do cliente, empresa (razão social), CNPJ ou
    * código de instância — o "cadê aquela reunião que marquei?" da extensão.
    *

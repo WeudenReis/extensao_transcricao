@@ -788,8 +788,194 @@
           }
         );
 
+        // A agenda entra como TERCEIRO cartão, junto das duas ações: quem
+        // abre a aba pra marcar precisa ver o que já tem antes de escolher o
+        // horário — é o que evita marcar em cima de outra reunião.
+        api.cartao(
+          lista,
+          'Minha agenda',
+          'Tudo que você conduz — o que vem e o que já passou.',
+          () => passoAgenda()
+        );
+
         montarBusca();
         mostrarUltimas();
+      }
+
+      /**
+       * A agenda de quem está com a aba aberta.
+       *
+       * Filtra por quem VAI CONDUZIR, não por quem clicou: reunião distribuída
+       * pelo painel pra outra pessoa é agenda dela, não sua. Por isso responde
+       * "o que EU tenho marcado" em vez de "o que eu marquei".
+       *
+       * As futuras vêm primeiro e em ordem CRESCENTE — a próxima no topo, que
+       * é a pergunta real de quem está decidindo onde encaixar mais uma. As
+       * passadas ficam embaixo, em ordem decrescente, como referência.
+       */
+      function passoAgenda() {
+        api.limpar();
+        api.cabecalho('Minha agenda', passoModo);
+        const p = api.p;
+        const email = (estado.eu && estado.eu.email) || '';
+        if (!email) {
+          api.aviso('Não identifiquei seu e-mail no chatPro, então não dá pra montar a agenda.');
+          return;
+        }
+
+        const area = api.el('div', '');
+        api.corpo.appendChild(area);
+        area.appendChild(
+          api.el(
+            'div',
+            `font:400 12px/1.5 system-ui,sans-serif;color:${p.textoFraco};padding:6px 2px`,
+            'Carregando…'
+          )
+        );
+
+        void pedir('PAINEL_AGENDA', { email })
+          .then((r) => {
+            // A pessoa pode ter voltado enquanto a lista carregava.
+            if (!area.isConnected) return;
+            // Sem `reunioes` na resposta a consulta FALHOU — e afirmar
+            // "nenhuma reunião" aqui seria mentir justamente na tela que
+            // existe pra impedir de marcar em cima de outra.
+            if (!r || !Array.isArray(r.reunioes)) {
+              falhaDaAgenda(area);
+              return;
+            }
+            desenharAgenda(area, r.reunioes, r.total);
+          })
+          .catch(() => {
+            if (!area.isConnected) return;
+            falhaDaAgenda(area);
+          });
+      }
+
+      function falhaDaAgenda(area) {
+        area.textContent = '';
+        api.aviso(
+          'Não consegui carregar sua agenda agora. Isso não quer dizer que ' +
+            'você está livre — tente de novo antes de marcar.',
+          'erro'
+        );
+      }
+
+      /** Chave 'AAAA-MM-DD' no fuso LOCAL — `toISOString` daria o dia em UTC,
+       *  e uma reunião das 21h viraria "amanhã" no cabeçalho. */
+      function chaveDoDia(data) {
+        const p = (n) => String(n).padStart(2, '0');
+        return `${data.getFullYear()}-${p(data.getMonth() + 1)}-${p(data.getDate())}`;
+      }
+
+      function rotuloDoDia(chave) {
+        const hoje = chaveDoDia(new Date());
+        if (chave === hoje) return 'Hoje';
+        const amanha = new Date();
+        amanha.setDate(amanha.getDate() + 1);
+        if (chave === chaveDoDia(amanha)) return 'Amanhã';
+        return diaLegivel(chave).replace(/^./, (c) => c.toUpperCase());
+      }
+
+      function desenharAgenda(area, reunioes, total) {
+        area.textContent = '';
+        if (reunioes.length === 0) {
+          area.appendChild(
+            api.el(
+              'div',
+              `font:400 12px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:6px 2px`,
+              'Nenhuma reunião sua por aqui ainda.'
+            )
+          );
+        }
+
+        const agora = Date.now();
+        const comData = reunioes.filter((r) => r.quando && !Number.isNaN(Date.parse(r.quando)));
+        // O corte é o INÍCIO da reunião. Uma que começou há 20 min ainda está
+        // acontecendo, mas listá-la em "próximas" faria a pessoa achar que tem
+        // tempo — em "já aconteceram" ela ao menos procura pelo horário certo.
+        const futuras = comData
+          .filter((r) => Date.parse(r.quando) >= agora)
+          .sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
+        const passadas = comData
+          .filter((r) => Date.parse(r.quando) < agora)
+          .sort((a, b) => Date.parse(b.quando) - Date.parse(a.quando));
+
+        if (futuras.length > 0) {
+          // Agrupado por dia: a pergunta de quem vai marcar é "como está a
+          // terça?", não "quais são minhas próximas 20 reuniões".
+          let diaAtual = null;
+          let secao = null;
+          for (const r of futuras) {
+            const chave = chaveDoDia(new Date(r.quando));
+            if (chave !== diaAtual) {
+              diaAtual = chave;
+              secao = api.secao(rotuloDoDia(chave));
+              const cab = secao.previousElementSibling;
+              if (cab) area.appendChild(cab);
+              area.appendChild(secao);
+            }
+            cartaoDaAgenda(secao, r);
+          }
+        }
+
+        if (passadas.length > 0) {
+          // Teto de 15: a agenda é pra decidir o que vem, e rolar meses de
+          // histórico atrapalha isso. Quem procura reunião antiga usa a busca,
+          // que varre tudo — e a linha abaixo diz que ela existe.
+          const mostrar = passadas.slice(0, 15);
+          // O que sobrou é contado sobre o TOTAL do banco, não sobre o que
+          // coube nas 100 linhas da rota: contar o array daria um número menor
+          // que o real, com cara de exato. Sem `total` (servidor antigo), a
+          // frase não cita quantidade em vez de citar uma errada.
+          const escondidas =
+            typeof total === 'number' ? total - futuras.length - mostrar.length : null;
+          const secao = api.secao('Já aconteceram');
+          const cab = secao.previousElementSibling;
+          if (cab) area.appendChild(cab);
+          area.appendChild(secao);
+          for (const r of mostrar) cartaoDaAgenda(secao, r);
+          const sobrou = escondidas === null ? passadas.length - mostrar.length : escondidas;
+          if (sobrou > 0) {
+            area.appendChild(
+              api.el(
+                'div',
+                `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:4px 2px`,
+                escondidas === null
+                  ? 'Há mais reuniões antigas — procure pelo cliente na tela anterior.'
+                  : `+${sobrou} ${sobrou === 1 ? 'mais antiga' : 'mais antigas'} — ` +
+                    'procure pelo cliente na tela anterior.'
+              )
+            );
+          }
+        }
+
+        // A agenda só enxerga o que foi marcado PELA EXTENSÃO. Reunião criada
+        // direto no painel não aparece, e quem não souber disso conclui que
+        // está livre num horário que não está.
+        area.appendChild(
+          api.el(
+            'div',
+            `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:10px 2px 2px`,
+            'Só aparece o que foi marcado por aqui. Reunião criada direto no painel não entra nesta lista.'
+          )
+        );
+      }
+
+      function cartaoDaAgenda(secao, r) {
+        const quem = [r.cliente, r.empresa].filter(Boolean).join(' · ') || 'Cliente';
+        const rotuloTipo = TIPOS[r.tipo] ? TIPOS[r.tipo].rotulo : '';
+        const partes = [quandoLegivel(r.quando), rotuloTipo].filter(Boolean);
+        if (!r.noPainel) partes.push('fora do painel');
+        api.cartao(secao, quem, partes.join(' · '), () => {
+          // Mesmo destino da busca: a CONVERSA. É lá que está o link, o
+          // combinado e o cliente — abrir o Meet direto pularia o contexto.
+          if (r.sessionId) {
+            window.location.href = `https://app.chatpro.com.br/chat/${r.sessionId}`;
+          } else if (r.meetUrl) {
+            window.open(r.meetUrl, '_blank', 'noopener');
+          }
+        });
       }
 
       /**
@@ -806,7 +992,7 @@
        * "o cliente ligou e ninguém lembra quem marcou".
        */
       function montarBusca() {
-        const campo = api.campo('Buscar cliente', {
+        const campo = api.campo('Histórico de reuniões', {
           placeholder: 'Nome, empresa, CNPJ ou instância',
         });
         api.corpo.appendChild(campo.wrap);
@@ -899,15 +1085,35 @@
        */
       async function mostrarUltimas() {
         if (!estado.eu || !estado.eu.email) return;
+
+        // Marcador criado ANTES da consulta, e é ele que diz se ainda dá pra
+        // desenhar: `api.limpar()` faz `replaceChildren()`, então trocar de
+        // passo desconecta este nó.
+        //
+        // Aqui existia `if (iniciar.passoAtual !== passoModo) return` — e
+        // `iniciar.passoAtual` NUNCA era atribuído em lugar nenhum do arquivo.
+        // Sendo sempre `undefined`, a comparação era sempre verdadeira e a
+        // função saía antes de desenhar: esta lista jamais apareceu na tela
+        // desde que foi escrita. Guarda que depende de estado que ninguém
+        // mantém não protege nada — desliga a funcionalidade em silêncio.
+        const area = api.el('div', '');
+        api.corpo.appendChild(area);
+
         const r = await pedir('PAINEL_MINHAS_REUNIOES', { email: estado.eu.email }).catch(
           () => null
         );
         const reunioes = (r && r.reunioes) || [];
-        if (reunioes.length === 0) return;
-        // A pessoa pode ter avançado de passo enquanto a lista carregava.
-        if (iniciar.passoAtual !== passoModo) return;
+        if (reunioes.length === 0 || !area.isConnected) {
+          area.remove();
+          return;
+        }
 
         const secao = api.secao('Últimas que você marcou');
+        // secao pendura header + article no corpo; os dois vêm pra dentro do
+        // marcador, senão ficariam depois de tudo que veio depois dele.
+        const cabecalhoUltimas = secao.previousElementSibling;
+        if (cabecalhoUltimas) area.appendChild(cabecalhoUltimas);
+        area.appendChild(secao);
         for (const reuniao of reunioes) {
           const quem = reuniao.cliente || reuniao.empresa || 'Cliente';
           const rotuloTipo = TIPOS[reuniao.tipo] ? TIPOS[reuniao.tipo].rotulo : '';
@@ -1019,7 +1225,13 @@
             .then((r) => {
               // A pessoa pode ter trocado de passo — ou digitado — enquanto a
               // consulta viajava. O palpite atrasado nunca sobrescreve.
-              if (!r || iniciar.passoAtual !== passoDados) return;
+              //
+              // A checagem é o PRÓPRIO CAMPO ainda estar na tela: `api.limpar()`
+              // desconecta os nós ao trocar de passo. Antes isto comparava
+              // `iniciar.passoAtual`, que nunca é atribuído — sempre
+              // `undefined`, sempre diferente, e o pré-preenchimento nunca
+              // chegou a acontecer.
+              if (!r || !nome.wrap.isConnected) return;
               if (r.nome && !nome.entrada.value.trim()) nome.entrada.value = r.nome;
               if (r.telefone && !telefone.entrada.value.trim()) {
                 telefone.entrada.value = formatarTelefone(r.telefone);
