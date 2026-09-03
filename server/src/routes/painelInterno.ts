@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Db } from '../db.js';
 import type { ChatproClient } from '../chatpro/client.js';
+import { faltamNoChatpro, type Config } from '../config.js';
 import type { PainelClient } from '../painel/client.js';
 import { ehTipoReuniao, validarCnpj, normalizarCnpj } from '../painel/client.js';
 import { assincrono } from './reunioes.js';
@@ -28,6 +29,10 @@ const log = createLogger('routes/painelInterno');
 
 export interface PainelInternoRouterDeps {
   painel: PainelClient;
+  /**
+   * A config em vigor, só pra dizer o que FALTA — nunca o que está preenchido.
+   */
+  config: Config;
   /** Pra listar as últimas reuniões — o painel não expõe listagem. */
   db: Db;
   /** Pra ler o contato (lead) da conversa e pré-preencher o formulário. */
@@ -251,6 +256,31 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
       res.json(await deps.chatpro.contatoDaSessao(sessionId));
     })
   );
+
+  /**
+   * Este servidor está pronto pra operar?
+   *
+   * Nasceu de um problema concreto: com o servidor hospedado numa VM que não é
+   * nossa, não havia como perguntar "você já tem as credenciais?" — e a
+   * consequência de errar esse palpite é a pior possível: a reunião é criada
+   * no painel e a mensagem NÃO chega ao cliente, que é falha silenciosa.
+   *
+   * Devolve só NOMES de variáveis que estão vazias, nunca valores. Fica atrás
+   * da tranca do PANEL_TOKEN como o resto de /api/*.
+   */
+  router.get('/api/painel/prontidao', (_req, res) => {
+    const faltaChatpro = faltamNoChatpro(deps.config);
+    res.json({
+      // Cria a reunião no painel (link do Meet, agenda do responsável).
+      painel: { pronto: deps.painel.estaConfigurado() },
+      // Manda o resumo com o link pro cliente. Sem isto a reunião é criada e
+      // o cliente não recebe nada — é o que a extensão precisa saber ANTES de
+      // apontar pra cá.
+      chatpro: { pronto: faltaChatpro.length === 0, faltam: faltaChatpro },
+      gravacaoPeloPainel: deps.config.gravacaoPeloPainel === true,
+      pronto: deps.painel.estaConfigurado() && faltaChatpro.length === 0,
+    });
+  });
 
   // A AGENDA de quem está com a aba aberta: tudo que ele conduz, futuro e
   // passado, pra decidir onde cabe a próxima reunião.
