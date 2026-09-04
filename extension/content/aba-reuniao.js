@@ -247,14 +247,27 @@
 .copilot--reuniao .cpm-cal-chips{display:none}
 .copilot--reuniao.cpm-largo .cpm-cal-chips{
   display:flex;flex-direction:column;gap:2px;overflow:hidden}
+/* O chip precisa se destacar do fundo do dia, senão a grade vira um borrão
+   claro — foi o que aconteceu com 16% de opacidade na tela real. Fundo mais
+   forte, texto em peso 600 e uma barra da cor cheia na borda esquerda, que é
+   o que dá a leitura de "evento" à distância. */
 .copilot--reuniao .cpm-cal-chip{
-  font-size:.625rem;line-height:1.3;padding:1px 4px;border-radius:3px;
-  background:hsl(var(--cool-green-70) / .16);color:hsl(var(--gray-80));
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+  font-size:.625rem;font-weight:600;line-height:1.35;
+  padding:1px 4px 1px 3px;border-radius:3px;
+  border-left:2px solid hsl(var(--cool-green-70));
+  background:hsl(var(--cool-green-70) / .30);color:hsl(var(--gray-80));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;
+  display:flex;align-items:center;gap:3px}
+.copilot--reuniao .cpm-cal-chip svg{
+  flex:0 0 auto;width:9px;height:9px;fill:currentColor;opacity:.85}
+.copilot--reuniao .cpm-cal-chip span{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .copilot--reuniao .cpm-cal-chip--mais{
-  background:transparent;color:hsl(var(--gray-50));padding-left:4px}
+  background:transparent;border-left-color:transparent;
+  color:hsl(var(--gray-50));padding-left:5px;font-weight:400}
 .copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip{
-  background:hsl(var(--gray-00) / .25);color:hsl(var(--gray-00))}
+  background:hsl(var(--gray-00) / .28);border-left-color:hsl(var(--gray-00));
+  color:hsl(var(--gray-00))}
 .copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip--mais{
   background:transparent;color:hsl(var(--gray-00))}
 /* No modo largo o dia da semana ganha o nome inteiro — cabe, e "SEG" existia

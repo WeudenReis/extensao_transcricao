@@ -939,6 +939,37 @@
         );
       }
 
+      /**
+       * Um ícone por tipo de reunião, como o painel faz nos chips dele.
+       *
+       * Desenhos MUITO simples de propósito: o chip tem 9px de altura, e
+       * detalhe nesse tamanho vira sujeira. Cada um precisa ser reconhecível
+       * pela SILHUETA, não pelo traço — setas opostas (migração), fone de
+       * atendimento (CS), caixa (implantação), tela (apresentação).
+       *
+       * Sem cor própria: herdam `currentColor` do chip. Cor por tipo exigiria
+       * literal, que quebra o tema claro — a regra dura deste diretório.
+       */
+      const ICONE_TIPO = {
+        migracao: 'M1 4h9V1l5 4-5 4V6H1V4zM15 12H6v3l-5-4 5-4v3h9v2z',
+        cs: 'M8 1C4.7 1 2 3.7 2 7v4h3.5V7H4c0-2.2 1.8-4 4-4s4 1.8 4 4h-1.5v4H14V7c0-3.3-2.7-6-6-6z',
+        implantacao: 'M8 1l6 3v8l-6 3-6-3V4l6-3zm0 2.2L3.8 5 8 6.8 12.2 5 8 3.2z',
+        apresentacao: 'M1 2h14v9H9v2h2.5v1h-7v-1H7v-2H1V2zm2 2v5h10V4H3z',
+      };
+
+      function svgDoTipo(tipo) {
+        const d = ICONE_TIPO[tipo];
+        if (!d) return null;
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', '0 0 16 16');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', d);
+        svg.appendChild(path);
+        return svg;
+      }
+
       /** "9h" / "14h30" — o mais curto que ainda diz a hora, pro chip. */
       function horaCurta(iso) {
         const d = new Date(iso);
@@ -1153,8 +1184,16 @@
           const CABEM = 2;
           for (const r of daquele.slice(0, CABEM)) {
             const quem = (r.cliente || r.empresa || 'Reunião').split(' ')[0];
-            const c = api.el('span', '', `${horaCurta(r.quando)} ${quem}`);
+            const c = api.el('span', '');
             c.className = 'cpm-cal-chip';
+            const icone = svgDoTipo(r.tipo);
+            if (icone) c.appendChild(icone);
+            // O texto vai num <span> próprio: o corte com reticências precisa
+            // acontecer no TEXTO, não no chip inteiro — senão o ícone é a
+            // primeira coisa a sumir quando o nome é comprido.
+            c.appendChild(api.el('span', '', `${horaCurta(r.quando)} ${quem}`));
+            const rotulo = TIPOS[r.tipo] ? TIPOS[r.tipo].rotulo : 'Reunião';
+            c.title = `${rotulo} — ${horaCurta(r.quando)} ${r.cliente || r.empresa || ''}`.trim();
             chips.appendChild(c);
           }
           if (daquele.length > CABEM) {
@@ -1602,7 +1641,12 @@
               if (!r || !nome.wrap.isConnected) return;
               if (r.nome && !nome.entrada.value.trim()) nome.entrada.value = r.nome;
               if (r.telefone && !telefone.entrada.value.trim()) {
-                telefone.entrada.value = formatarTelefone(r.telefone);
+                // `.texto`: formatarTelefone devolve `{texto, prefixo}`, não
+                // uma string. Atribuir o objeto direto escrevia
+                // "[object Object]" no campo — e, como o campo passava a
+                // estar "preenchido", nem a máscara nem uma segunda tentativa
+                // corrigiam. Foi assim que o telefone parou de puxar.
+                telefone.entrada.value = formatarTelefone(r.telefone).texto;
               }
             })
             .catch(() => {});
