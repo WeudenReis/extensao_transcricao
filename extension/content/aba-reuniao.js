@@ -190,17 +190,18 @@
   border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
 .copilot--reuniao .cpm-cal-semana,
 .copilot--reuniao .cpm-cal-grade{
-  display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+  display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
 .copilot--reuniao .cpm-cal-semana{margin-bottom:3px}
 .copilot--reuniao .cpm-cal-dia-nome{
   font-size:.625rem;font-weight:600;color:hsl(var(--gray-50));
   text-align:center;text-transform:uppercase;letter-spacing:.02em}
 .copilot--reuniao .cpm-cal-dia{
-  aspect-ratio:1;min-height:38px;border-radius:var(--radius-sm,6px);
+  min-height:34px;border-radius:var(--radius-sm,6px);
   border:1px solid transparent;background:transparent;
   color:hsl(var(--gray-80));cursor:pointer;font-family:inherit;
   font-size:.8125rem;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:2px;padding:0;transition:all .1s}
+  justify-content:center;gap:1px;padding:2px 0;transition:all .1s;
+  overflow:hidden}
 .copilot--reuniao .cpm-cal-dia:hover{background:hsl(var(--gray-10))}
 /* Dia de outro mês continua clicável, mas apagado: é contexto de borda de
    grade, não conteúdo — e sumir com ele deixaria buracos na primeira linha. */
@@ -222,6 +223,53 @@
   width:4px;height:4px;border-radius:50%;background:hsl(var(--cool-green-70))}
 .copilot--reuniao .cpm-cal-dia--escolhido .cpm-cal-ponto{
   background:hsl(var(--gray-00))}
+/* ── Modo LARGO ──
+   A coluna de 450px cabe o mês inteiro, mas só com pontinhos: 55px não
+   comportam nome de cliente. Alargando, cada dia vira uma célula alta com
+   chips nomeados — o desenho do painel, que só faltava espaço pra existir.
+
+   O min(58vw, 760px) e nao um numero fixo: a aba divide a tela com a
+   conversa, e 760px num notebook de 1280 deixaria o chat inutilizável.
+   O :not(.active) acompanha o fechamento — sem ele a aba fecharia deixando
+   uma faixa de 300px pra fora, porque o chatPro esconde com margem negativa
+   do tamanho ANTIGO. */
+.copilot--reuniao.cpm-largo{flex-basis:min(58vw,760px)}
+.copilot--reuniao.cpm-largo:not(.active){margin-right:calc(min(58vw,760px) * -1)}
+.copilot--reuniao.cpm-largo .cpm-cal-dia{
+  min-height:74px;justify-content:flex-start;align-items:stretch;
+  padding:3px;gap:2px}
+.copilot--reuniao.cpm-largo .cpm-cal-num{
+  text-align:left;padding-left:2px;font-size:.75rem}
+/* Os pontinhos são o resumo de quem não tem espaço pra nome; com nome na
+   tela eles viram ruído. Os dois convivem no DOM e o CSS escolhe — trocar no
+   JS exigiria redesenhar a grade a cada mudança de largura. */
+.copilot--reuniao.cpm-largo .cpm-cal-pontos{display:none}
+.copilot--reuniao .cpm-cal-chips{display:none}
+.copilot--reuniao.cpm-largo .cpm-cal-chips{
+  display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.copilot--reuniao .cpm-cal-chip{
+  font-size:.625rem;line-height:1.3;padding:1px 4px;border-radius:3px;
+  background:hsl(var(--cool-green-70) / .16);color:hsl(var(--gray-80));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.copilot--reuniao .cpm-cal-chip--mais{
+  background:transparent;color:hsl(var(--gray-50));padding-left:4px}
+.copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip{
+  background:hsl(var(--gray-00) / .25);color:hsl(var(--gray-00))}
+.copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip--mais{
+  background:transparent;color:hsl(var(--gray-00))}
+/* No modo largo o dia da semana ganha o nome inteiro — cabe, e "SEG" existia
+   só pela falta de espaço. */
+.copilot--reuniao.cpm-largo .cpm-cal-dia-nome{font-size:.6875rem}
+/* Botão de alargar/estreitar, ao lado do Hoje. */
+.copilot--reuniao .cpm-cal-largura{
+  flex:0 0 auto;width:32px;height:32px;padding:0;
+  border-radius:var(--radius-sm,6px);border:1px solid hsl(var(--gray-10));
+  background:hsl(var(--gray-00));color:hsl(var(--gray-80));cursor:pointer;
+  font-family:inherit;font-size:.875rem;line-height:1;
+  display:flex;align-items:center;justify-content:center;transition:all .1s}
+.copilot--reuniao .cpm-cal-largura:hover{
+  border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
+
 /* Alternador Mês | Lista, no lugar do que o painel põe no canto direito. */
 .copilot--reuniao .cpm-abas{
   display:flex;gap:4px;margin-bottom:.75rem;
@@ -499,6 +547,21 @@
         lista.replaceChildren();
         rodape.replaceChildren();
         rodape.hidden = true;
+        // Toda tela nova começa na largura padrão. Quem quer largo (só o
+        // calendário) pede de novo depois de desenhar — assim o formulário
+        // não herda 760px com campos de coluna única.
+        raiz.classList.remove('cpm-largo');
+      },
+      /**
+       * Alarga a aba pra caber o calendário com nome de cliente.
+       *
+       * A largura real vem do `.copilot` do chatPro; aqui só entra um
+       * modificador que sobrescreve o flex-basis e a margem negativa de
+       * fechamento. Devolve o estado pra quem precisa desenhar o botão.
+       */
+      largura(largo) {
+        raiz.classList.toggle('cpm-largo', largo === true);
+        return raiz.classList.contains('cpm-largo');
       },
       acao(rotulo, aoClicar) {
         const b = botao(rotulo, 'primario');

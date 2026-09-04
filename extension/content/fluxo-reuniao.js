@@ -915,6 +915,8 @@
         if (estado.agendaVista === 'mes') {
           desenharMes(corpo, reunioes, total);
         } else {
+          // A lista é de coluna única: alargar só afastaria o horário do nome.
+          api.largura(false);
           desenharLista(corpo, reunioes, total);
         }
 
@@ -930,6 +932,14 @@
         );
       }
 
+      /** "9h" / "14h30" — o mais curto que ainda diz a hora, pro chip. */
+      function horaCurta(iso) {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '';
+        const m = d.getMinutes();
+        return m === 0 ? `${d.getHours()}h` : `${d.getHours()}h${String(m).padStart(2, '0')}`;
+      }
+
       /** Índice 'AAAA-MM-DD' -> reuniões daquele dia, em ordem de horário. */
       function porDia(reunioes) {
         const mapa = new Map();
@@ -943,6 +953,31 @@
           lista.sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
         }
         return mapa;
+      }
+
+      /**
+       * Largo ou estreito — preferência da pessoa, não do dia.
+       *
+       * Fica em `chrome.storage.local` e não em memória porque a aba é
+       * remontada a cada abertura: sem persistir, quem gosta do modo largo
+       * teria que clicar toda vez. O try/catch cobre o content script sem
+       * acesso à API (contexto invalidado após recarregar a extensão).
+       */
+      let agendaLarga = false;
+      try {
+        chrome.storage.local.get('cpmAgendaLarga', (v) => {
+          if (v && typeof v.cpmAgendaLarga === 'boolean') agendaLarga = v.cpmAgendaLarga;
+        });
+      } catch {
+        // segue no padrão estreito
+      }
+      function guardarLargura(valor) {
+        agendaLarga = valor;
+        try {
+          chrome.storage.local.set({ cpmAgendaLarga: valor });
+        } catch {
+          // a preferência vale só nesta sessão, e tudo bem
+        }
       }
 
       const MESES = [
@@ -1023,14 +1058,39 @@
           estado.agendaDia = chaveDoDia(agora);
           desenharMes(corpo, reunioes, total, 'hoje');
         });
-        topo.append(anterior, titulo, proximo, hojeBtn);
+        // Alargar/estreitar. Só existe na vista Mês: é a única tela em que
+        // a largura muda o que dá pra mostrar (pontinho vira nome).
+        const larguraBtn = api.el('button', '', agendaLarga ? '⤎' : '⤏');
+        larguraBtn.type = 'button';
+        larguraBtn.className = 'cpm-cal-largura';
+        larguraBtn.title = agendaLarga ? 'Estreitar a aba' : 'Alargar para ver os nomes';
+        larguraBtn.setAttribute(
+          'aria-label',
+          agendaLarga ? 'Estreitar a aba' : 'Alargar a aba para ver os nomes das reuniões'
+        );
+        larguraBtn.addEventListener('click', () => {
+          guardarLargura(!agendaLarga);
+          api.largura(agendaLarga);
+          desenharMes(corpo, reunioes, total, 'largura');
+        });
+        topo.append(anterior, titulo, proximo, hojeBtn, larguraBtn);
+
+        // A largura é reaplicada a cada desenho porque api.limpar() a zera em
+        // toda troca de tela — voltar pro calendário tem que devolver o modo
+        // que a pessoa escolheu.
+        api.largura(agendaLarga);
         corpo.textContent = '';
         corpo.appendChild(topo);
 
         // ── Cabeçalho dos dias da semana ──
         const semana = api.el('div', '');
         semana.className = 'cpm-cal-semana';
-        for (const nome of ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']) {
+        // Nome inteiro só no modo largo: em 55px "segunda-feira" não cabe, e
+        // abreviar era falta de espaço, não escolha.
+        const nomesDaSemana = agendaLarga
+          ? ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado']
+          : ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+        for (const nome of nomesDaSemana) {
           const c = api.el('div', '', nome);
           c.className = 'cpm-cal-dia-nome';
           semana.appendChild(c);
@@ -1059,7 +1119,9 @@
             (doMes ? '' : ' cpm-cal-dia--fora') +
             (chave === chaveHoje ? ' cpm-cal-dia--hoje' : '') +
             (chave === estado.agendaDia ? ' cpm-cal-dia--escolhido' : '');
-          b.appendChild(api.el('span', '', String(dia.getDate())));
+          const num = api.el('span', '', String(dia.getDate()));
+          num.className = 'cpm-cal-num';
+          b.appendChild(num);
 
           const pontos = api.el('span', '');
           pontos.className = 'cpm-cal-pontos';
@@ -1071,6 +1133,26 @@
             pontos.appendChild(ponto);
           }
           b.appendChild(pontos);
+
+          // Os chips com nome — escondidos por CSS no modo estreito. Ficam
+          // sempre no DOM pra alternar a largura não exigir redesenho da
+          // grade inteira; são 42 células, e piscar tudo a cada clique seria
+          // pior que o custo de nós ocultos.
+          const chips = api.el('span', '');
+          chips.className = 'cpm-cal-chips';
+          const CABEM = 2;
+          for (const r of daquele.slice(0, CABEM)) {
+            const quem = (r.cliente || r.empresa || 'Reunião').split(' ')[0];
+            const c = api.el('span', '', `${horaCurta(r.quando)} ${quem}`);
+            c.className = 'cpm-cal-chip';
+            chips.appendChild(c);
+          }
+          if (daquele.length > CABEM) {
+            const mais = api.el('span', '', `+${daquele.length - CABEM}`);
+            mais.className = 'cpm-cal-chip cpm-cal-chip--mais';
+            chips.appendChild(mais);
+          }
+          b.appendChild(chips);
 
           // O botão só tem um número dentro. Sem rótulo, o leitor de tela
           // anuncia "15" — sem mês, sem dizer que abre uma lista, e sem
@@ -1157,7 +1239,9 @@
                 ? proximo
                 : focar === 'hoje'
                   ? hojeBtn
-                  : grade.querySelector(`[data-dia="${focar}"]`);
+                  : focar === 'largura'
+                    ? larguraBtn
+                    : grade.querySelector(`[data-dia="${focar}"]`);
           if (alvo && typeof alvo.focus === 'function') alvo.focus();
         }
       }
