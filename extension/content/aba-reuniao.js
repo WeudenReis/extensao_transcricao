@@ -547,10 +547,6 @@
         lista.replaceChildren();
         rodape.replaceChildren();
         rodape.hidden = true;
-        // Toda tela nova começa na largura padrão. Quem quer largo (só o
-        // calendário) pede de novo depois de desenhar — assim o formulário
-        // não herda 760px com campos de coluna única.
-        raiz.classList.remove('cpm-largo');
       },
       /**
        * Alarga a aba pra caber o calendário com nome de cliente.
@@ -558,6 +554,15 @@
        * A largura real vem do `.copilot` do chatPro; aqui só entra um
        * modificador que sobrescreve o flex-basis e a margem negativa de
        * fechamento. Devolve o estado pra quem precisa desenhar o botão.
+       *
+       * A ANIMAÇÃO é de graça: o `.copilot` já traz `transition: all .2s`
+       * pra própria abertura, e trocar o flex-basis entra nessa transição.
+       * Por isso aqui não há transition própria — declarar uma substituiria
+       * o `all` do chatPro e mataria a animação de abrir e fechar a aba.
+       *
+       * NÃO é chamada por `limpar()`: resetar a cada tela faria a aba
+       * encolher e crescer de novo ao entrar na agenda, duas animações
+       * seguidas. Quem precisa de estreito pede explicitamente.
        */
       largura(largo) {
         raiz.classList.toggle('cpm-largo', largo === true);

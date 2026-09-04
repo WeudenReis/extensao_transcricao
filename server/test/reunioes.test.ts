@@ -1210,3 +1210,68 @@ describe('montarResumo', () => {
     expect(t).not.toMatch(/@chatpro|CNPJ|chatpro-|\d{2}\.\d{3}\.\d{3}/);
   });
 });
+
+describe('semMensagem — o atendente escolhe não avisar o cliente', () => {
+  it('reunião AGORA: cria tudo e não chama o sendMessage', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      semMensagem: true,
+    });
+
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as {
+      meetUrl: string;
+      mensagemEnviada: boolean;
+      mensagemDispensada: boolean;
+      resumo: string;
+    };
+    // A reunião existe e o link volta pra tela — é ele que o atendente vai
+    // colar na conversa quando quiser.
+    expect(corpo.meetUrl).toContain('meet.google.com');
+    expect(corpo.resumo).toContain('meet.google.com');
+    // Nada saiu pro cliente.
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(false);
+    // Os dois campos dizem coisas diferentes: "não foi enviada" e "não foi
+    // enviada PORQUE VOCÊ PEDIU". A tela precisa do segundo pra não prometer
+    // um envio que não vem.
+    expect(corpo.mensagemEnviada).toBe(false);
+    expect(corpo.mensagemDispensada).toBe(true);
+  });
+
+  it('reunião AGENDADA: não entra na fila de convites', async () => {
+    const app = await montarApp();
+    const quando = daquiA(3 * 24 * 60);
+
+    const res = await iniciar(app.baseUrl, {
+      sessionId: SESSION,
+      deviceId: DEVICE,
+      quando,
+      semMensagem: true,
+    });
+
+    expect(res.status).toBe(201);
+    // Enfileirar e depois "falhar" deixaria uma linha vermelha no painel de
+    // envios pra algo que ninguém queria mandar.
+    expect(filaDeConvites(app.db)).toHaveLength(0);
+    const corpo = (await res.json()) as { mensagemDispensada: boolean };
+    expect(corpo.mensagemDispensada).toBe(true);
+  });
+
+  it('sem a opção, o comportamento de sempre continua: a mensagem sai', async () => {
+    const app = await montarApp();
+
+    const res = await iniciar(app.baseUrl, { sessionId: SESSION, deviceId: DEVICE });
+
+    expect(res.status).toBe(201);
+    const corpo = (await res.json()) as {
+      mensagemEnviada: boolean;
+      mensagemDispensada: boolean;
+    };
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(true);
+    expect(corpo.mensagemEnviada).toBe(true);
+    expect(corpo.mensagemDispensada).toBe(false);
+  });
+});

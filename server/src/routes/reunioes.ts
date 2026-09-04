@@ -217,6 +217,17 @@ export const iniciarSchema = z.object({
    */
   atendenteUserId: z.string().max(120).nullish(),
   /**
+   * `true` = NÃO mandar nada pro cliente: nem agora, nem pela fila.
+   *
+   * Existe pro caso em que o atendente vai combinar o link por outro canal, ou
+   * já está falando com o cliente e não quer a mensagem automática por cima da
+   * conversa. A reunião é criada normalmente — o que muda é só a entrega.
+   *
+   * Diferente de `cliente.semEmail`, que é o e-mail com .ics do PAINEL. Os
+   * dois canais são independentes, e desligar um não desliga o outro.
+   */
+  semMensagem: z.boolean().optional(),
+  /**
    * `vendedor_email` — o vendedor DONO da conta. A migração exige; os outros
    * tipos aceitam. Não confundir com quem vai conduzir a reunião.
    */
@@ -419,6 +430,7 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       const tipo = parsed.data.tipo ?? null;
       const atendenteEmail = parsed.data.atendenteEmail ?? null;
       const atendenteUserId = parsed.data.atendenteUserId ?? null;
+      const semMensagem = parsed.data.semMensagem === true;
       const vendedorEmail = parsed.data.vendedorEmail ?? null;
       const assigneeEmail = parsed.data.assigneeEmail ?? null;
       const cliente = parsed.data.cliente ?? null;
@@ -646,7 +658,10 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       // o link pra colar na mão. Se o atendente colar, o cliente entra e a
       // gravação acontece igual. O que não pode é refazer tudo.
       let mensagemFalhou: string | null = null;
-      if (!quando) {
+      // `semMensagem` pula o envio inteiro, sem virar erro: a reunião existe,
+      // o link está na resposta, e quem pediu pra não enviar não pode receber
+      // um 502 dizendo que o envio falhou.
+      if (!quando && !semMensagem) {
         const envio = await chatpro.enviarMensagem({ sessionId, message: texto, instanceId });
         if (!envio.ok) {
           mensagemFalhou = envio.motivo;
@@ -712,7 +727,10 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       //    (RECALL_API_KEY vazia), o convite sai mesmo assim com um id órfão —
       //    o cliente receber o link importa mais que a gravação, e o worker
       //    não cancela por falta de reunião justamente por causa deste caso.
-      if (quando && enviarEm) {
+      // Idem pra agendada: sem mensagem, não entra na fila. Enfileirar e
+      // depois "cancelar" deixaria uma linha 'falhou' no painel de envios pra
+      // algo que ninguém queria enviar.
+      if (quando && enviarEm && !semMensagem) {
         db.criarEnvioAgendado({
           meetingId: r.meeting?.id ?? randomUUID(),
           sessionId,
@@ -737,7 +755,11 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
         meetUrl: meet.meetUrl,
         meetingCode: meet.meetingCode,
         // Agendada: a mensagem NÃO saiu agora — sai perto do horário.
-        mensagemEnviada: !quando && mensagemFalhou === null,
+        mensagemEnviada: !quando && !semMensagem && mensagemFalhou === null,
+        // Separado de `mensagemEnviada`: "não enviei porque você pediu" e
+        // "não enviei ainda, é agendada" levam a tela a dizer coisas
+        // diferentes, e um booleano só não distingue as duas.
+        mensagemDispensada: semMensagem,
         // A reunião EXISTE no painel. É o que impede a tela de oferecer
         // "tentar de novo" e duplicar um compromisso real.
         ...(painelMeetingId ? { painelMeetingId, naoRepetir: true } : {}),

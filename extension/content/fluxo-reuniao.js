@@ -755,6 +755,9 @@
       // ── Passo 1: agora ou marcar ─────────────────────────────────────────
       function passoModo() {
         api.limpar();
+        // Sair da agenda devolve a aba à largura normal — é aqui que a volta
+        // acontece, porque todo caminho de saída passa por esta tela.
+        api.largura(false);
         api.cabecalho('Reunião', null);
         const p = api.p;
 
@@ -823,6 +826,12 @@
           return;
         }
 
+        // Alarga JÁ no clique, antes da consulta: a expansão é a resposta
+        // visual ao toque. Esperar o servidor deixaria o botão parecendo
+        // morto por um instante — e a tela entra sempre no Mês, então não há
+        // risco de alargar pra depois estreitar.
+        api.largura(agendaLarga);
+
         const area = api.el('div', '');
         api.corpo.appendChild(area);
         area.appendChild(
@@ -844,13 +853,10 @@
               falhaDaAgenda(area);
               return;
             }
-            // Abre no MÊS quando há reunião futura (a pergunta é "onde
-            // encaixo?"), e na LISTA quando só há passado — um calendário
-            // vazio não responde nada a quem não tem nada marcado.
-            const temFuturo = r.reunioes.some(
-              (x) => x.quando && Date.parse(x.quando) >= Date.now()
-            );
-            estado.agendaVista = temFuturo ? 'mes' : 'lista';
+            // Sempre no MÊS: é a vista que responde "onde encaixo a
+            // próxima", que é o motivo da tela existir. Mês sem reunião não é
+            // tela inútil — é a resposta "está livre".
+            estado.agendaVista = 'mes';
             estado.agendaMes = null;
             estado.agendaDia = null;
             desenharAgenda(area, r.reunioes, r.total);
@@ -863,6 +869,7 @@
 
       function falhaDaAgenda(area) {
         area.textContent = '';
+        api.largura(false);
         api.aviso(
           'Não consegui carregar sua agenda agora. Isso não quer dizer que ' +
             'você está livre — tente de novo antes de marcar.',
@@ -963,7 +970,10 @@
        * teria que clicar toda vez. O try/catch cobre o content script sem
        * acesso à API (contexto invalidado após recarregar a extensão).
        */
-      let agendaLarga = false;
+      // Começa LARGO: é a vista com nome de cliente em cada dia, e foi a que
+      // o time escolheu como padrão. Quem preferir a coluna estreita clica no
+      // botão uma vez e a escolha fica guardada.
+      let agendaLarga = true;
       try {
         chrome.storage.local.get('cpmAgendaLarga', (v) => {
           if (v && typeof v.cpmAgendaLarga === 'boolean') agendaLarga = v.cpmAgendaLarga;
@@ -1598,6 +1608,17 @@
             .catch(() => {});
         }
 
+        // Fora do `if (precisaCadastro)`: não mandar mensagem vale pra
+        // qualquer tipo de reunião, inclusive as que não pedem cadastro.
+        const semMensagem = api.caixa(
+          'Não enviar mensagem ao cliente',
+          'A reunião é criada e o link fica aqui pra você mandar quando quiser.'
+        );
+        api.corpo.appendChild(semMensagem.wrap);
+        if (estado.cliente && estado.cliente.semMensagem) {
+          semMensagem.entrada.checked = true;
+        }
+
         let instancia = null;
         let emailCliente = null;
         let semEmail = null;
@@ -2093,6 +2114,7 @@
             nome: nome.entrada.value.trim(),
             empresa: empresa.entrada.value.trim(),
             telefone: telefone.entrada.value.trim(),
+            semMensagem: semMensagem.entrada.checked,
           };
           if (precisaCadastro) {
             estado.cliente.cnpj = cnpj.entrada.value.trim();
@@ -2705,6 +2727,10 @@
           // no nome de quem conduziu, em vez do usuário fixo do .env.
           atendenteUserId: estado.eu.userId || null,
           cliente: estado.cliente,
+          // No topo, e não dentro de `cliente`: o schema do cliente é um
+          // z.object comum e o Zod descarta chave desconhecida sem avisar —
+          // a opção viajaria e não faria nada.
+          semMensagem: estado.cliente.semMensagem === true,
           vendedorEmail: estado.vendedorEmail,
           // Só existe quando o painel disse que esta pessoa escolhe — mandar
           // sem permissão é 403 na cara de quem já preencheu tudo.
@@ -3038,7 +3064,12 @@
         if (resposta.avisoPainel) nota(String(resposta.avisoPainel), 'perigo');
 
         if (resposta.avisoMensagem) nota(String(resposta.avisoMensagem), 'perigo');
-        else if (quandoIso) nota('O convite vai pro cliente 5 minutos antes.');
+        // Vem ANTES do aviso da agendada: sem isto, quem marcou pra amanhã e
+        // pediu pra não enviar leria "o convite vai pro cliente 5 min antes" —
+        // exatamente o contrário do que escolheu.
+        else if (resposta.mensagemDispensada) {
+          nota('Você escolheu não enviar. Copie o resumo abaixo e mande quando quiser.');
+        } else if (quandoIso) nota('O convite vai pro cliente 5 minutos antes.');
         else if (resposta.mensagemEnviada) nota('O link já foi enviado pro cliente.');
         // A sala abriu, mas o bot não entrou: sem isto, a pessoa só descobre
         // que não há transcrição quando for procurar por ela.
