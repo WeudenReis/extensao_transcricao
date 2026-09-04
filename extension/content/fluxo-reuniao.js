@@ -858,6 +858,7 @@
             // tela inútil — é a resposta "está livre".
             estado.agendaVista = 'mes';
             estado.agendaMes = null;
+            estado.agendaSemana = null;
             estado.agendaDia = null;
             desenharAgenda(area, r.reunioes, r.total);
           })
@@ -904,7 +905,11 @@
         area.textContent = '';
         const abas = api.el('div', '');
         abas.className = 'cpm-abas';
-        for (const [chave, rotulo] of [['mes', 'Mês'], ['lista', 'Lista']]) {
+        for (const [chave, rotulo] of [
+          ['mes', 'Mês'],
+          ['semana', 'Semana'],
+          ['lista', 'Lista'],
+        ]) {
           const b = api.el('button', '', rotulo);
           b.type = 'button';
           b.className = 'cpm-aba' + (estado.agendaVista === chave ? ' cpm-aba--ativa' : '');
@@ -921,6 +926,11 @@
         area.appendChild(corpo);
         if (estado.agendaVista === 'mes') {
           desenharMes(corpo, reunioes, total);
+        } else if (estado.agendaVista === 'semana') {
+          // Larga também: a semana mostra o nome por extenso, e é o espaço que
+          // permite a linha inteira sem cortar no meio do cliente.
+          api.largura(agendaLarga);
+          desenharSemana(corpo, reunioes);
         } else {
           // A lista é de coluna única: alargar só afastaria o horário do nome.
           api.largura(false);
@@ -1291,6 +1301,161 @@
                   : focar === 'largura'
                     ? larguraBtn
                     : grade.querySelector(`[data-dia="${focar}"]`);
+          if (alvo && typeof alvo.focus === 'function') alvo.focus();
+        }
+      }
+
+      /**
+       * A semana, em sete LINHAS.
+       *
+       * O painel usa sete colunas porque tem a tela inteira. Aqui a coluna do
+       * dia teria ~55px estreita e ~100px larga, e o nome do cliente — que é o
+       * motivo desta vista existir — não caberia em nenhuma das duas. Em linha
+       * cada dia usa a largura toda, e a reunião sai por extenso: hora, tipo e
+       * cliente. É o "mais explícito" que a semana promete.
+       */
+      function desenharSemana(corpo, reunioes, focar) {
+        const indice = porDia(reunioes);
+        const hoje = new Date();
+        // Sem semana escolhida, abre na semana da PRÓXIMA reunião — mesma
+        // regra do mês: abrir numa semana vazia não responde nada.
+        if (!estado.agendaSemana) {
+          const futuras = reunioes
+            .filter((r) => r.quando && Date.parse(r.quando) >= Date.now())
+            .sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
+          const base = futuras.length > 0 ? new Date(futuras[0].quando) : hoje;
+          const domingo = new Date(base.getFullYear(), base.getMonth(), base.getDate() - base.getDay());
+          estado.agendaSemana = chaveDoDia(domingo);
+        }
+        const [ay, am, ad] = estado.agendaSemana.split('-').map(Number);
+        const inicio = new Date(ay, am - 1, ad);
+        const fim = new Date(ay, am - 1, ad + 6);
+
+        corpo.textContent = '';
+
+        // ── Cabeçalho: ‹ 31/08 – 06/09 › Hoje ──
+        const topo = api.el('div', '');
+        topo.className = 'cpm-cal-topo';
+        const irPara = (dias, focarEm) => {
+          const d = new Date(ay, am - 1, ad + dias);
+          estado.agendaSemana = chaveDoDia(d);
+          desenharSemana(corpo, reunioes, focarEm);
+        };
+        const anterior = api.el('button', '', '‹');
+        anterior.type = 'button';
+        anterior.className = 'cpm-cal-nav';
+        anterior.title = 'Semana anterior';
+        anterior.addEventListener('click', () => irPara(-7, 'anterior'));
+        const proximo = api.el('button', '', '›');
+        proximo.type = 'button';
+        proximo.className = 'cpm-cal-nav';
+        proximo.title = 'Próxima semana';
+        proximo.addEventListener('click', () => irPara(7, 'proximo'));
+        const dm = (d) =>
+          `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+        // O mês entra no título só quando a semana atravessa a virada — repetir
+        // "setembro" nas duas pontas de uma semana inteira dentro dele é ruído.
+        const titulo = api.el(
+          'div',
+          '',
+          inicio.getMonth() === fim.getMonth()
+            ? `${dm(inicio)} – ${dm(fim)} · ${MESES[inicio.getMonth()]}`
+            : `${dm(inicio)} – ${dm(fim)}`
+        );
+        titulo.className = 'cpm-cal-mes';
+        const hojeBtn = api.el('button', '', 'Hoje');
+        hojeBtn.type = 'button';
+        hojeBtn.className = 'cpm-cal-hoje';
+        hojeBtn.title = 'Voltar para a semana atual';
+        hojeBtn.addEventListener('click', () => {
+          const d = new Date();
+          const dom = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+          estado.agendaSemana = chaveDoDia(dom);
+          desenharSemana(corpo, reunioes, 'hoje');
+        });
+        const larguraBtn = api.el('button', '', agendaLarga ? '⤎' : '⤏');
+        larguraBtn.type = 'button';
+        larguraBtn.className = 'cpm-cal-largura';
+        larguraBtn.title = agendaLarga ? 'Estreitar a aba' : 'Alargar a aba';
+        larguraBtn.addEventListener('click', () => {
+          guardarLargura(!agendaLarga);
+          api.largura(agendaLarga);
+          desenharSemana(corpo, reunioes, 'largura');
+        });
+        topo.append(anterior, titulo, proximo, hojeBtn, larguraBtn);
+        corpo.appendChild(topo);
+
+        // ── As sete linhas ──
+        const NOMES = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+        const chaveHoje = chaveDoDia(hoje);
+        for (let i = 0; i < 7; i += 1) {
+          const dia = new Date(ay, am - 1, ad + i);
+          const chave = chaveDoDia(dia);
+          const doDia = indice.get(chave) || [];
+
+          const linha = api.el('div', '');
+          linha.className = 'cpm-sem-dia' + (chave === chaveHoje ? ' cpm-sem-dia--hoje' : '');
+
+          const rotulo = api.el('div', '');
+          rotulo.className = 'cpm-sem-rotulo';
+          const nome = api.el('span', '', NOMES[dia.getDay()].slice(0, 3));
+          nome.className = 'cpm-sem-nome';
+          const num = api.el('span', '', String(dia.getDate()));
+          num.className = 'cpm-sem-num';
+          rotulo.append(nome, num);
+          linha.appendChild(rotulo);
+
+          const itens = api.el('div', '');
+          itens.className = 'cpm-sem-itens';
+          if (doDia.length === 0) {
+            const vazio = api.el('div', '', 'livre');
+            vazio.className = 'cpm-sem-vazio';
+            itens.appendChild(vazio);
+          }
+          for (const r of doDia) {
+            const item = api.el('button', '');
+            item.type = 'button';
+            item.className = 'cpm-sem-item';
+            const icone = svgDoTipo(r.tipo);
+            if (icone) item.appendChild(icone);
+            const hora = api.el('span', '', horaCurta(r.quando));
+            hora.className = 'cpm-sem-hora';
+            const quem = api.el(
+              'span',
+              '',
+              [r.cliente, r.empresa].filter(Boolean).join(' · ') || 'Cliente'
+            );
+            quem.className = 'cpm-sem-quem';
+            item.append(hora, quem);
+            const rot = TIPOS[r.tipo] ? TIPOS[r.tipo].rotulo : 'Reunião';
+            item.title = `${rot} — clique para abrir a conversa`;
+            item.addEventListener('click', () => {
+              // Mesmo destino de todo lugar: a CONVERSA.
+              if (r.sessionId) {
+                window.location.href = `https://app.chatpro.com.br/chat/${r.sessionId}`;
+              } else if (r.meetUrl) {
+                window.open(r.meetUrl, '_blank', 'noopener');
+              }
+            });
+            itens.appendChild(item);
+          }
+          linha.appendChild(itens);
+          corpo.appendChild(linha);
+        }
+
+        // O foco volta pro botão equivalente, pelo mesmo motivo do mês:
+        // redesenhar destrói o botão clicado e o teclado cairia no body.
+        if (focar) {
+          const alvo =
+            focar === 'anterior'
+              ? anterior
+              : focar === 'proximo'
+                ? proximo
+                : focar === 'hoje'
+                  ? hojeBtn
+                  : focar === 'largura'
+                    ? larguraBtn
+                    : null;
           if (alvo && typeof alvo.focus === 'function') alvo.focus();
         }
       }

@@ -212,7 +212,7 @@
 /* HOJE é contorno, não preenchimento: preenchido brigaria com o dia
    selecionado, e os dois podem ser o mesmo dia. */
 .copilot--reuniao .cpm-cal-dia--hoje{
-  border-color:hsl(var(--cool-green-70));font-weight:700}
+  border-color:hsl(var(--cpm-evento));font-weight:700}
 .copilot--reuniao .cpm-cal-dia--escolhido,
 .copilot--reuniao .cpm-cal-dia--escolhido:hover{
   background:hsl(var(--lime-green-50));border-color:hsl(var(--lime-green-50));
@@ -220,9 +220,22 @@
 .copilot--reuniao .cpm-cal-pontos{
   display:flex;gap:2px;height:4px;align-items:center}
 .copilot--reuniao .cpm-cal-ponto{
-  width:4px;height:4px;border-radius:50%;background:hsl(var(--cool-green-70))}
+  width:4px;height:4px;border-radius:50%;background:hsl(var(--cpm-evento))}
 .copilot--reuniao .cpm-cal-dia--escolhido .cpm-cal-ponto{
   background:hsl(var(--gray-00))}
+/* ── A cor dos eventos do calendário ──
+   Um nome próprio, e não --cool-green-70 direto, porque esse token resolve
+   AZULADO no chatPro real: na tela do time os chips saíam cinza-azulados e o
+   anel de "hoje" ficava azul, nada parecido com o que a demonstração mostrava.
+   --lime-green-50 é o verde vivo de verdade — é ele que pinta o dia
+   selecionado, e no print do time apareceu verde como esperado.
+
+   O fallback existe pra demonstração e pra qualquer contexto sem o design
+   system: é o verde da identidade do chatPro, o mesmo do CLAUDE.md. Fica no
+   fallback de uma variável, nunca como cor solta numa regra — cor solta é o
+   que quebra o tema claro. */
+.copilot--reuniao{--cpm-evento:var(--lime-green-50,142 69% 48%)}
+
 /* ── Modo LARGO ──
    A coluna de 450px cabe o mês inteiro, mas só com pontinhos: 55px não
    comportam nome de cliente. Alargando, cada dia vira uma célula alta com
@@ -254,8 +267,8 @@
 .copilot--reuniao .cpm-cal-chip{
   font-size:.625rem;font-weight:600;line-height:1.35;
   padding:1px 4px 1px 3px;border-radius:3px;
-  border-left:2px solid hsl(var(--cool-green-70));
-  background:hsl(var(--cool-green-70) / .30);color:hsl(var(--gray-80));
+  border-left:2px solid hsl(var(--cpm-evento));
+  background:hsl(var(--cpm-evento) / .22);color:hsl(var(--gray-80));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;
   display:flex;align-items:center;gap:3px}
 .copilot--reuniao .cpm-cal-chip svg{
@@ -283,7 +296,50 @@
 .copilot--reuniao .cpm-cal-largura:hover{
   border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
 
-/* Alternador Mês | Lista, no lugar do que o painel põe no canto direito. */
+/* ── Vista SEMANA ──
+   Sete LINHAS, não sete colunas. O painel usa colunas porque tem a tela
+   inteira; aqui a coluna do dia teria ~55px estreita e ~100px larga, e o nome
+   do cliente — que é o motivo de existir esta vista — não caberia em nenhuma
+   das duas. Em linha, cada dia usa a largura toda e a reunião aparece por
+   extenso: hora, tipo e cliente, que é o "mais explícito" que a semana promete.
+   Bônus: a mesma marcação serve nas duas larguras, sem layout duplicado. */
+.copilot--reuniao .cpm-sem-dia{
+  display:grid;grid-template-columns:56px 1fr;gap:8px;
+  padding:7px 0;border-bottom:1px solid hsl(var(--gray-10))}
+.copilot--reuniao .cpm-sem-dia:last-child{border-bottom:0}
+/* O dia de HOJE ganha faixa, não só borda: numa lista de sete, o contorno
+   fino se perde entre as divisórias. */
+.copilot--reuniao .cpm-sem-dia--hoje{
+  background:hsl(var(--cpm-evento) / .10);
+  border-radius:var(--radius-sm,6px);padding-left:6px;padding-right:6px}
+.copilot--reuniao .cpm-sem-rotulo{
+  display:flex;flex-direction:column;line-height:1.25;padding-top:2px}
+.copilot--reuniao .cpm-sem-nome{
+  font-size:.625rem;font-weight:600;color:hsl(var(--gray-50));
+  text-transform:uppercase;letter-spacing:.02em}
+.copilot--reuniao .cpm-sem-num{font-size:1.125rem;font-weight:700;color:hsl(var(--gray-80))}
+.copilot--reuniao .cpm-sem-dia--hoje .cpm-sem-num{color:hsl(var(--cpm-evento))}
+.copilot--reuniao .cpm-sem-itens{display:flex;flex-direction:column;gap:4px;min-width:0}
+/* A reunião da semana é um chip que respira: o do mês tem 9px de altura
+   porque disputa espaço com 41 outras células; aqui só há sete linhas. */
+.copilot--reuniao .cpm-sem-item{
+  display:flex;align-items:center;gap:6px;min-width:0;
+  padding:5px 8px;border-radius:var(--radius-sm,6px);
+  border-left:3px solid hsl(var(--cpm-evento));
+  background:hsl(var(--cpm-evento) / .16);
+  color:hsl(var(--gray-80));font-size:.8125rem;cursor:pointer;
+  text-align:left;font-family:inherit;border-top:0;border-right:0;border-bottom:0;
+  width:100%;transition:all .1s}
+.copilot--reuniao .cpm-sem-item:hover{background:hsl(var(--cpm-evento) / .26)}
+.copilot--reuniao .cpm-sem-item svg{flex:0 0 auto;width:13px;height:13px;
+  fill:hsl(var(--cpm-evento))}
+.copilot--reuniao .cpm-sem-hora{font-weight:700;flex:0 0 auto}
+.copilot--reuniao .cpm-sem-quem{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.copilot--reuniao .cpm-sem-vazio{
+  font-size:.75rem;color:hsl(var(--gray-50));padding:5px 2px}
+
+/* Alternador Mês | Semana | Lista, no lugar do que o painel põe no canto. */
 .copilot--reuniao .cpm-abas{
   display:flex;gap:4px;margin-bottom:.75rem;
   background:hsl(var(--gray-10));padding:3px;border-radius:var(--radius-md)}
@@ -548,7 +604,9 @@
         textoFraco: 'hsl(var(--gray-50))',
         perigo: 'hsl(var(--color-red,0 72% 51%))',
         fundoFraco: 'hsl(var(--gray-10))',
-        verde: 'hsl(var(--cool-green-70))',
+        // Mesma troca do calendario: --cool-green-70 sai azulado no chatPro
+        // real, e este verde e o do link da reuniao na tela de sucesso.
+        verde: 'hsl(var(--cpm-evento))',
         blocoRaio: 'var(--radius-md)',
       },
       cabecalho(texto, aoVoltar) {

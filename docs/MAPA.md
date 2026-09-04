@@ -67,10 +67,10 @@
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/content/aba-reuniao.js` (668) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
+| `extension/content/aba-reuniao.js` (726) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
 | `extension/content/atendente.js` (349) | Quem é o atendente que está usando o chatPro agora. | __cpmAtendente |
 | `extension/content/botao-reuniao.js` (659) | Botão "reunião" na barra do chatPro. | __cpmDiag |
-| `extension/content/fluxo-reuniao.js` (3187) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
+| `extension/content/fluxo-reuniao.js` (3352) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
 
 ## extension/background
 
