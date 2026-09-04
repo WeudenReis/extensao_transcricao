@@ -267,7 +267,8 @@
 .copilot--reuniao .cpm-cal-chip{
   font-size:.625rem;font-weight:600;line-height:1.35;
   padding:1px 4px 1px 3px;border-radius:3px;
-  border-left:2px solid hsl(var(--cpm-evento));
+  border:1px solid hsl(var(--cpm-evento) / .55);
+  border-left:3px solid hsl(var(--cpm-evento));
   background:hsl(var(--cpm-evento) / .22);color:hsl(var(--gray-80));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;
   display:flex;align-items:center;gap:3px}
@@ -275,12 +276,14 @@
   flex:0 0 auto;width:9px;height:9px;fill:currentColor;opacity:.85}
 .copilot--reuniao .cpm-cal-chip span{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* O "+2" não é um evento, é uma contagem: caixa em volta dele prometeria
+   uma reunião a mais que não existe. */
 .copilot--reuniao .cpm-cal-chip--mais{
-  background:transparent;border-left-color:transparent;
+  background:transparent;border-color:transparent;
   color:hsl(var(--gray-50));padding-left:5px;font-weight:400}
 .copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip{
-  background:hsl(var(--gray-00) / .28);border-left-color:hsl(var(--gray-00));
-  color:hsl(var(--gray-00))}
+  background:hsl(var(--gray-00) / .28);border-color:hsl(var(--gray-00) / .65);
+  border-left-color:hsl(var(--gray-00));color:hsl(var(--gray-00))}
 .copilot--reuniao.cpm-largo .cpm-cal-dia--escolhido .cpm-cal-chip--mais{
   background:transparent;color:hsl(var(--gray-00))}
 /* No modo largo o dia da semana ganha o nome inteiro — cabe, e "SEG" existia
@@ -329,13 +332,15 @@
 .copilot--reuniao .cpm-sem-item{
   display:flex;align-items:center;gap:7px;min-width:0;
   padding:7px 10px;border-radius:var(--radius-sm,6px);
+  border:1px solid hsl(var(--cpm-evento) / .55);
   border-left:4px solid hsl(var(--cpm-evento));
   background:hsl(var(--cpm-evento) / .26);
   color:hsl(var(--gray-80));font-size:.8125rem;cursor:pointer;
-  text-align:left;font-family:inherit;border-top:0;border-right:0;border-bottom:0;
+  text-align:left;font-family:inherit;
   width:100%;transition:all .1s}
 .copilot--reuniao .cpm-sem-item:hover{
-  background:hsl(var(--cpm-evento) / .40);border-left-width:6px}
+  background:hsl(var(--cpm-evento) / .40);
+  border-color:hsl(var(--cpm-evento));border-left-width:6px}
 .copilot--reuniao .cpm-sem-item svg{flex:0 0 auto;width:15px;height:15px;
   fill:hsl(var(--cpm-evento))}
 .copilot--reuniao .cpm-sem-hora{
