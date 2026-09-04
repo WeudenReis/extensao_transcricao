@@ -220,7 +220,7 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         const r = await chamar(
           `/api/painel/semana?email=${encodeURIComponent(msg.email || '')}` +
             `&inicio=${encodeURIComponent(msg.inicio || '')}` +
-            `&tipo=${encodeURIComponent(msg.tipo || '')}`
+            `&tipo=${encodeURIComponent(msg.tipoReuniao || '')}`
         );
         // Sem os dias: a semana desenha só o que veio do nosso banco, e diz
         // que não conseguiu conferir o painel. Melhor que não abrir.

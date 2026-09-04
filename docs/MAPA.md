@@ -67,10 +67,10 @@
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/content/aba-reuniao.js` (738) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
+| `extension/content/aba-reuniao.js` (745) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
 | `extension/content/atendente.js` (349) | Quem é o atendente que está usando o chatPro agora. | __cpmAtendente |
 | `extension/content/botao-reuniao.js` (659) | Botão "reunião" na barra do chatPro. | __cpmDiag |
-| `extension/content/fluxo-reuniao.js` (3476) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
+| `extension/content/fluxo-reuniao.js` (3407) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
 
 ## extension/background
 
@@ -83,6 +83,7 @@
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
 | `scripts/checar-css.mjs` (60) | Trava contra o erro que já quebrou o arquivo DUAS vezes: crase dentro do bloco de CSS. | — |
+| `scripts/checar-mensagens.mjs` (62) | Prova que nenhuma chamada de `pedir()` sobrescreve o nome da mensagem. | — |
 | `scripts/configurar-segredo.mjs` (160) | Grava o signing secret do Recall no server/.env, reinicia o servidor e confere a assinatura de ponta a ponta — tudo num comando. | — |
 | `scripts/gerar-id-extensao.mjs` (57) | Gera um par de chaves e fixa o ID da extensão no manifest.json. | — |
 | `scripts/gerar-mapa.mjs` (108) | Gera `docs/MAPA.md` — o índice do repositório. | — |
@@ -92,4 +93,4 @@
 
 ---
 
-64 arquivos indexados.
+65 arquivos indexados.

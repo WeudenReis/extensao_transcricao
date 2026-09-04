@@ -906,10 +906,13 @@
         area.textContent = '';
         const abas = api.el('div', '');
         abas.className = 'cpm-abas';
+        // Só Mês e Semana. A Lista mostrava a mesma informação em coluna
+        // única, sem a leitura de "onde tem espaço" que é o motivo da tela
+        // existir — e a busca por cliente, que era o outro uso dela, está na
+        // tela anterior, cobrindo TODAS as reuniões e não só as suas.
         for (const [chave, rotulo] of [
           ['mes', 'Mês'],
           ['semana', 'Semana'],
-          ['lista', 'Lista'],
         ]) {
           const b = api.el('button', '', rotulo);
           b.type = 'button';
@@ -925,17 +928,11 @@
 
         const corpo = api.el('div', '');
         area.appendChild(corpo);
+        api.largura(agendaLarga);
         if (estado.agendaVista === 'mes') {
           desenharMes(corpo, reunioes, total);
-        } else if (estado.agendaVista === 'semana') {
-          // Larga também: a semana mostra o nome por extenso, e é o espaço que
-          // permite a linha inteira sem cortar no meio do cliente.
-          api.largura(agendaLarga);
-          desenharSemana(corpo, reunioes);
         } else {
-          // A lista é de coluna única: alargar só afastaria o horário do nome.
-          api.largura(false);
-          desenharLista(corpo, reunioes, total);
+          desenharSemana(corpo, reunioes);
         }
 
         // A ressalva vale nas duas vistas: a agenda só enxerga o que foi
@@ -1404,7 +1401,10 @@
           const doDia = indice.get(chave) || [];
 
           const linha = api.el('div', '');
-          linha.className = 'cpm-sem-dia' + (chave === chaveHoje ? ' cpm-sem-dia--hoje' : '');
+          linha.className =
+            'cpm-sem-dia' +
+            (chave === chaveHoje ? ' cpm-sem-dia--hoje' : '') +
+            (doDia.length > 0 ? ' cpm-sem-dia--cheio' : '');
           linha.setAttribute('data-dia-semana', chave);
 
           const rotulo = api.el('div', '');
@@ -1474,7 +1474,12 @@
             void pedir('PAINEL_SEMANA', {
               email: estado.eu.email,
               inicio: chaveSemana,
-              tipo: tipoConsulta,
+              // `tipoReuniao`, NUNCA `tipo`: `pedir()` monta a mensagem com
+              // `Object.assign({ tipo }, dados)`, então um `tipo` nos dados
+              // sobrescreve o nome da mensagem e ela não chega a handler
+              // nenhum. Foi o que fez a semana dizer "não consegui conferir a
+              // agenda do painel" em todos os dias.
+              tipoReuniao: tipoConsulta,
             })
               .then((r) => {
                 const dias = r && r.dias ? r.dias : null;
@@ -1582,80 +1587,6 @@
             'Horários que o painel já tem ocupados e que não foram marcados por aqui.';
           itens.appendChild(bloco);
         }
-      }
-
-      function desenharLista(area, reunioes, total) {
-        if (reunioes.length === 0) {
-          area.appendChild(
-            api.el(
-              'div',
-              `font:400 12px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:6px 2px`,
-              'Nenhuma reunião sua por aqui ainda.'
-            )
-          );
-        }
-
-        const agora = Date.now();
-        const comData = reunioes.filter((r) => r.quando && !Number.isNaN(Date.parse(r.quando)));
-        // O corte é o INÍCIO da reunião. Uma que começou há 20 min ainda está
-        // acontecendo, mas listá-la em "próximas" faria a pessoa achar que tem
-        // tempo — em "já aconteceram" ela ao menos procura pelo horário certo.
-        const futuras = comData
-          .filter((r) => Date.parse(r.quando) >= agora)
-          .sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
-        const passadas = comData
-          .filter((r) => Date.parse(r.quando) < agora)
-          .sort((a, b) => Date.parse(b.quando) - Date.parse(a.quando));
-
-        if (futuras.length > 0) {
-          // Agrupado por dia: a pergunta de quem vai marcar é "como está a
-          // terça?", não "quais são minhas próximas 20 reuniões".
-          let diaAtual = null;
-          let secao = null;
-          for (const r of futuras) {
-            const chave = chaveDoDia(new Date(r.quando));
-            if (chave !== diaAtual) {
-              diaAtual = chave;
-              secao = api.secao(rotuloDoDia(chave));
-              const cab = secao.previousElementSibling;
-              if (cab) area.appendChild(cab);
-              area.appendChild(secao);
-            }
-            cartaoDaAgenda(secao, r);
-          }
-        }
-
-        if (passadas.length > 0) {
-          // Teto de 15: a agenda é pra decidir o que vem, e rolar meses de
-          // histórico atrapalha isso. Quem procura reunião antiga usa a busca,
-          // que varre tudo — e a linha abaixo diz que ela existe.
-          const mostrar = passadas.slice(0, 15);
-          // O que sobrou é contado sobre o TOTAL do banco, não sobre o que
-          // coube nas 100 linhas da rota: contar o array daria um número menor
-          // que o real, com cara de exato. Sem `total` (servidor antigo), a
-          // frase não cita quantidade em vez de citar uma errada.
-          const escondidas =
-            typeof total === 'number' ? total - futuras.length - mostrar.length : null;
-          const secao = api.secao('Já aconteceram');
-          const cab = secao.previousElementSibling;
-          if (cab) area.appendChild(cab);
-          area.appendChild(secao);
-          for (const r of mostrar) cartaoDaAgenda(secao, r);
-          const sobrou = escondidas === null ? passadas.length - mostrar.length : escondidas;
-          if (sobrou > 0) {
-            area.appendChild(
-              api.el(
-                'div',
-                `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:4px 2px`,
-                escondidas === null
-                  ? 'Há mais reuniões antigas — procure pelo cliente na tela anterior.'
-                  : `+${sobrou} ${sobrou === 1 ? 'mais antiga' : 'mais antigas'} — ` +
-                    'procure pelo cliente na tela anterior.'
-              )
-            );
-          }
-        }
-
       }
 
       function cartaoDaAgenda(secao, r) {

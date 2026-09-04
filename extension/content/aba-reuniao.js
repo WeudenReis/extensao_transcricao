@@ -319,21 +319,28 @@
   text-transform:uppercase;letter-spacing:.02em}
 .copilot--reuniao .cpm-sem-num{font-size:1.125rem;font-weight:700;color:hsl(var(--gray-80))}
 .copilot--reuniao .cpm-sem-dia--hoje .cpm-sem-num{color:hsl(var(--cpm-evento))}
+/* Dia COM reunião: o número já responde "que dias estão ocupados?" antes de
+   ler qualquer linha. */
+.copilot--reuniao .cpm-sem-dia--cheio .cpm-sem-num{color:hsl(var(--cpm-evento))}
+.copilot--reuniao .cpm-sem-dia--cheio .cpm-sem-nome{color:hsl(var(--gray-80))}
 .copilot--reuniao .cpm-sem-itens{display:flex;flex-direction:column;gap:4px;min-width:0}
 /* A reunião da semana é um chip que respira: o do mês tem 9px de altura
    porque disputa espaço com 41 outras células; aqui só há sete linhas. */
 .copilot--reuniao .cpm-sem-item{
-  display:flex;align-items:center;gap:6px;min-width:0;
-  padding:5px 8px;border-radius:var(--radius-sm,6px);
-  border-left:3px solid hsl(var(--cpm-evento));
-  background:hsl(var(--cpm-evento) / .16);
+  display:flex;align-items:center;gap:7px;min-width:0;
+  padding:7px 10px;border-radius:var(--radius-sm,6px);
+  border-left:4px solid hsl(var(--cpm-evento));
+  background:hsl(var(--cpm-evento) / .26);
   color:hsl(var(--gray-80));font-size:.8125rem;cursor:pointer;
   text-align:left;font-family:inherit;border-top:0;border-right:0;border-bottom:0;
   width:100%;transition:all .1s}
-.copilot--reuniao .cpm-sem-item:hover{background:hsl(var(--cpm-evento) / .26)}
-.copilot--reuniao .cpm-sem-item svg{flex:0 0 auto;width:13px;height:13px;
+.copilot--reuniao .cpm-sem-item:hover{
+  background:hsl(var(--cpm-evento) / .40);border-left-width:6px}
+.copilot--reuniao .cpm-sem-item svg{flex:0 0 auto;width:15px;height:15px;
   fill:hsl(var(--cpm-evento))}
-.copilot--reuniao .cpm-sem-hora{font-weight:700;flex:0 0 auto}
+.copilot--reuniao .cpm-sem-hora{
+  font-weight:700;flex:0 0 auto;font-size:.875rem;
+  font-variant-numeric:tabular-nums}
 .copilot--reuniao .cpm-sem-quem{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .copilot--reuniao .cpm-sem-vazio{
