@@ -216,6 +216,18 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'PAINEL_SEMANA') {
+        const r = await chamar(
+          `/api/painel/semana?email=${encodeURIComponent(msg.email || '')}` +
+            `&inicio=${encodeURIComponent(msg.inicio || '')}` +
+            `&tipo=${encodeURIComponent(msg.tipo || '')}`
+        );
+        // Sem os dias: a semana desenha só o que veio do nosso banco, e diz
+        // que não conseguiu conferir o painel. Melhor que não abrir.
+        responder(r.ok ? r.corpo : { dias: null });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_AGENDA') {
         const r = await chamar(
           `/api/painel/agenda?email=${encodeURIComponent(msg.email || '')}`

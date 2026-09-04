@@ -282,6 +282,64 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
     });
   });
 
+  /**
+   * Os horários OCUPADOS do painel na semana — a verdade que o nosso banco
+   * não tem.
+   *
+   * A agenda local só enxerga o que foi marcado pela extensão. Reunião criada
+   * direto no painel não aparece, e uma agenda que parece livre quando não
+   * está é pior que agenda nenhuma. O `available-slots` sabe: ele devolve
+   * `bloqueados` por dia, que é onde o painel já tem compromisso.
+   *
+   * Sete dias numa chamada só, em paralelo: o mesmo trabalho feito pela
+   * extensão seriam sete idas ao servidor, e a semana só apareceria depois da
+   * última. Aqui as sete correm juntas e a latência é a da mais lenta.
+   *
+   * Dia que falhar entra como `null` em vez de derrubar a semana inteira: um
+   * dia sem informação é melhor que sete.
+   */
+  router.get(
+    '/api/painel/semana',
+    assincrono(async (req, res) => {
+      const email = String(req.query.email ?? '').trim();
+      const inicio = String(req.query.inicio ?? '');
+      const tipo = String(req.query.tipo ?? '');
+      if (!email.includes('@') || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(inicio)) {
+        res.status(400).json({ error: 'Informe ?email= e ?inicio=YYYY-MM-DD.' });
+        return;
+      }
+      if (!ehTipoReuniao(tipo)) {
+        res.status(400).json({ error: 'Informe um ?tipo= de reunião válido.' });
+        return;
+      }
+      const [ay, am, ad] = inicio.split('-').map(Number);
+      const dias = Array.from({ length: 7 }, (_, i) => {
+        // `new Date(ano, mes-1, dia+i)` normaliza a virada de mês e de ano
+        // sozinho — montar a string à mão erraria no dia 31.
+        const d = new Date(ay ?? 0, (am ?? 1) - 1, (ad ?? 1) + i);
+        const p2 = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+      });
+
+      const grades = await Promise.all(
+        dias.map(async (data) => {
+          try {
+            return await painel.horarios({ tipo, data, actorEmail: email });
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      const porData: Record<string, { ocupados: string[]; livres: number } | null> = {};
+      dias.forEach((data, i) => {
+        const g = grades[i];
+        porData[data] = g ? { ocupados: g.bloqueados, livres: g.disponiveis.length } : null;
+      });
+      res.json({ dias: porData });
+    })
+  );
+
   // A AGENDA de quem está com a aba aberta: tudo que ele conduz, futuro e
   // passado, pra decidir onde cabe a próxima reunião.
   //

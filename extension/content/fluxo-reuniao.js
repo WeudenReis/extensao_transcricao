@@ -853,10 +853,11 @@
               falhaDaAgenda(area);
               return;
             }
-            // Sempre no MÊS: é a vista que responde "onde encaixo a
-            // próxima", que é o motivo da tela existir. Mês sem reunião não é
-            // tela inútil — é a resposta "está livre".
-            estado.agendaVista = 'mes';
+            // Sempre na SEMANA: é a vista em que a reunião aparece por
+            // extenso — hora, tipo e cliente —, e é nessa granularidade que se
+            // decide "cabe mais uma aqui?". O Mês continua a um clique, pra
+            // quem quer a visão do período inteiro.
+            estado.agendaVista = 'semana';
             estado.agendaMes = null;
             estado.agendaSemana = null;
             estado.agendaDia = null;
@@ -1314,6 +1315,15 @@
        * cada dia usa a largura toda, e a reunião sai por extenso: hora, tipo e
        * cliente. É o "mais explícito" que a semana promete.
        */
+      /**
+       * Cache dos ocupados do painel, por semana.
+       *
+       * Sem ele, ir e voltar entre duas semanas refaz sete consultas ao painel
+       * a cada clique. A chave é a própria semana, e o cache morre com a aba —
+       * agenda de dez minutos atrás não vale a pena guardar mais que isso.
+       */
+      const ocupadosPorSemana = new Map();
+
       function desenharSemana(corpo, reunioes, focar) {
         const indice = porDia(reunioes);
         const hoje = new Date();
@@ -1395,6 +1405,7 @@
 
           const linha = api.el('div', '');
           linha.className = 'cpm-sem-dia' + (chave === chaveHoje ? ' cpm-sem-dia--hoje' : '');
+          linha.setAttribute('data-dia-semana', chave);
 
           const rotulo = api.el('div', '');
           rotulo.className = 'cpm-sem-rotulo';
@@ -1408,6 +1419,9 @@
           const itens = api.el('div', '');
           itens.className = 'cpm-sem-itens';
           if (doDia.length === 0) {
+            // "livre" é um palpite até o painel responder: fim de semana e
+            // feriado também chegam aqui sem reunião nenhuma. A classe permite
+            // corrigir o texto quando a grade chegar.
             const vazio = api.el('div', '', 'livre');
             vazio.className = 'cpm-sem-vazio';
             itens.appendChild(vazio);
@@ -1443,6 +1457,37 @@
           corpo.appendChild(linha);
         }
 
+        // ── O que o PAINEL sabe e o nosso banco não ──
+        //
+        // A agenda local só tem o que foi marcado pela extensão. Reunião
+        // criada direto no painel não aparece — e uma semana que parece livre
+        // quando não está é justamente o conflito que esta tela existe pra
+        // evitar. O `available-slots` do painel devolve os horários
+        // bloqueados, que é o compromisso que ele já conhece.
+        const chaveSemana = estado.agendaSemana;
+        const tipoConsulta = tipoParaConsulta();
+        if (tipoConsulta && estado.eu && estado.eu.email) {
+          const jaTem = ocupadosPorSemana.get(chaveSemana);
+          if (jaTem) {
+            pintarOcupados(corpo, chaveSemana, jaTem, indice);
+          } else {
+            void pedir('PAINEL_SEMANA', {
+              email: estado.eu.email,
+              inicio: chaveSemana,
+              tipo: tipoConsulta,
+            })
+              .then((r) => {
+                const dias = r && r.dias ? r.dias : null;
+                ocupadosPorSemana.set(chaveSemana, dias);
+                // A pessoa pode ter navegado enquanto a consulta viajava:
+                // pintar aqui escreveria os ocupados de uma semana na outra.
+                if (estado.agendaSemana !== chaveSemana || !corpo.isConnected) return;
+                pintarOcupados(corpo, chaveSemana, dias, indice);
+              })
+              .catch(() => {});
+          }
+        }
+
         // O foco volta pro botão equivalente, pelo mesmo motivo do mês:
         // redesenhar destrói o botão clicado e o teclado cairia no body.
         if (focar) {
@@ -1457,6 +1502,85 @@
                     ? larguraBtn
                     : null;
           if (alvo && typeof alvo.focus === 'function') alvo.focus();
+        }
+      }
+
+      /**
+       * Um tipo de reunião pra perguntar a grade ao painel.
+       *
+       * A grade é POR TIPO — base e prospect são pools distintos, e tipos
+       * diferentes têm condutores diferentes. Usamos o primeiro tipo que esta
+       * pessoa pode conduzir: é a grade dela, que é o que interessa pra saber
+       * se o horário dela está livre.
+       */
+      function tipoParaConsulta() {
+        const caps = (estado.eu && estado.eu.capacidades) || [];
+        const permitido = caps.find((c) => c.allowed);
+        return permitido ? permitido.type : null;
+      }
+
+      /**
+       * Escreve, em cada dia, os horários que o painel diz ocupados e que NÃO
+       * vieram da extensão.
+       *
+       * Os nossos já estão desenhados por extenso logo acima; repetir o mesmo
+       * horário como "ocupado" faria parecer duas reuniões no mesmo minuto.
+       */
+      function pintarOcupados(corpo, chaveSemana, dias, indice) {
+        const linhas = corpo.querySelectorAll('[data-dia-semana]');
+        for (const linha of linhas) {
+          const chave = linha.getAttribute('data-dia-semana');
+          const itens = linha.querySelector('.cpm-sem-itens');
+          if (!itens) continue;
+          const antigo = itens.querySelector('.cpm-sem-ocupado');
+          if (antigo) antigo.remove();
+
+          if (!dias) {
+            // Consulta falhou: dizer isso vale mais que o silêncio, porque a
+            // pessoa está prestes a decidir um horário olhando esta tela.
+            const aviso = api.el('div', '', 'Não consegui conferir a agenda do painel agora.');
+            aviso.className = 'cpm-sem-ocupado';
+            itens.appendChild(aviso);
+            continue;
+          }
+          const info = dias[chave];
+          if (!info) continue;
+
+          // Dia SEM NENHUM horário na grade não é dia livre: é fim de semana,
+          // feriado ou dia fora do expediente. Medido contra o painel real —
+          // 07/09/2026 (Independência) voltou com zero horários, e a tela
+          // diria "livre" pra um dia em que ninguém atende.
+          const vazio = itens.querySelector('.cpm-sem-vazio');
+          if (vazio && info.livres === 0) vazio.textContent = 'sem atendimento';
+
+          if (!Array.isArray(info.ocupados) || info.ocupados.length === 0) continue;
+
+          // Fora os horários que já mostramos por extenso.
+          const nossos = new Set(
+            (indice.get(chave) || []).map((r) => {
+              const d = new Date(r.quando);
+              return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            })
+          );
+          const restantes = info.ocupados.filter((h) => !nossos.has(h));
+          if (restantes.length === 0) continue;
+
+          const bloco = api.el('div', '');
+          bloco.className = 'cpm-sem-ocupado';
+          bloco.appendChild(api.el('b', '', 'No painel:'));
+          // Teto de 6: uma agenda cheia viraria uma linha de vinte horários e
+          // empurraria o resto da semana pra fora da tela.
+          for (const h of restantes.slice(0, 6)) {
+            const marca = api.el('span', '', h);
+            marca.className = 'cpm-sem-hora-ocupada';
+            bloco.appendChild(marca);
+          }
+          if (restantes.length > 6) {
+            bloco.appendChild(api.el('span', '', `+${restantes.length - 6}`));
+          }
+          bloco.title =
+            'Horários que o painel já tem ocupados e que não foram marcados por aqui.';
+          itens.appendChild(bloco);
         }
       }
 

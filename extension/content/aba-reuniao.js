@@ -338,6 +338,18 @@
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .copilot--reuniao .cpm-sem-vazio{
   font-size:.75rem;color:hsl(var(--gray-50));padding:5px 2px}
+/* Horário que o PAINEL diz ocupado e que não veio da extensão. Cinza e sem a
+   barra colorida de propósito: é compromisso que existe, mas cujo conteúdo a
+   gente não conhece — pintar igual às nossas reuniões prometeria um clique
+   que não leva a lugar nenhum. */
+.copilot--reuniao .cpm-sem-ocupado{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  font-size:.6875rem;color:hsl(var(--gray-50));padding:3px 2px}
+.copilot--reuniao .cpm-sem-ocupado b{
+  font-weight:600;color:hsl(var(--gray-50))}
+.copilot--reuniao .cpm-sem-hora-ocupada{
+  padding:1px 5px;border-radius:3px;background:hsl(var(--gray-10));
+  color:hsl(var(--gray-50));font-weight:600}
 
 /* Alternador Mês | Semana | Lista, no lugar do que o painel põe no canto. */
 .copilot--reuniao .cpm-abas{
