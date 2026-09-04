@@ -844,6 +844,15 @@
               falhaDaAgenda(area);
               return;
             }
+            // Abre no MÊS quando há reunião futura (a pergunta é "onde
+            // encaixo?"), e na LISTA quando só há passado — um calendário
+            // vazio não responde nada a quem não tem nada marcado.
+            const temFuturo = r.reunioes.some(
+              (x) => x.quando && Date.parse(x.quando) >= Date.now()
+            );
+            estado.agendaVista = temFuturo ? 'mes' : 'lista';
+            estado.agendaMes = null;
+            estado.agendaDia = null;
             desenharAgenda(area, r.reunioes, r.total);
           })
           .catch(() => {
@@ -877,8 +886,283 @@
         return diaLegivel(chave).replace(/^./, (c) => c.toUpperCase());
       }
 
+      /**
+       * A agenda tem duas vistas, e o alternador fica no topo — mesmo lugar
+       * onde o painel põe o dele (Mês | Semana | Dia | Lista).
+       *
+       * Só Mês e Lista: numa coluna de 450px, "Semana" e "Dia" mostrariam a
+       * mesma coisa que a Lista já mostra, com mais cliques pra chegar lá.
+       */
       function desenharAgenda(area, reunioes, total) {
         area.textContent = '';
+        const abas = api.el('div', '');
+        abas.className = 'cpm-abas';
+        for (const [chave, rotulo] of [['mes', 'Mês'], ['lista', 'Lista']]) {
+          const b = api.el('button', '', rotulo);
+          b.type = 'button';
+          b.className = 'cpm-aba' + (estado.agendaVista === chave ? ' cpm-aba--ativa' : '');
+          b.addEventListener('click', () => {
+            if (estado.agendaVista === chave) return;
+            estado.agendaVista = chave;
+            desenharAgenda(area, reunioes, total);
+          });
+          abas.appendChild(b);
+        }
+        area.appendChild(abas);
+
+        const corpo = api.el('div', '');
+        area.appendChild(corpo);
+        if (estado.agendaVista === 'mes') {
+          desenharMes(corpo, reunioes, total);
+        } else {
+          desenharLista(corpo, reunioes, total);
+        }
+
+        // A ressalva vale nas duas vistas: a agenda só enxerga o que foi
+        // marcado PELA EXTENSÃO, e quem não souber disso conclui que está
+        // livre num horário que não está.
+        area.appendChild(
+          api.el(
+            'div',
+            `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:10px 2px 2px`,
+            'Só aparece o que foi marcado por aqui. Reunião criada direto no painel não entra nesta lista.'
+          )
+        );
+      }
+
+      /** Índice 'AAAA-MM-DD' -> reuniões daquele dia, em ordem de horário. */
+      function porDia(reunioes) {
+        const mapa = new Map();
+        for (const r of reunioes) {
+          if (!r.quando || Number.isNaN(Date.parse(r.quando))) continue;
+          const chave = chaveDoDia(new Date(r.quando));
+          if (!mapa.has(chave)) mapa.set(chave, []);
+          mapa.get(chave).push(r);
+        }
+        for (const lista of mapa.values()) {
+          lista.sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
+        }
+        return mapa;
+      }
+
+      const MESES = [
+        'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+        'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro',
+      ];
+
+      /**
+       * O calendário do mês.
+       *
+       * O painel tem a tela inteira e cabem chips com o nome de cada reunião.
+       * Aqui cada coluna tem ~55px — nome não cabe de jeito nenhum. Então o
+       * dia carrega PONTOS (um por reunião, até 3) e a lista daquele dia abre
+       * embaixo ao clicar. Mesma informação, na ordem que a largura permite.
+       */
+      function desenharMes(corpo, reunioes, total, focar) {
+        const indice = porDia(reunioes);
+        // A agenda vem cortada nas 100 reuniões mais recentes. Fora dessa
+        // janela o calendário NÃO SABE se o mês estava vazio — e afirmar
+        // "nada marcado" ali seria a mesma mentira que a tela de falha existe
+        // pra evitar. `limiteAntigo` marca onde o conhecimento acaba.
+        const cortada = typeof total === 'number' && total > reunioes.length;
+        let limiteAntigo = null;
+        if (cortada) {
+          for (const r of reunioes) {
+            if (!r.quando || Number.isNaN(Date.parse(r.quando))) continue;
+            const t = Date.parse(r.quando);
+            if (limiteAntigo === null || t < limiteAntigo) limiteAntigo = t;
+          }
+        }
+        const hoje = new Date();
+        // Sem mês escolhido, abre no mês da PRÓXIMA reunião — não no mês
+        // corrente. Quem marcou tudo pro mês que vem abriria numa grade vazia.
+        if (!estado.agendaMes) {
+          const futuras = reunioes
+            .filter((r) => r.quando && Date.parse(r.quando) >= Date.now())
+            .sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
+          const base = futuras.length > 0 ? new Date(futuras[0].quando) : hoje;
+          estado.agendaMes = `${base.getFullYear()}-${base.getMonth()}`;
+        }
+        const [ano, mes] = estado.agendaMes.split('-').map(Number);
+
+        // ── Cabeçalho: ‹ mês ano › e o atalho de voltar pra hoje ──
+        const topo = api.el('div', '');
+        topo.className = 'cpm-cal-topo';
+        const irPara = (delta, focarEm) => {
+          const d = new Date(ano, mes + delta, 1);
+          estado.agendaMes = `${d.getFullYear()}-${d.getMonth()}`;
+          // O dia escolhido SOME ao trocar de mês. Sem isto a lista do dia 15
+          // de setembro continuava pendurada embaixo da grade de outubro — e,
+          // como nenhuma célula de outubro casa com aquela chave, nem dava pra
+          // fechá-la: o botão que fecha é o próprio dia, que não está na tela.
+          estado.agendaDia = null;
+          desenharMes(corpo, reunioes, total, focarEm);
+        };
+        const anterior = api.el('button', '', '‹');
+        anterior.type = 'button';
+        anterior.className = 'cpm-cal-nav';
+        anterior.title = 'Mês anterior';
+        anterior.addEventListener('click', () => irPara(-1, 'anterior'));
+        const proximo = api.el('button', '', '›');
+        proximo.type = 'button';
+        proximo.className = 'cpm-cal-nav';
+        proximo.title = 'Próximo mês';
+        proximo.addEventListener('click', () => irPara(1, 'proximo'));
+        const titulo = api.el('div', '', `${MESES[mes]} ${ano}`);
+        titulo.className = 'cpm-cal-mes';
+        // O atalho de volta. A grade abre no mês da PRÓXIMA reunião, que pode
+        // estar a três meses daqui; sem este botão, voltar pro mês corrente
+        // era clicar em ‹ várias vezes, e nada na tela dizia que dava.
+        const hojeBtn = api.el('button', '', 'Hoje');
+        hojeBtn.type = 'button';
+        hojeBtn.className = 'cpm-cal-hoje';
+        hojeBtn.title = 'Voltar para o mês atual';
+        hojeBtn.addEventListener('click', () => {
+          const agora = new Date();
+          estado.agendaMes = `${agora.getFullYear()}-${agora.getMonth()}`;
+          estado.agendaDia = chaveDoDia(agora);
+          desenharMes(corpo, reunioes, total, 'hoje');
+        });
+        topo.append(anterior, titulo, proximo, hojeBtn);
+        corpo.textContent = '';
+        corpo.appendChild(topo);
+
+        // ── Cabeçalho dos dias da semana ──
+        const semana = api.el('div', '');
+        semana.className = 'cpm-cal-semana';
+        for (const nome of ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']) {
+          const c = api.el('div', '', nome);
+          c.className = 'cpm-cal-dia-nome';
+          semana.appendChild(c);
+        }
+        corpo.appendChild(semana);
+
+        // ── A grade: 6 semanas fixas ──
+        // Fixo em 6 pra grade não mudar de altura ao trocar de mês, o que faz
+        // o rodapé pular embaixo do dedo de quem está navegando.
+        const grade = api.el('div', '');
+        grade.className = 'cpm-cal-grade';
+        const primeiro = new Date(ano, mes, 1);
+        const inicio = new Date(ano, mes, 1 - primeiro.getDay());
+        const chaveHoje = chaveDoDia(hoje);
+
+        for (let i = 0; i < 42; i += 1) {
+          const dia = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + i);
+          const chave = chaveDoDia(dia);
+          const doMes = dia.getMonth() === mes;
+          const daquele = indice.get(chave) || [];
+
+          const b = api.el('button', '');
+          b.type = 'button';
+          b.className =
+            'cpm-cal-dia' +
+            (doMes ? '' : ' cpm-cal-dia--fora') +
+            (chave === chaveHoje ? ' cpm-cal-dia--hoje' : '') +
+            (chave === estado.agendaDia ? ' cpm-cal-dia--escolhido' : '');
+          b.appendChild(api.el('span', '', String(dia.getDate())));
+
+          const pontos = api.el('span', '');
+          pontos.className = 'cpm-cal-pontos';
+          // Três pontos no máximo: mais que isso não cabe em 55px e vira
+          // borrão. O número exato aparece no cabeçalho da lista do dia.
+          for (let n = 0; n < Math.min(daquele.length, 3); n += 1) {
+            const ponto = api.el('i', '');
+            ponto.className = 'cpm-cal-ponto';
+            pontos.appendChild(ponto);
+          }
+          b.appendChild(pontos);
+
+          // O botão só tem um número dentro. Sem rótulo, o leitor de tela
+          // anuncia "15" — sem mês, sem dizer que abre uma lista, e sem
+          // contar quantas reuniões há. A dica visual (title) vale pro mouse.
+          const quantas =
+            daquele.length === 0
+              ? 'nenhuma reunião'
+              : `${daquele.length} ${daquele.length === 1 ? 'reunião' : 'reuniões'}`;
+          b.setAttribute(
+            'aria-label',
+            `${dia.getDate()} de ${MESES[dia.getMonth()]} — ${quantas}`
+          );
+          if (daquele.length > 0) b.title = quantas;
+          b.dataset.dia = chave;
+          b.addEventListener('click', () => {
+            // Clicar no dia já escolhido fecha a lista — mesmo botão, ida e
+            // volta, sem precisar de um "fechar" separado.
+            estado.agendaDia = estado.agendaDia === chave ? null : chave;
+            // Dia de outro mês navega pra ele: clicar em "01" na última linha
+            // e não sair do lugar pareceria que o clique não funcionou.
+            if (!doMes) {
+              estado.agendaMes = `${dia.getFullYear()}-${dia.getMonth()}`;
+            }
+            desenharMes(corpo, reunioes, total, chave);
+          });
+          grade.appendChild(b);
+        }
+        corpo.appendChild(grade);
+
+        // ── A lista do dia escolhido ──
+        if (estado.agendaDia) {
+          const doDia = indice.get(estado.agendaDia) || [];
+          // Dia anterior à janela carregada: "nada marcado" seria afirmação
+          // sobre o que não foi consultado.
+          const foraDaJanela =
+            doDia.length === 0 &&
+            limiteAntigo !== null &&
+            Date.parse(`${estado.agendaDia}T23:59:59`) < limiteAntigo;
+          const secao = api.secao(
+            doDia.length > 0
+              ? `${rotuloDoDia(estado.agendaDia)} — ${doDia.length} ${doDia.length === 1 ? 'reunião' : 'reuniões'}`
+              : foraDaJanela
+                ? `${rotuloDoDia(estado.agendaDia)} — fora do período carregado`
+                : `${rotuloDoDia(estado.agendaDia)} — nada marcado`
+          );
+          const cab = secao.previousElementSibling;
+          if (cab) corpo.appendChild(cab);
+          corpo.appendChild(secao);
+          for (const r of doDia) cartaoDaAgenda(secao, r);
+          if (foraDaJanela) {
+            corpo.appendChild(
+              api.el(
+                'div',
+                `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:4px 2px`,
+                'A agenda carrega as reuniões mais recentes. Para ver as antigas, procure pelo cliente no histórico.'
+              )
+            );
+          }
+        }
+
+        // Mês inteiro anterior à janela: a grade vazia parece "mês livre",
+        // e não é — é mês não consultado. Dizer isso vale mais que a grade.
+        if (limiteAntigo !== null) {
+          const fimDoMes = new Date(ano, mes + 1, 0, 23, 59, 59).getTime();
+          if (fimDoMes < limiteAntigo) {
+            corpo.appendChild(
+              api.el(
+                'div',
+                `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:8px 2px 0`,
+                'Este mês está fora das reuniões carregadas — a grade vazia aqui não quer dizer agenda livre.'
+              )
+            );
+          }
+        }
+
+        // O redesenho destrói o botão que acabou de ser clicado, e o foco cai
+        // no body: navegar pelo teclado obrigava a tabular desde o topo a cada
+        // mês. Devolve o foco ao equivalente na grade nova.
+        if (focar) {
+          const alvo =
+            focar === 'anterior'
+              ? anterior
+              : focar === 'proximo'
+                ? proximo
+                : focar === 'hoje'
+                  ? hojeBtn
+                  : grade.querySelector(`[data-dia="${focar}"]`);
+          if (alvo && typeof alvo.focus === 'function') alvo.focus();
+        }
+      }
+
+      function desenharLista(area, reunioes, total) {
         if (reunioes.length === 0) {
           area.appendChild(
             api.el(
@@ -950,16 +1234,6 @@
           }
         }
 
-        // A agenda só enxerga o que foi marcado PELA EXTENSÃO. Reunião criada
-        // direto no painel não aparece, e quem não souber disso conclui que
-        // está livre num horário que não está.
-        area.appendChild(
-          api.el(
-            'div',
-            `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:10px 2px 2px`,
-            'Só aparece o que foi marcado por aqui. Reunião criada direto no painel não entra nesta lista.'
-          )
-        );
       }
 
       function cartaoDaAgenda(secao, r) {

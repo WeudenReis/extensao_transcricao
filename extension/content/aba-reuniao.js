@@ -84,19 +84,36 @@
     st.id = ID_ESTILO;
     st.textContent = `
 /* ── Cartões de ação: mesma linguagem da lista do Copiloto, com 2 linhas ── */
-.copilot--reuniao .copilot-list > article > a{
+/* Seletor DESCENDENTE, e não filho direto de .copilot-list: as
+   listas movem o <article> da seção pra dentro de um <div> (pra poder limpar
+   só aquele pedaço), e o seletor de FILHO DIRETO deixava de casar — a lista
+   inteira ficava sem separação, sem hover e sem hierarquia. O :not() exclui
+   o article de rolagem da própria aba, que não é lista. */
+.copilot--reuniao article:not(.copilot-article) > a{
   display:block;-webkit-line-clamp:none;line-clamp:none;
-  padding:0 0 10px;border-bottom:1px solid hsl(var(--gray-10));
+  padding:10px 0;border-bottom:1px solid hsl(var(--gray-10));
   color:inherit;cursor:pointer;transition:all .1s;text-decoration:none}
-.copilot--reuniao .copilot-list > article > a:last-child{border-bottom:0}
-.copilot--reuniao .copilot-list > article > a:hover{opacity:.75}
-.copilot--reuniao .copilot-list > article > a > div{
+/* O hover pinta a faixa inteira, e não só clareia o texto: numa lista de dez
+   reuniões parecidas, saber QUAL linha o clique vai pegar importa mais que o
+   efeito ser discreto. O recuo negativo faz a faixa sangrar até a borda. */
+.copilot--reuniao article:not(.copilot-article) > a:hover{
+  opacity:1;background:hsl(var(--gray-10));
+  margin:0 calc(var(--padding-xs) * -1);padding-left:var(--padding-xs);
+  padding-right:var(--padding-xs);border-radius:var(--radius-sm,6px)}
+/* Nome de empresa é longo ("EMPRESA BRASILEIRA DE COMUNICACAO PRODUCAO LTDA")
+   e quebrava em três linhas, empurrando o horário pra longe do nome. Duas
+   linhas no máximo, com reticências. */
+.copilot--reuniao article:not(.copilot-article) > a > div > span{
+  display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden;line-height:1.35}
+.copilot--reuniao article:not(.copilot-article) > a:last-child{border-bottom:0}
+.copilot--reuniao article:not(.copilot-article) > a > div{
   display:flex;flex-direction:row;justify-content:space-between}
-.copilot--reuniao .copilot-list > article > a > div > span{
+.copilot--reuniao article:not(.copilot-article) > a > div > span{
   font-size:1rem;font-weight:400;color:hsl(var(--gray-80))}
-.copilot--reuniao .copilot-list > article > a > span{
+.copilot--reuniao article:not(.copilot-article) > a > span{
   display:block;font-size:.6875rem;color:hsl(var(--gray-50))}
-.copilot--reuniao .copilot-list > header h1{
+.copilot--reuniao header:not(.copilot-header) h1{
   font-size:1rem;font-weight:700;color:hsl(var(--gray-80))}
 
 /* ── O que o Copiloto não tem ── */
@@ -146,6 +163,78 @@
 .copilot--reuniao .cpm-horario--escolhido:hover{
   background:hsl(var(--lime-green-50));border-color:hsl(var(--lime-green-50));
   color:hsl(var(--gray-00))}
+/* ── Calendário do mês, no desenho do painel adaptado a 450px ──
+   O painel tem largura de tela cheia e cabem chips com o nome de cada
+   reunião. Aqui cada coluna tem ~55px: o nome não cabe de jeito nenhum, então
+   o dia carrega PONTOS (um por reunião, até 3) e a lista do dia abre embaixo
+   ao clicar. Mesma informação, na ordem que a largura permite. */
+.copilot--reuniao .cpm-cal-topo{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:.5rem;margin-bottom:.75rem}
+.copilot--reuniao .cpm-cal-mes{
+  font-size:.9375rem;font-weight:700;color:hsl(var(--gray-80));
+  text-transform:capitalize;flex:1;text-align:center}
+.copilot--reuniao .cpm-cal-nav{
+  width:32px;height:32px;flex:0 0 auto;padding:0;border-radius:var(--radius-sm,6px);
+  border:1px solid hsl(var(--gray-10));background:hsl(var(--gray-00));
+  color:hsl(var(--gray-80));cursor:pointer;font-family:inherit;font-size:1rem;
+  display:flex;align-items:center;justify-content:center;transition:all .1s}
+.copilot--reuniao .cpm-cal-hoje{
+  flex:0 0 auto;padding:0 .625rem;height:32px;border-radius:var(--radius-sm,6px);
+  border:1px solid hsl(var(--gray-10));background:hsl(var(--gray-00));
+  color:hsl(var(--gray-80));cursor:pointer;font-family:inherit;
+  font-size:.75rem;font-weight:600;transition:all .1s}
+.copilot--reuniao .cpm-cal-hoje:hover{
+  border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
+.copilot--reuniao .cpm-cal-nav:hover{
+  border-color:hsl(var(--gray-20));background:hsl(var(--gray-05))}
+.copilot--reuniao .cpm-cal-semana,
+.copilot--reuniao .cpm-cal-grade{
+  display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.copilot--reuniao .cpm-cal-semana{margin-bottom:3px}
+.copilot--reuniao .cpm-cal-dia-nome{
+  font-size:.625rem;font-weight:600;color:hsl(var(--gray-50));
+  text-align:center;text-transform:uppercase;letter-spacing:.02em}
+.copilot--reuniao .cpm-cal-dia{
+  aspect-ratio:1;min-height:38px;border-radius:var(--radius-sm,6px);
+  border:1px solid transparent;background:transparent;
+  color:hsl(var(--gray-80));cursor:pointer;font-family:inherit;
+  font-size:.8125rem;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:2px;padding:0;transition:all .1s}
+.copilot--reuniao .cpm-cal-dia:hover{background:hsl(var(--gray-10))}
+/* Dia de outro mês continua clicável, mas apagado: é contexto de borda de
+   grade, não conteúdo — e sumir com ele deixaria buracos na primeira linha. */
+/* --gray-50 e não --gray-20: o 20 é tom de BORDA e, usado como texto,
+   sumia contra o fundo. O 50 é o tom de texto secundário que o resto do
+   arquivo já usa — apagado em relação ao --gray-80 do dia do mês, mas legível. */
+.copilot--reuniao .cpm-cal-dia--fora{color:hsl(var(--gray-50))}
+/* HOJE é contorno, não preenchimento: preenchido brigaria com o dia
+   selecionado, e os dois podem ser o mesmo dia. */
+.copilot--reuniao .cpm-cal-dia--hoje{
+  border-color:hsl(var(--cool-green-70));font-weight:700}
+.copilot--reuniao .cpm-cal-dia--escolhido,
+.copilot--reuniao .cpm-cal-dia--escolhido:hover{
+  background:hsl(var(--lime-green-50));border-color:hsl(var(--lime-green-50));
+  color:hsl(var(--gray-00));font-weight:700}
+.copilot--reuniao .cpm-cal-pontos{
+  display:flex;gap:2px;height:4px;align-items:center}
+.copilot--reuniao .cpm-cal-ponto{
+  width:4px;height:4px;border-radius:50%;background:hsl(var(--cool-green-70))}
+.copilot--reuniao .cpm-cal-dia--escolhido .cpm-cal-ponto{
+  background:hsl(var(--gray-00))}
+/* Alternador Mês | Lista, no lugar do que o painel põe no canto direito. */
+.copilot--reuniao .cpm-abas{
+  display:flex;gap:4px;margin-bottom:.75rem;
+  background:hsl(var(--gray-10));padding:3px;border-radius:var(--radius-md)}
+.copilot--reuniao .cpm-aba{
+  flex:1;padding:6px 0;border:0;border-radius:var(--radius-sm,6px);
+  background:transparent;color:hsl(var(--gray-50));cursor:pointer;
+  font-family:inherit;font-size:.8125rem;font-weight:600;transition:all .1s}
+.copilot--reuniao .cpm-aba:hover{color:hsl(var(--gray-80))}
+.copilot--reuniao .cpm-aba--ativa{
+  background:hsl(var(--gray-00));color:hsl(var(--gray-80));
+  box-shadow:0 1px 2px hsl(var(--gray-80) / .08)}
+
 .copilot--reuniao .cpm-centro{text-align:center;padding:1.5rem .5rem;
   color:hsl(var(--gray-50));font-size:.8125rem}
 
