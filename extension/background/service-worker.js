@@ -121,6 +121,17 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
             // `assignee_email` é o único campo que a aba só manda com permissão
             // do painel: quem não pode escolher o responsável leva 403.
             ...(msg.assigneeEmail ? { assigneeEmail: msg.assigneeEmail } : {}),
+            // Booleano vai por IGUALDADE, não por presença: o padrão dos
+            // outros campos aqui é `msg.x ? {x} : {}`, e com `false` isso
+            // omitiria — o que dá no mesmo, mas esconde a intenção. Mandar
+            // explícito deixa claro que o servidor recebe os dois valores.
+            //
+            // Este campo já esteve AUSENTE desta lista, e a consequência foi a
+            // pior possível: a caixa "Não enviar mensagem ao cliente" ficava
+            // marcada, o campo morria aqui no repasse, e o cliente recebia a
+            // mensagem assim mesmo. Campo novo no fluxo precisa entrar AQUI
+            // também — a lista é fixa de propósito, mas é fácil esquecer.
+            semMensagem: msg.semMensagem === true,
           }),
         });
         if (r.ok) {

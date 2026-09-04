@@ -324,7 +324,16 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
       const grades = await Promise.all(
         dias.map(async (data) => {
           try {
-            return await painel.horarios({ tipo, data, actorEmail: email });
+            // Migração é o único tipo cuja grade EXIGE client_type (422 sem
+            // ele). A extensão prefere outro tipo, mas quem só tem migração
+            // liberada chega aqui — e uma semana inteira nula seria pior que
+            // consultar o pool mais comum.
+            return await painel.horarios({
+              tipo,
+              data,
+              actorEmail: email,
+              ...(tipo === 'migracao' ? { clientType: 'base' as const } : {}),
+            });
           } catch {
             return null;
           }

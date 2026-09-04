@@ -47,7 +47,7 @@
 | `server/src/routes/chatproHook.ts` (242) | Webhook do chatPro Chat: **POST /webhooks/chatpro/{segredo}** É o que torna a gravação automática. | MEET_NO_TEXTO, TETO_BOTS_JANELA, JANELA_TETO_MS, DadosMensagem, lerEvento, acharLinkDoMeet +2 |
 | `server/src/routes/meetings.ts` (372) | Reuniões gravadas pelo bot do Recall.ai: POST /api/meetings                   → cria o bot e o manda entrar na call GET  /api/meetings                   → lista | criarReuniaoSchema, CriarReuniaoBody, ResumoReuniao, resumirReuniao, MeetingsRouterDeps, createMeetingsRouter |
 | `server/src/routes/painelAuth.ts` (177) | Tranca do painel e das rotas de leitura. | COOKIE_TOKEN, ehCaminhoLivre, tokenConfere, extrairToken, criarPainelAuth |
-| `server/src/routes/painelInterno.ts` (453) | Consultas ao painel interno que a EXTENSÃO precisa fazer: GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada) GET /api/painel/onboar | PainelInternoRouterDeps, createPainelInternoRouter |
+| `server/src/routes/painelInterno.ts` (462) | Consultas ao painel interno que a EXTENSÃO precisa fazer: GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada) GET /api/painel/onboar | PainelInternoRouterDeps, createPainelInternoRouter |
 | `server/src/routes/pubsub.ts` (202) | Endpoint push do Cloud Pub/Sub (Workspace Events → tópico → push aqui). | DecodedPushMessage, decodePubSubPush, OidcTokenInfo, TokenVerifier, GoogleOidcVerifier, PubSubRouterDeps +1 |
 | `server/src/routes/recallHook.ts` (127) | Webhook do Recall.ai: POST /webhooks/recall Regras do fornecedor: responder 2xx em até 15 s, reentrega por 24 h, endpoint que falha 5 dias seguidos é DESATIVADO | WebhookAnalisado, analisarCorpoWebhook, RecallHookRouterDeps, createRecallHookRouter |
 | `server/src/routes/reunioes.ts` (1024) | O botão "Entrar na reunião" do chatPro. | montarResumo, FUSO, MAX_DIAS_AGENDAMENTO, ANTECEDENCIA_CONVITE_MS, TIPOS_REUNIAO, TipoReuniao +11 |
@@ -67,23 +67,23 @@
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/content/aba-reuniao.js` (745) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
+| `extension/content/aba-reuniao.js` (750) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
 | `extension/content/atendente.js` (349) | Quem é o atendente que está usando o chatPro agora. | __cpmAtendente |
 | `extension/content/botao-reuniao.js` (659) | Botão "reunião" na barra do chatPro. | __cpmDiag |
-| `extension/content/fluxo-reuniao.js` (3407) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
+| `extension/content/fluxo-reuniao.js` (3459) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
 
 ## extension/background
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/background/service-worker.js` (360) | Service worker da extensão — a ponte entre o botão no chatPro e o backend. | — |
+| `extension/background/service-worker.js` (371) | Service worker da extensão — a ponte entre o botão no chatPro e o backend. | — |
 
 ## scripts
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
 | `scripts/checar-css.mjs` (60) | Trava contra o erro que já quebrou o arquivo DUAS vezes: crase dentro do bloco de CSS. | — |
-| `scripts/checar-mensagens.mjs` (62) | Prova que nenhuma chamada de `pedir()` sobrescreve o nome da mensagem. | — |
+| `scripts/checar-mensagens.mjs` (110) | Duas travas sobre a ponte entre a aba e o service worker. | — |
 | `scripts/configurar-segredo.mjs` (160) | Grava o signing secret do Recall no server/.env, reinicia o servidor e confere a assinatura de ponta a ponta — tudo num comando. | — |
 | `scripts/gerar-id-extensao.mjs` (57) | Gera um par de chaves e fixa o ID da extensão no manifest.json. | — |
 | `scripts/gerar-mapa.mjs` (108) | Gera `docs/MAPA.md` — o índice do repositório. | — |

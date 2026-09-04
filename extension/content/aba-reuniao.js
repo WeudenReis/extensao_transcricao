@@ -363,7 +363,7 @@
   padding:1px 5px;border-radius:3px;background:hsl(var(--gray-10));
   color:hsl(var(--gray-50));font-weight:600}
 
-/* Alternador Mês | Semana | Lista, no lugar do que o painel põe no canto. */
+/* Alternador Mês | Semana, no lugar do que o painel põe no canto direito. */
 .copilot--reuniao .cpm-abas{
   display:flex;gap:4px;margin-bottom:.75rem;
   background:hsl(var(--gray-10));padding:3px;border-radius:var(--radius-md)}

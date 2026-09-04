@@ -828,8 +828,8 @@
 
         // Alarga JÁ no clique, antes da consulta: a expansão é a resposta
         // visual ao toque. Esperar o servidor deixaria o botão parecendo
-        // morto por um instante — e a tela entra sempre no Mês, então não há
-        // risco de alargar pra depois estreitar.
+        // morto por um instante — e as duas vistas usam a largura escolhida,
+        // então não há risco de alargar pra depois estreitar.
         api.largura(agendaLarga);
 
         const area = api.el('div', '');
@@ -899,8 +899,10 @@
        * A agenda tem duas vistas, e o alternador fica no topo — mesmo lugar
        * onde o painel põe o dele (Mês | Semana | Dia | Lista).
        *
-       * Só Mês e Lista: numa coluna de 450px, "Semana" e "Dia" mostrariam a
-       * mesma coisa que a Lista já mostra, com mais cliques pra chegar lá.
+       * Só Mês e Semana. A Lista existiu e saiu: mostrava a mesma informação
+       * em coluna única, sem a leitura de "onde tem espaço" que é o motivo da
+       * tela existir — e a busca por cliente, o outro uso dela, está na tela
+       * anterior, cobrindo TODAS as reuniões e não só as suas.
        */
       function desenharAgenda(area, reunioes, total) {
         area.textContent = '';
@@ -932,7 +934,7 @@
         if (estado.agendaVista === 'mes') {
           desenharMes(corpo, reunioes, total);
         } else {
-          desenharSemana(corpo, reunioes);
+          desenharSemana(corpo, reunioes, total);
         }
 
         // A ressalva vale nas duas vistas: a agenda só enxerga o que foi
@@ -1107,8 +1109,8 @@
           estado.agendaDia = chaveDoDia(agora);
           desenharMes(corpo, reunioes, total, 'hoje');
         });
-        // Alargar/estreitar. Só existe na vista Mês: é a única tela em que
-        // a largura muda o que dá pra mostrar (pontinho vira nome).
+        // Alargar/estreitar. A vista Semana tem o gêmeo deste botão: nas
+        // duas, largura é o que decide quanto do nome do cliente cabe.
         const larguraBtn = api.el('button', '', agendaLarga ? '⤎' : '⤏');
         larguraBtn.type = 'button';
         larguraBtn.className = 'cpm-cal-largura';
@@ -1124,9 +1126,9 @@
         });
         topo.append(anterior, titulo, proximo, hojeBtn, larguraBtn);
 
-        // A largura é reaplicada a cada desenho porque api.limpar() a zera em
-        // toda troca de tela — voltar pro calendário tem que devolver o modo
-        // que a pessoa escolheu.
+        // A largura é reaplicada a cada desenho porque quem sai da agenda a
+        // zera (é o passoModo que faz isso, por onde passa todo caminho de
+        // saída) — voltar pro calendário devolve o modo que a pessoa escolheu.
         api.largura(agendaLarga);
         corpo.textContent = '';
         corpo.appendChild(topo);
@@ -1321,9 +1323,22 @@
        */
       const ocupadosPorSemana = new Map();
 
-      function desenharSemana(corpo, reunioes, focar) {
+      function desenharSemana(corpo, reunioes, total, focar) {
         const indice = porDia(reunioes);
         const hoje = new Date();
+        // Mesma ressalva do Mês: a agenda vem cortada nas 100 mais recentes, e
+        // semana anterior a essa janela não está vazia — está fora do que foi
+        // carregado. Sem isto, Mês e Semana afirmavam coisas contrárias sobre
+        // o mesmo período.
+        const cortada = typeof total === 'number' && total > reunioes.length;
+        let limiteAntigo = null;
+        if (cortada) {
+          for (const r of reunioes) {
+            if (!r.quando || Number.isNaN(Date.parse(r.quando))) continue;
+            const t = Date.parse(r.quando);
+            if (limiteAntigo === null || t < limiteAntigo) limiteAntigo = t;
+          }
+        }
         // Sem semana escolhida, abre na semana da PRÓXIMA reunião — mesma
         // regra do mês: abrir numa semana vazia não responde nada.
         if (!estado.agendaSemana) {
@@ -1346,7 +1361,7 @@
         const irPara = (dias, focarEm) => {
           const d = new Date(ay, am - 1, ad + dias);
           estado.agendaSemana = chaveDoDia(d);
-          desenharSemana(corpo, reunioes, focarEm);
+          desenharSemana(corpo, reunioes, total, focarEm);
         };
         const anterior = api.el('button', '', '‹');
         anterior.type = 'button';
@@ -1378,16 +1393,23 @@
           const d = new Date();
           const dom = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
           estado.agendaSemana = chaveDoDia(dom);
-          desenharSemana(corpo, reunioes, 'hoje');
+          desenharSemana(corpo, reunioes, total, 'hoje');
         });
         const larguraBtn = api.el('button', '', agendaLarga ? '⤎' : '⤏');
         larguraBtn.type = 'button';
         larguraBtn.className = 'cpm-cal-largura';
         larguraBtn.title = agendaLarga ? 'Estreitar a aba' : 'Alargar a aba';
+        // O conteúdo do botão é o glifo da seta, e `title` não entra no nome
+        // acessível quando há texto dentro: sem isto o leitor de tela anuncia
+        // "botão, seta para a esquerda". O gêmeo da vista Mês já tinha.
+        larguraBtn.setAttribute(
+          'aria-label',
+          agendaLarga ? 'Estreitar a aba' : 'Alargar a aba para ver os nomes das reuniões'
+        );
         larguraBtn.addEventListener('click', () => {
           guardarLargura(!agendaLarga);
           api.largura(agendaLarga);
-          desenharSemana(corpo, reunioes, 'largura');
+          desenharSemana(corpo, reunioes, total, 'largura');
         });
         topo.append(anterior, titulo, proximo, hojeBtn, larguraBtn);
         corpo.appendChild(topo);
@@ -1457,6 +1479,21 @@
           corpo.appendChild(linha);
         }
 
+        // Semana inteira anterior à janela carregada: os dias sem reunião
+        // aqui não são dias livres, são dias não consultados.
+        if (limiteAntigo !== null) {
+          const fimDaSemana = new Date(ay, am - 1, ad + 6, 23, 59, 59).getTime();
+          if (fimDaSemana < limiteAntigo) {
+            corpo.appendChild(
+              api.el(
+                'div',
+                `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:8px 2px 0`,
+                'Esta semana está fora das reuniões carregadas — os dias vazios aqui não querem dizer agenda livre.'
+              )
+            );
+          }
+        }
+
         // ── O que o PAINEL sabe e o nosso banco não ──
         //
         // A agenda local só tem o que foi marcado pela extensão. Reunião
@@ -1520,8 +1557,15 @@
        */
       function tipoParaConsulta() {
         const caps = (estado.eu && estado.eu.capacidades) || [];
-        const permitido = caps.find((c) => c.allowed);
-        return permitido ? permitido.type : null;
+        const permitidos = caps.filter((c) => c.allowed).map((c) => c.type);
+        if (permitidos.length === 0) return null;
+        // Migração fica por ÚLTIMO: a grade dela exige `client_type` e sem ele
+        // a API devolve 422 — quem só tivesse migração liberada veria "não
+        // consegui conferir" nos sete dias. Os outros tipos respondem sem esse
+        // campo, e a grade que interessa aqui é a da pessoa, não a do tipo.
+        const ordem = ['cs', 'implantacao', 'apresentacao', 'migracao'];
+        for (const t of ordem) if (permitidos.includes(t)) return t;
+        return permitidos[0];
       }
 
       /**
@@ -1549,7 +1593,15 @@
             continue;
           }
           const info = dias[chave];
-          if (!info) continue;
+          // `null` = a consulta DAQUELE dia falhou (o servidor deixa o dia
+          // cair sozinho pra não derrubar a semana). Deixar "livre" escrito
+          // seria afirmar justamente o que não foi possível conferir — e é a
+          // afirmação que faz alguém marcar em cima de outra reunião.
+          if (!info) {
+            const vazioFalho = itens.querySelector('.cpm-sem-vazio');
+            if (vazioFalho) vazioFalho.textContent = 'não consegui conferir';
+            continue;
+          }
 
           // Dia SEM NENHUM horário na grade não é dia livre: é fim de semana,
           // feriado ou dia fora do expediente. Medido contra o painel real —
