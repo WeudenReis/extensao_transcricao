@@ -1241,7 +1241,7 @@ describe('semMensagem — o atendente escolhe não avisar o cliente', () => {
     expect(corpo.mensagemDispensada).toBe(true);
   });
 
-  it('reunião AGENDADA: não entra na fila de convites', async () => {
+  it('reunião AGENDADA: entra na fila só como LEMBRETE interno', async () => {
     const app = await montarApp();
     const quando = daquiA(3 * 24 * 60);
 
@@ -1253,11 +1253,24 @@ describe('semMensagem — o atendente escolhe não avisar o cliente', () => {
     });
 
     expect(res.status).toBe(201);
-    // Enfileirar e depois "falhar" deixaria uma linha vermelha no painel de
-    // envios pra algo que ninguém queria mandar.
-    expect(filaDeConvites(app.db)).toHaveLength(0);
     const corpo = (await res.json()) as { mensagemDispensada: boolean };
     expect(corpo.mensagemDispensada).toBe(true);
+
+    // A linha EXISTE, e é o que faz o atendente ser avisado antes da reunião:
+    // quem dispensou o convite ao cliente continua precisando saber que ela é
+    // daqui a pouco. Antes disto, dispensar a mensagem deixava a pessoa sem
+    // aviso nenhum.
+    const fila = filaDeConvites(app.db);
+    expect(fila).toHaveLength(1);
+    expect(fila[0]?.so_comentario).toBe(1);
+    // A mensagem enfileirada é o texto INTERNO, não o convite do cliente — se
+    // fosse o convite, o worker mandaria pro cliente daqui a três dias e
+    // desfaria a escolha de quem marcou, sem ninguém olhando.
+    expect(fila[0]?.message).toContain('📅');
+    expect(fila[0]?.message).toContain('{quando}');
+
+    // E nada saiu pro cliente AGORA.
+    expect(app.chamadas.some((c) => c.url.includes('/messages/sendMessage'))).toBe(false);
   });
 
   it('sem a opção, o comportamento de sempre continua: a mensagem sai', async () => {

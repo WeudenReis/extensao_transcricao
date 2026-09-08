@@ -826,6 +826,18 @@
           return;
         }
 
+        // Convites que não chegaram ao cliente. Vem antes de tudo na tela
+        // porque é a única coisa aqui que pede AÇÃO, não leitura — e a falha
+        // de envio é silenciosa por desenho (o worker não repete, porque
+        // convite atrasado é pior que convite nenhum).
+        void pedir('PAINEL_PENDENCIAS', { email })
+          .then((r) => {
+            const convites = (r && r.convites) || [];
+            if (convites.length === 0 || !api.corpo.isConnected) return;
+            mostrarPendencias(convites);
+          })
+          .catch(() => {});
+
         // Alarga JÁ no clique, antes da consulta: a expansão é a resposta
         // visual ao toque. Esperar o servidor deixaria o botão parecendo
         // morto por um instante — e as duas vistas usam a largura escolhida,
@@ -877,6 +889,57 @@
             'você está livre — tente de novo antes de marcar.',
           'erro'
         );
+      }
+
+      /**
+       * O aviso de convite que não saiu.
+       *
+       * Entra no TOPO do corpo, e não no fim: quem abre a agenda vem decidir
+       * horário, e essa decisão pode esperar — um cliente que não recebeu o
+       * link da reunião de amanhã, não.
+       */
+      function mostrarPendencias(convites) {
+        const caixa = api.el('div', '');
+        caixa.className = 'cpm-pendencia';
+        const titulo = api.el(
+          'div',
+          '',
+          convites.length === 1
+            ? 'Um convite não chegou ao cliente'
+            : `${convites.length} convites não chegaram ao cliente`
+        );
+        titulo.className = 'cpm-pendencia-titulo';
+        caixa.appendChild(titulo);
+
+        for (const c of convites) {
+          const quem = c.cliente || 'Cliente';
+          const rotuloTipo = TIPOS[c.tipo] ? TIPOS[c.tipo].rotulo : '';
+          const partes = [quandoLegivel(c.quando), rotuloTipo].filter(Boolean);
+          const item = api.el('button', '', `${quem} — ${partes.join(' · ')}`);
+          item.type = 'button';
+          item.className = 'cpm-pendencia-item';
+          // O motivo cru no title: ajuda a saber se adianta tentar de novo ou
+          // se é problema de configuração.
+          if (c.motivo) item.title = String(c.motivo);
+          item.addEventListener('click', () => {
+            // Direto pra CONVERSA: é lá que o atendente cola o link, que é a
+            // ação que resolve. Abrir o Meet não resolveria nada.
+            if (c.sessionId) {
+              window.location.href = `https://app.chatpro.com.br/chat/${c.sessionId}`;
+            } else if (c.meetUrl) {
+              window.open(c.meetUrl, '_blank', 'noopener');
+            }
+          });
+          caixa.appendChild(item);
+        }
+
+        const dica = api.el(
+          'div',
+          `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding-top:4px`,
+          'Abra a conversa e cole o link — o envio não é tentado de novo, porque convite atrasado confunde mais que ajuda.'
+        );
+        caixa.appendChild(dica);
+        api.corpo.prepend(caixa);
       }
 
       /** Chave 'AAAA-MM-DD' no fuso LOCAL — `toISOString` daria o dia em UTC,
@@ -2167,7 +2230,85 @@
             timerConsulta = setTimeout(() => {
               timerConsulta = null;
               void consultarCnpj(valor);
+              void puxarCadastroAnterior(valor);
             }, ESPERA_MS);
+          }
+
+          /**
+           * O cadastro da ÚLTIMA reunião deste CNPJ preenche o resto.
+           *
+           * Cliente que já teve reunião aqui tem empresa, telefone, instância,
+           * provedor e vendedor guardados. Sem isto, o atendente digita tudo
+           * de novo a cada reunião do mesmo cliente — que é o trabalho
+           * repetido mais óbvio deste formulário.
+           *
+           * Três regras, as mesmas do contato da conversa:
+           *   1. Só entra em campo VAZIO. O que a pessoa digitou vale mais.
+           *   2. Resposta atrasada não sobrescreve: o CNPJ pode ter mudado
+           *      enquanto a consulta viajava, e aí o cadastro é de outro.
+           *   3. Falha vira silêncio — é atalho, não requisito.
+           */
+          async function puxarCadastroAnterior(valor) {
+            const meu = consultaAtual;
+            const digitos = soDigitos(valor);
+            const r = await pedir('ULTIMO_CLIENTE', { cnpj: valor }).catch(() => null);
+            const c = r && r.cliente;
+            if (!c) return;
+            // O CNPJ mudou, ou a tela — o palpite é de outro cliente.
+            if (meu !== consultaAtual || soDigitos(cnpj.entrada.value) !== digitos) return;
+            if (!cnpj.wrap.isConnected) return;
+
+            const vazio = (campo) => campo && !campo.entrada.value.trim();
+            if (vazio(empresa) && typeof c.empresa === 'string') {
+              empresa.entrada.value = c.empresa;
+            }
+            if (vazio(telefone) && typeof c.telefone === 'string') {
+              telefone.entrada.value = formatarTelefone(c.telefone).texto;
+            }
+            if (vazio(instancia) && typeof c.instancia === 'string') {
+              instancia.entrada.value = c.instancia;
+            }
+            if (vazio(emailCliente) && typeof c.email === 'string') {
+              emailCliente.entrada.value = c.email;
+            }
+            // Os <select> têm as opções fixas já no DOM, então basta atribuir.
+            // `vazio()` não serve: select com placeholder tem value ''.
+            for (const [campo, chave] of [
+              [provedor, 'provedor'],
+              [clientType, 'clientType'],
+              [motivoCs, 'csReason'],
+              [planoOficial, 'oficialPlan'],
+            ]) {
+              if (campo && campo.entrada.value === '' && typeof c[chave] === 'string') {
+                campo.entrada.value = c[chave];
+              }
+            }
+            // O vendedor chega da rede e pode não estar na lista ainda; quem
+            // cuida disso é o carregarVendedores, que restaura o escolhido.
+            if (typeof c.vendedorEmail === 'string' && !estado.vendedorEmail) {
+              estado.vendedorEmail = c.vendedorEmail;
+            }
+
+            avisarReuso(c);
+          }
+
+          let avisoReuso = null;
+          /**
+           * Diz que os campos vieram de uma reunião anterior.
+           *
+           * Sem isso o formulário se preenche sozinho e a pessoa não sabe de
+           * onde veio — e dado que aparece do nada é dado em que ninguém
+           * confia, ou pior, que ninguém confere.
+           */
+          function avisarReuso(c) {
+            if (avisoReuso) return;
+            const quem = typeof c.empresa === 'string' && c.empresa ? c.empresa : 'este cliente';
+            avisoReuso = api.el(
+              'div',
+              `font:400 11px/1.5 system-ui,sans-serif;color:${api.p.textoFraco};padding:2px 2px 8px`,
+              `Preenchido com o cadastro da última reunião de ${quem}. Confira antes de marcar.`
+            );
+            cnpj.wrap.appendChild(avisoReuso);
           }
 
           function cancelarConsulta() {

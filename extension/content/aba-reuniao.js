@@ -363,6 +363,22 @@
   padding:1px 5px;border-radius:3px;background:hsl(var(--gray-10));
   color:hsl(var(--gray-50));font-weight:600}
 
+/* ── Convite que não chegou ao cliente ──
+   Vermelho e no topo: é a única coisa desta tela que precisa de AÇÃO, e não
+   de leitura. Some sozinho quando não há nenhum. */
+.copilot--reuniao .cpm-pendencia{
+  border:1px solid hsl(var(--color-red,0 72% 51%) / .45);
+  background:hsl(var(--color-red,0 72% 51%) / .10);
+  border-radius:var(--radius-md);padding:8px 10px;margin-bottom:.75rem}
+.copilot--reuniao .cpm-pendencia-titulo{
+  font-size:.75rem;font-weight:700;color:hsl(var(--color-red,0 72% 51%));
+  margin-bottom:4px}
+.copilot--reuniao .cpm-pendencia-item{
+  display:block;width:100%;text-align:left;font-family:inherit;
+  font-size:.75rem;color:hsl(var(--gray-80));background:transparent;border:0;
+  padding:3px 0;cursor:pointer;line-height:1.4}
+.copilot--reuniao .cpm-pendencia-item:hover{text-decoration:underline}
+
 /* Alternador Mês | Semana, no lugar do que o painel põe no canto direito. */
 .copilot--reuniao .cpm-abas{
   display:flex;gap:4px;margin-bottom:.75rem;

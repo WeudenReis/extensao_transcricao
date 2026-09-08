@@ -96,6 +96,40 @@ export function montarResumo(dados: {
 }
 
 /**
+ * O comentário INTERNO na conversa do chatPro.
+ *
+ * Público diferente do resumo: aqui quem lê é a equipe, dentro do
+ * atendimento. Por isso leva quem marcou — a pergunta "quem já falou com esse
+ * cliente?" é a que o histórico do atendimento responde — e não repete o
+ * telefone nem o CNPJ, que estão no cadastro logo ali.
+ *
+ * Não é o mesmo texto do cliente de propósito: o cliente recebe um convite, a
+ * equipe recebe um registro.
+ */
+export function montarComentarioInterno(dados: {
+  tipo: string | null;
+  quandoTexto: string | null;
+  responsavel: string | null;
+  marcadaPor: string | null;
+  meetUrl: string;
+}): string {
+  const rotulo = dados.tipo ? ROTULO_DO_TIPO[dados.tipo] : null;
+  return [
+    `📅 ${rotulo ? `Reunião de ${rotulo}` : 'Reunião'} ${
+      dados.quandoTexto ? `marcada — ${dados.quandoTexto}` : 'criada agora'
+    }`,
+    dados.responsavel ? `Conduz: ${dados.responsavel}` : null,
+    // Só quando é OUTRA pessoa: "marcada por" repetindo quem conduz é ruído.
+    dados.marcadaPor && dados.marcadaPor !== dados.responsavel
+      ? `Marcada por: ${dados.marcadaPor}`
+      : null,
+    `Link: ${dados.meetUrl}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
  * Como cada tipo aparece PRA O CLIENTE. Os valores da API (`cs`,
  * `apresentacao`) são nomes internos — mandá-los crus no WhatsApp obrigaria o
  * cliente a adivinhar.
@@ -645,6 +679,29 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
             .replace('{link}', meet.meetUrl)
             .replace('{quando}', quando ? '{quando}' : '')
         : resumo;
+      // O registro INTERNO na conversa. Vale mesmo quando o cliente não
+      // recebe nada (`semMensagem`): é justamente aí que a equipe precisa
+      // saber que a reunião existe, porque não há mensagem no histórico
+      // contando isso. Falha aqui NÃO derruba nada — a reunião está criada, e
+      // um comentário perdido é menos grave que um 502 na cara de quem já
+      // preencheu o formulário.
+      void chatpro
+        .comentar({
+          sessionId,
+          instanceId,
+          message: montarComentarioInterno({
+            tipo,
+            quandoTexto: quando ? formatarQuando(quando) : null,
+            responsavel: responsavelNome ?? nomeDoResponsavel(responsavel),
+            marcadaPor: nomeDoResponsavel(atendenteEmail),
+            meetUrl: meet.meetUrl,
+          }),
+        })
+        .then((r) => {
+          if (!r.ok) log.warn(`comentário interno não saiu: ${r.motivo}`);
+        })
+        .catch((err) => log.warn(`comentário interno falhou: ${errorMessage(err)}`));
+
       const enviarEm = quando
         ? new Date(Math.max(Date.now(), quando.getTime() - ANTECEDENCIA_CONVITE_MS))
         : null;
@@ -730,14 +787,28 @@ export function createReunioesRouter(deps: ReunioesRouterDeps): Router {
       // Idem pra agendada: sem mensagem, não entra na fila. Enfileirar e
       // depois "cancelar" deixaria uma linha 'falhou' no painel de envios pra
       // algo que ninguém queria enviar.
-      if (quando && enviarEm && !semMensagem) {
+      if (quando && enviarEm) {
+        // Com mensagem: vai o convite pro cliente. Sem mensagem: vai só o
+        // lembrete INTERNO — quem dispensou o convite continua precisando ser
+        // avisado de que a reunião é daqui a pouco, e antes disto ficava sem
+        // nada. O `{quando}` segue cru nos dois: quem resolve "hoje às 10h" é
+        // o worker, no instante do envio.
         db.criarEnvioAgendado({
           meetingId: r.meeting?.id ?? randomUUID(),
           sessionId,
           instanceId,
-          message: texto,
+          message: semMensagem
+            ? montarComentarioInterno({
+                tipo,
+                quandoTexto: '{quando}',
+                responsavel: responsavelNome ?? nomeDoResponsavel(responsavel),
+                marcadaPor: nomeDoResponsavel(atendenteEmail),
+                meetUrl: meet.meetUrl,
+              })
+            : texto,
           enviarEm: enviarEm.toISOString(),
           reuniaoEm: quando.toISOString(),
+          soComentario: semMensagem,
         });
       }
 

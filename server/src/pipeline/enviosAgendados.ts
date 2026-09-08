@@ -117,15 +117,29 @@ export class EnviosAgendadosWorker {
           : envio.message;
 
         try {
-          const r = await this.chatpro.enviarMensagem({
-            sessionId: envio.session_id,
-            message: mensagem,
-            instanceId: envio.instance_id,
-          });
+          // Linha marcada como `so_comentario` é o LEMBRETE do atendente: a
+          // reunião foi marcada com "não enviar mensagem ao cliente", e o que
+          // vence agora é o aviso interno, não o convite. Mandar a mensagem
+          // aqui desfaria a escolha de quem marcou, dias depois e sem ninguém
+          // olhando — que é o pior momento possível pra desobedecer.
+          const r = envio.so_comentario
+            ? await this.chatpro.comentar({
+                sessionId: envio.session_id,
+                message: mensagem,
+                instanceId: envio.instance_id,
+              })
+            : await this.chatpro.enviarMensagem({
+                sessionId: envio.session_id,
+                message: mensagem,
+                instanceId: envio.instance_id,
+              });
           if (r.ok) {
             this.db.marcarEnvio(envio.id, 'enviado');
             resumo.enviados += 1;
-            log.info(`convite #${envio.id} enviado (sessão ${envio.session_id}).`);
+            log.info(
+              `${envio.so_comentario ? 'lembrete' : 'convite'} #${envio.id} enviado ` +
+                `(sessão ${envio.session_id}).`
+            );
           } else {
             this.db.marcarEnvio(envio.id, 'falhou', r.motivo);
             resumo.falhados += 1;

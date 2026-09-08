@@ -127,6 +127,8 @@ export interface GoogleAccountRow {
 
 /** Convite agendado: sai perto do horário da reunião, não na hora de marcar. */
 export interface EnvioAgendadoRow {
+  /** 1 = só o lembrete interno do atendente; nada vai pro cliente. */
+  so_comentario: number;
   id: number;
   meeting_id: string;
   session_id: string;
@@ -534,6 +536,10 @@ export class Db {
     // O CREATE acima só vale pra banco novo; quem já rodou a versão anterior da
     // tabela precisa do ALTER pra ganhar a coluna.
     this.garantirColuna('envios_agendados', 'reuniao_em', 'TEXT');
+    // 1 = a linha é só o LEMBRETE interno do atendente, sem mensagem ao
+    // cliente. Nasceu com a opção "não enviar mensagem": sem ela, quem
+    // dispensava o convite ficava também sem aviso nenhum antes da reunião.
+    this.garantirColuna('envios_agendados', 'so_comentario', 'INTEGER NOT NULL DEFAULT 0');
     this.garantirIndiceDeBusca();
   }
 
@@ -615,6 +621,16 @@ export class Db {
       .prepare<[], { name: string }>(`PRAGMA table_info(${tabela})`)
       .all()
       .map((c) => c.name);
+    // PRAGMA de tabela inexistente devolve LISTA VAZIA, sem erro — e o ALTER
+    // logo abaixo estouraria com "no such table", que não diz o que fazer. O
+    // caso real é sempre o mesmo: a migração foi escrita ACIMA do CREATE
+    // TABLE. Custou 199 testes vermelhos pra descobrir isso uma vez.
+    if (colunas.length === 0) {
+      throw new Error(
+        `garantirColuna('${tabela}', '${coluna}'): a tabela não existe neste ` +
+          `ponto. Mova esta chamada para DEPOIS do CREATE TABLE de ${tabela}.`
+      );
+    }
     if (colunas.includes(coluna)) return;
     this.db.exec(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${definicao}`);
     log.info(`coluna ${tabela}.${coluna} criada.`);
@@ -1303,6 +1319,43 @@ export class Db {
   }
 
   /**
+   * O cadastro da ÚLTIMA reunião daquele CNPJ.
+   *
+   * Serve pra não digitar duas vezes: cliente que já teve reunião aqui tem
+   * empresa, telefone, instância, provedor e vendedor guardados — o atendente
+   * confere em vez de preencher dez campos de novo.
+   *
+   * Compara por DÍGITOS, não pelo texto: o CNPJ é gravado como a pessoa
+   * digitou ("12.345.678/0001-90" numa vez, "12345678000190" na outra), e
+   * comparar string acharia só metade das reuniões do mesmo cliente.
+   *
+   * Varre em ordem decrescente e para no primeiro que casa — o cadastro mais
+   * recente é o que vale, porque telefone e instância mudam.
+   */
+  ultimoClientePorCnpj(cnpj: string): Record<string, unknown> | null {
+    const alvo = cnpj.replace(/\D/g, '');
+    if (alvo.length !== 14) return null;
+    const linhas = this.db
+      .prepare(
+        `SELECT cliente_json FROM meetings
+          WHERE cliente_json IS NOT NULL
+          ORDER BY COALESCE(agendada_para, started_at, created_at) DESC`
+      )
+      .iterate() as IterableIterator<{ cliente_json: string | null }>;
+    for (const linha of linhas) {
+      let c: Record<string, unknown> | null = null;
+      try {
+        c = linha.cliente_json ? (JSON.parse(linha.cliente_json) as Record<string, unknown>) : null;
+      } catch {
+        continue;
+      }
+      if (!c || typeof c.cnpj !== 'string') continue;
+      if (c.cnpj.replace(/\D/g, '') === alvo) return c;
+    }
+    return null;
+  }
+
+  /**
    * A AGENDA de um atendente: o que ele tem pela frente e o que já passou.
    *
    * Filtra por `atendente_email`, que guarda quem VAI CONDUZIR — não quem
@@ -1339,6 +1392,42 @@ export class Db {
           LIMIT ?`
       )
       .all(email, limite) as ReturnType<Db['agendaDoAtendente']>;
+  }
+
+  /**
+   * Convites que NÃO chegaram ao cliente, das reuniões deste atendente.
+   *
+   * O worker não tenta de novo, e por um bom motivo: convite que chega depois
+   * da reunião é pior que convite nenhum. Mas isso deixa a falha silenciosa —
+   * a reunião existe, o cliente não sabe, e ninguém descobre até a hora em
+   * que ele não aparece.
+   *
+   * Aqui a falha vira lista: a agenda mostra, e o atendente cola o link na
+   * conversa a tempo. Só as FUTURAS interessam — convite de reunião que já
+   * passou não tem mais o que salvar, e viraria ruído permanente na tela.
+   */
+  convitesFalhados(email: string): Array<{
+    id: number;
+    session_id: string;
+    reuniao_em: string | null;
+    last_error: string | null;
+    cliente_json: string | null;
+    tipo: string | null;
+    meeting_url: string | null;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT e.id, e.session_id, e.reuniao_em, e.last_error,
+                m.cliente_json, m.tipo, m.meeting_url
+           FROM envios_agendados e
+           LEFT JOIN meetings m ON m.id = e.meeting_id
+          WHERE e.status = 'falhou'
+            AND m.atendente_email = ?
+            AND e.reuniao_em IS NOT NULL
+            AND e.reuniao_em > ?
+          ORDER BY e.reuniao_em ASC`
+      )
+      .all(email, new Date().toISOString()) as ReturnType<Db['convitesFalhados']>;
   }
 
   /**
@@ -1532,16 +1621,23 @@ export class Db {
     message: string;
     enviarEm: string;
     reuniaoEm?: string | null;
+    /** `true` = só o lembrete interno; nada vai pro cliente. */
+    soComentario?: boolean;
   }): number {
     const r = this.db
       .prepare(
         `INSERT INTO envios_agendados
            (meeting_id, session_id, instance_id, message, enviar_em, reuniao_em,
-            status, attempts, created_at)
+            so_comentario, status, attempts, created_at)
          VALUES (@meetingId, @sessionId, @instanceId, @message, @enviarEm, @reuniaoEm,
-            'pendente', 0, @agora)`
+            @soComentario, 'pendente', 0, @agora)`
       )
-      .run({ ...input, reuniaoEm: input.reuniaoEm ?? null, agora: new Date().toISOString() });
+      .run({
+        ...input,
+        reuniaoEm: input.reuniaoEm ?? null,
+        soComentario: input.soComentario ? 1 : 0,
+        agora: new Date().toISOString(),
+      });
     return Number(r.lastInsertRowid);
   }
 

@@ -14,7 +14,7 @@
 | `server/src/chatpro/etiquetas.ts` (218) | Etiquetas automáticas no chatPro depois que a reunião termina. | SituacaoReuniao, SITUACOES_REUNIAO, EtiquetadorOptions, ResultadoEtiquetas, Etiquetador |
 | `server/src/config.ts` (409) | Carrega e valida as variáveis de ambiente com zod. | ehHostLocal, painelUrlProtegeOToken, Config, ConfigError, faltamNoChatpro, recallConfigWarnings +1 |
 | `server/src/crypto.ts` (56) | Cifra segredos (refresh token do Google) com AES-256-GCM. | encryptSecret, decryptSecret |
-| `server/src/db.ts` (1745) | Persistência em SQLite (better-sqlite3) com migrations inline. | LinkRow, TranscriptSentRow, GoogleTokensRow, SubscriptionRow, VoreoQueueRow, CaptureStatus +15 |
+| `server/src/db.ts` (1841) | Persistência em SQLite (better-sqlite3) com migrations inline. | LinkRow, TranscriptSentRow, GoogleTokensRow, SubscriptionRow, VoreoQueueRow, CaptureStatus +15 |
 | `server/src/google/auth.ts` (218) | OAuth2 Authorization Code do Google. | GOOGLE_SCOPES, GoogleAuthOptions, GoogleAuth, createOAuthRouter |
 | `server/src/google/contas.ts` (224) | Conta Google de CADA atendente. | ESCOPOS_AGENDA, ContasGoogleOptions, ContasGoogle, ContaNaoConectada, ContaGoogleExpirada |
 | `server/src/google/events.ts` (275) | Google Workspace Events API (https://workspaceevents.googleapis.com/v1). | EVENTS_API_BASE_URL, MEET_EVENT_TYPES, USER_TARGET_RESOURCE, WorkspaceSubscription, EventsApiError, EventsClientOptions +3 |
@@ -26,7 +26,7 @@
 | `server/src/palavras/motor.ts` (270) | Motor de palavras-chave SEM IA — só código. | TopicoDetectado, normalizarTexto, detectarTopicos, MetaComentario, formatarComentarioPalavras |
 | `server/src/palavras/topicos.ts` (141) | Dicionário de TÓPICOS do domínio chatPro (atendimento via WhatsApp). | TopicoDominio, TOPICOS |
 | `server/src/pipeline/audioTranscript.ts` (400) | Transforma os chunks de áudio de uma captura em transcrição. | MergedEntry, Gap, Coverage, labelRemote, labelMic, mergeTracks +3 |
-| `server/src/pipeline/enviosAgendados.ts` (166) | Worker dos ENVIOS AGENDADOS (tabela envios_agendados). | ENVIOS_WORKER_INTERVAL_MS, JANELA_PERDIDA_MS, ResumoPassada, EnviosAgendadosWorkerOptions, EnviosAgendadosWorker |
+| `server/src/pipeline/enviosAgendados.ts` (180) | Worker dos ENVIOS AGENDADOS (tabela envios_agendados). | ENVIOS_WORKER_INTERVAL_MS, JANELA_PERDIDA_MS, ResumoPassada, EnviosAgendadosWorkerOptions, EnviosAgendadosWorker |
 | `server/src/pipeline/eventQueue.ts` (245) | Fila DURÁVEL de eventos do Workspace Events (tabela event_queue). | EVENT_TRANSCRIPT_FILE_GENERATED, EVENT_CONFERENCE_ENDED, EVENT_MAX_ATTEMPTS, EVENT_BASE_BACKOFF_MS, EVENT_MAX_BACKOFF_MS, NO_LINK_RETRY_MS +7 |
 | `server/src/pipeline/purge.ts` (60) | Expurgo LGPD: áudio bruto é dado sensível de cliente. | PurgeDeps, purgeOldCaptureAudio, startCapturePurgeJob |
 | `server/src/pipeline/recallQueue.ts` (858) | Fila DURÁVEL dos webhooks do Recall.ai (tabela recall_events). | RECALL_MAX_ATTEMPTS, RECALL_BASE_BACKOFF_MS, RECALL_MAX_BACKOFF_MS, RECALL_WORKER_INTERVAL_MS, MEETING_AUSENTE_MAX_AGE_MS, RECALL_LOTE +21 |
@@ -47,10 +47,10 @@
 | `server/src/routes/chatproHook.ts` (242) | Webhook do chatPro Chat: **POST /webhooks/chatpro/{segredo}** É o que torna a gravação automática. | MEET_NO_TEXTO, TETO_BOTS_JANELA, JANELA_TETO_MS, DadosMensagem, lerEvento, acharLinkDoMeet +2 |
 | `server/src/routes/meetings.ts` (372) | Reuniões gravadas pelo bot do Recall.ai: POST /api/meetings                   → cria o bot e o manda entrar na call GET  /api/meetings                   → lista | criarReuniaoSchema, CriarReuniaoBody, ResumoReuniao, resumirReuniao, MeetingsRouterDeps, createMeetingsRouter |
 | `server/src/routes/painelAuth.ts` (177) | Tranca do painel e das rotas de leitura. | COOKIE_TOKEN, ehCaminhoLivre, tokenConfere, extrairToken, criarPainelAuth |
-| `server/src/routes/painelInterno.ts` (462) | Consultas ao painel interno que a EXTENSÃO precisa fazer: GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada) GET /api/painel/onboar | PainelInternoRouterDeps, createPainelInternoRouter |
+| `server/src/routes/painelInterno.ts` (522) | Consultas ao painel interno que a EXTENSÃO precisa fazer: GET /api/painel/vendedores        → seletor de vendedor (apresentação agendada) GET /api/painel/onboar | PainelInternoRouterDeps, createPainelInternoRouter |
 | `server/src/routes/pubsub.ts` (202) | Endpoint push do Cloud Pub/Sub (Workspace Events → tópico → push aqui). | DecodedPushMessage, decodePubSubPush, OidcTokenInfo, TokenVerifier, GoogleOidcVerifier, PubSubRouterDeps +1 |
 | `server/src/routes/recallHook.ts` (127) | Webhook do Recall.ai: POST /webhooks/recall Regras do fornecedor: responder 2xx em até 15 s, reentrega por 24 h, endpoint que falha 5 dias seguidos é DESATIVADO | WebhookAnalisado, analisarCorpoWebhook, RecallHookRouterDeps, createRecallHookRouter |
-| `server/src/routes/reunioes.ts` (1024) | O botão "Entrar na reunião" do chatPro. | montarResumo, FUSO, MAX_DIAS_AGENDAMENTO, ANTECEDENCIA_CONVITE_MS, TIPOS_REUNIAO, TipoReuniao +11 |
+| `server/src/routes/reunioes.ts` (1095) | O botão "Entrar na reunião" do chatPro. | montarResumo, montarComentarioInterno, FUSO, MAX_DIAS_AGENDAMENTO, ANTECEDENCIA_CONVITE_MS, TIPOS_REUNIAO +12 |
 | `server/src/routes/review.ts` (118) | Painel de revisão local: o atendente/admin VÊ a transcrição (e ouve o áudio) ANTES de enviar pra Voreo. | ReviewRouterDeps, createReviewRouter |
 | `server/src/routes/reviewPage.ts` (1672) | HTML do painel (servido em GET /). | reviewPageHtml |
 | `server/src/stt/assemblyai.ts` (111) | Provedor AssemblyAI (alternativa mais barata). | AssemblyAiProvider |
@@ -67,16 +67,16 @@
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/content/aba-reuniao.js` (750) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
+| `extension/content/aba-reuniao.js` (766) | A aba "Reunião" — o painel do Copiloto, feito do mesmo material. | __cpmAba |
 | `extension/content/atendente.js` (349) | Quem é o atendente que está usando o chatPro agora. | __cpmAtendente |
 | `extension/content/botao-reuniao.js` (659) | Botão "reunião" na barra do chatPro. | __cpmDiag |
-| `extension/content/fluxo-reuniao.js` (3459) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
+| `extension/content/fluxo-reuniao.js` (3600) | O fluxo de marcar reunião, passo a passo, dentro da aba lateral. | __cpmFluxo |
 
 ## extension/background
 
 | Arquivo | O que resolve | Exporta |
 |---|---|---|
-| `extension/background/service-worker.js` (371) | Service worker da extensão — a ponte entre o botão no chatPro e o backend. | — |
+| `extension/background/service-worker.js` (391) | Service worker da extensão — a ponte entre o botão no chatPro e o backend. | — |
 
 ## scripts
 

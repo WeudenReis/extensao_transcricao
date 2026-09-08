@@ -349,6 +349,66 @@ export function createPainelInternoRouter(deps: PainelInternoRouterDeps): Router
     })
   );
 
+  /**
+   * O cadastro da última reunião daquele CNPJ, pra preencher o formulário.
+   *
+   * Devolve o que o atendente digitou da última vez — não é dado do painel
+   * nem consulta externa, é a memória do que este time já cadastrou. Por isso
+   * é palpite, e a tela deixa tudo editável.
+   */
+  router.get(
+    '/api/painel/ultimo-cliente',
+    assincrono(async (req, res) => {
+      const cnpj = String(req.query.cnpj ?? '');
+      if (!validarCnpj(cnpj)) {
+        res.status(400).json({ error: 'CNPJ inválido.' });
+        return;
+      }
+      res.json({ cliente: deps.db.ultimoClientePorCnpj(cnpj) });
+    })
+  );
+
+  /**
+   * O que precisa da mão do atendente: convite que não chegou ao cliente.
+   *
+   * Existe porque a falha de envio é silenciosa por desenho — o worker não
+   * repete, já que convite atrasado é pior que nenhum. Sem esta lista, quem
+   * descobre é o cliente, faltando na reunião.
+   */
+  router.get(
+    '/api/painel/pendencias',
+    assincrono(async (req, res) => {
+      const email = String(req.query.email ?? '').trim();
+      if (!email.includes('@')) {
+        res.status(400).json({ error: 'Informe ?email= do atendente.' });
+        return;
+      }
+      res.json({
+        convites: deps.db.convitesFalhados(email).map((r) => {
+          let cliente: string | null = null;
+          try {
+            const c = r.cliente_json ? JSON.parse(r.cliente_json) : null;
+            if (c && typeof c === 'object') {
+              cliente = [c.nome, c.empresa].filter((x) => typeof x === 'string' && x).join(' · ');
+            }
+          } catch {
+            // JSON quebrado: a pendência aparece sem o nome, mas aparece.
+          }
+          return {
+            id: r.id,
+            cliente: cliente || null,
+            tipo: r.tipo,
+            quando: r.reuniao_em,
+            meetUrl: r.meeting_url,
+            sessionId: r.session_id,
+            // O motivo cru ajuda a saber se adianta tentar de novo.
+            motivo: r.last_error,
+          };
+        }),
+      });
+    })
+  );
+
   // A AGENDA de quem está com a aba aberta: tudo que ele conduz, futuro e
   // passado, pra decidir onde cabe a próxima reunião.
   //

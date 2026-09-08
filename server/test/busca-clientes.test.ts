@@ -57,18 +57,23 @@ describe('buscarReunioes', () => {
     expect(db.buscarReunioes('JOÃO').length).toBe(1);
   });
 
-  it('ordena pelo horário DA REUNIÃO — a de segunda em cima, mesmo marcada antes', () => {
+  it('ordena pelo horário DA REUNIÃO — a agendada em cima, mesmo marcada antes', () => {
     db = new Db(':memory:');
-    // Marcada primeiro, mas acontece SEGUNDA (mais tarde).
-    comCliente('seg', { nome: 'Cliente Duplo' }, '2026-09-07T13:00:00.000Z');
+    // 2099 e não uma data do mês que vem: escrito com '2026-09-07' este teste
+    // passou por cinco dias e começou a falhar sozinho quando a data chegou —
+    // `created_at` (agora) passou a ser MAIOR que o agendamento, e a ordem se
+    // inverteu. Teste que depende do dia em que roda não é teste.
+    const AGENDADA = '2099-01-10T13:00:00.000Z';
+    // Marcada primeiro, mas acontece DEPOIS.
+    comCliente('agendada', { nome: 'Cliente Duplo' }, AGENDADA);
     // Marcada depois, aconteceu na hora ("agora" → sem agendada_para).
-    comCliente('hoje', { nome: 'Cliente Duplo' });
+    comCliente('agora', { nome: 'Cliente Duplo' });
 
     const r = db.buscarReunioes('cliente duplo');
-    expect(r.map((x) => x.id)).toEqual(['seg', 'hoje']);
-    expect(r[0]?.agendada_para).toBe('2026-09-07T13:00:00.000Z');
+    expect(r.map((x) => x.id)).toEqual(['agendada', 'agora']);
+    expect(r[0]?.agendada_para).toBe(AGENDADA);
     // O session_id viaja junto: é ele que abre a conversa certa no chatPro.
-    expect(r[0]?.session_id).toBe('sessao-seg');
+    expect(r[0]?.session_id).toBe('sessao-agendada');
   });
 
   it('termo curto demais devolve vazio em vez de varrer tudo', () => {
@@ -172,5 +177,116 @@ describe('contarAgendaDoAtendente', () => {
   it('email sem reuniao devolve 0', () => {
     db = new Db(':memory:');
     expect(db.contarAgendaDoAtendente('ninguem@chatpro.com.br')).toBe(0);
+  });
+});
+
+describe('ultimoClientePorCnpj', () => {
+  it('acha o cadastro mesmo com máscara diferente entre as reuniões', () => {
+    db = new Db(':memory:');
+    // A mesma pessoa digita de um jeito hoje e de outro amanhã. Comparar
+    // string acharia só metade das reuniões do mesmo cliente.
+    comCliente('antiga', {
+      nome: 'Antigo',
+      empresa: 'ACME LTDA',
+      cnpj: '12345678000190',
+      telefone: '11999998888',
+    }, '2020-01-01T13:00:00.000Z');
+    comCliente('recente', {
+      nome: 'Recente',
+      empresa: 'ACME COMERCIO LTDA',
+      cnpj: '12.345.678/0001-90',
+      telefone: '11777776666',
+      instancia: 'chatpro-abc',
+    }, '2099-01-01T13:00:00.000Z');
+
+    const c = db.ultimoClientePorCnpj('12345678000190');
+    // O MAIS RECENTE vence: telefone e instância mudam, e o cadastro velho
+    // preencheria o formulário com dado que já não vale.
+    expect(c?.empresa).toBe('ACME COMERCIO LTDA');
+    expect(c?.telefone).toBe('11777776666');
+    expect(c?.instancia).toBe('chatpro-abc');
+  });
+
+  it('CNPJ sem reunião nenhuma devolve null', () => {
+    db = new Db(':memory:');
+    comCliente('outro', { nome: 'X', cnpj: '11.222.333/0001-81' });
+    expect(db.ultimoClientePorCnpj('12345678000190')).toBeNull();
+  });
+
+  it('CNPJ incompleto devolve null sem varrer o banco', () => {
+    db = new Db(':memory:');
+    comCliente('a', { nome: 'X', cnpj: '12.345.678/0001-90' });
+    expect(db.ultimoClientePorCnpj('123456')).toBeNull();
+    expect(db.ultimoClientePorCnpj('')).toBeNull();
+  });
+
+  it('JSON quebrado não derruba a busca do cadastro', () => {
+    db = new Db(':memory:');
+    reuniao({ id: 'lixo', clienteJson: '{quebrado' });
+    comCliente('bom', { nome: 'Bom', cnpj: '12.345.678/0001-90', empresa: 'OK LTDA' });
+    expect(db.ultimoClientePorCnpj('12345678000190')?.empresa).toBe('OK LTDA');
+  });
+});
+
+describe('convitesFalhados', () => {
+  function envioFalho(meetingId: string, reuniaoEm: string, erro: string): void {
+    const id = db.criarEnvioAgendado({
+      meetingId,
+      sessionId: 'sessao-x',
+      instanceId: null,
+      message: 'oi',
+      enviarEm: reuniaoEm,
+      reuniaoEm,
+    });
+    db.marcarEnvio(id, 'falhou', erro);
+  }
+
+  it('lista só as FUTURAS, do atendente certo', () => {
+    db = new Db(':memory:');
+    comCliente('futura', { nome: 'Cliente Futuro' }, '2099-01-01T13:00:00.000Z');
+    comCliente('passada', { nome: 'Cliente Passado' }, '2020-01-01T13:00:00.000Z');
+    envioFalho('futura', '2099-01-01T13:00:00.000Z', 'sem provider');
+    // Convite de reunião que já passou não tem o que salvar: listar viraria
+    // ruído permanente na tela.
+    envioFalho('passada', '2020-01-01T13:00:00.000Z', 'sem provider');
+
+    const r = db.convitesFalhados('weuden.filho@chatpro.com.br');
+    expect(r).toHaveLength(1);
+    expect(r[0]?.reuniao_em).toBe('2099-01-01T13:00:00.000Z');
+    expect(r[0]?.last_error).toBe('sem provider');
+  });
+
+  it('convite ENVIADO não aparece', () => {
+    db = new Db(':memory:');
+    comCliente('ok', { nome: 'C' }, '2099-01-01T13:00:00.000Z');
+    const id = db.criarEnvioAgendado({
+      meetingId: 'ok',
+      sessionId: 's',
+      instanceId: null,
+      message: 'oi',
+      enviarEm: '2099-01-01T13:00:00.000Z',
+      reuniaoEm: '2099-01-01T13:00:00.000Z',
+    });
+    db.marcarEnvio(id, 'enviado');
+    expect(db.convitesFalhados('weuden.filho@chatpro.com.br')).toHaveLength(0);
+  });
+
+  it('não vaza a falha de outro atendente', () => {
+    db = new Db(':memory:');
+    db.createMeeting({
+      id: 'alheia',
+      botId: null,
+      sessionId: 's',
+      meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      meetingCode: null,
+      botName: null,
+      atendenteEmail: 'anna.souza@chatpro.com.br',
+      tipo: 'cs',
+      clienteJson: JSON.stringify({ nome: 'B' }),
+      agendadaPara: '2099-01-01T13:00:00.000Z',
+    });
+    envioFalho('alheia', '2099-01-01T13:00:00.000Z', 'erro');
+    expect(db.convitesFalhados('weuden.filho@chatpro.com.br')).toHaveLength(0);
+    expect(db.convitesFalhados('anna.souza@chatpro.com.br')).toHaveLength(1);
   });
 });

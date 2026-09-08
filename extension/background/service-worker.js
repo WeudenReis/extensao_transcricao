@@ -227,6 +227,26 @@ chrome.runtime.onMessage.addListener((msg, _remetente, responder) => {
         return;
       }
 
+      if (msg?.tipo === 'PAINEL_PENDENCIAS') {
+        const r = await chamar(
+          `/api/painel/pendencias?email=${encodeURIComponent(msg.email || '')}`
+        );
+        // Vazio quando falha: é um alerta extra, e não pode virar o motivo de
+        // a agenda não abrir.
+        responder(r.ok ? r.corpo : { convites: [] });
+        return;
+      }
+
+      if (msg?.tipo === 'ULTIMO_CLIENTE') {
+        const r = await chamar(
+          `/api/painel/ultimo-cliente?cnpj=${encodeURIComponent(msg.cnpj || '')}`
+        );
+        // Sem cliente quando falha: preencher é atalho, e errar aqui não pode
+        // atrapalhar quem já está digitando.
+        responder(r.ok ? r.corpo : { cliente: null });
+        return;
+      }
+
       if (msg?.tipo === 'PAINEL_SEMANA') {
         const r = await chamar(
           `/api/painel/semana?email=${encodeURIComponent(msg.email || '')}` +
