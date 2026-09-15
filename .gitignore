@@ -26,4 +26,6 @@ Thumbs.db
 # Cérebro visual gerado pelo Graphify (node scripts/gerar-grafo.mjs).
 # São ~2,3 MB regenerados a cada execução: versionar só criaria diffs
 # gigantes a cada mudança de código.
-grafo/
+# A barra inicial prende o padrão à RAIZ: sem ela, "grafo/" também ignorava
+# .claude/skills/grafo/, e a skill nunca chegaria ao repositório.
+/grafo/

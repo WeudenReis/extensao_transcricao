@@ -88,15 +88,16 @@ O `/webhooks/pubsub` precisa de HTTPS público: em local, túnel via ngrok ou Cl
 ## Contexto e Custo (medido neste repositório)
 
 Antes de varrer o repositório com `grep`, leia **`docs/MAPA.md`** — índice
-gerado de 63 arquivos com o que cada um resolve e o que exporta. Regerar:
+gerado de 66 arquivos com o que cada um resolve e o que exporta. Regerar:
 `node scripts/gerar-mapa.mjs`.
 
 Para ver as LIGAÇÕES entre funções, classes e imports, há o **cérebro
 visual**: `node scripts/gerar-grafo.mjs` gera `grafo/graph.html` com o
 Graphify (pré-requisito: `uv tool install graphifyy`). Roda só sobre o
 código, numa pasta limpa, sem LLM — nem `.env` nem nome de função sai da
-máquina. Não é versionado e não se atualiza sozinho: regere depois de mudar
-o código.
+máquina. Não é versionado. Pra CONSULTAR, use `node scripts/grafo.mjs` — ele
+regenera sozinho se o código mudou. Quando vale e quando não vale, medido:
+`.claude/skills/grafo`.
 
 Antes de sondar a API do painel por tentativa e erro, leia
 **`docs/CAMPOS-DO-PAINEL.md`** — o schema já foi mapeado campo a campo,
@@ -108,6 +109,9 @@ Regras que saíram de medição, não de gosto:
 |---|---|---|
 | `npx vitest run --reporter=dot 2>&1 \| tail -4` | a saída inteira | 55 mil chars contra 367 mil |
 | `grep -n` + `sed -n 'X,Yp'` | `cat` no arquivo | `fluxo-reuniao.js` tem 104 mil chars |
+| `node scripts/grafo.mjs explain X` pra entender função grande | ler a função com `sed` | `passoDados`: 2 mil chars contra 35 mil |
+| `node scripts/grafo.mjs affected X` antes de mudar assinatura | grep em rodadas | 15 dependentes em 1,5 mil chars, uma chamada |
+| `grep -n "nome"` (sem parêntese) pra achar TODOS os usos antes de editar | `explain` | o grafo dá uma linha por ligação: mostrou 2 dos 3 usos de `formatarTelefone` |
 | `npx tsc --noEmit 2>&1 \| head -5` | a lista completa | os primeiros erros bastam |
 | Exigir formato curto do subagente | prosa livre | cada workflow devolveu 600 mil+ tokens |
 
@@ -119,7 +123,8 @@ e `error` continuam ligados porque há testes que os verificam.
 de uma premissa errada, o resultado real de um teste, e os comentários do
 código. Cada comentário longo deste repo corresponde a um bug que já aconteceu.
 
-Skills: `.claude/skills/economia` (contexto) e `.claude/skills/enxuto` (código).
+Skills: `.claude/skills/economia` (contexto), `.claude/skills/enxuto` (código) e
+`.claude/skills/grafo` (quando consultar o cérebro visual em vez de ler arquivo).
 
 ## Protocolos de Skills
 

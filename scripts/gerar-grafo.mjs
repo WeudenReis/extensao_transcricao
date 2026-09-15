@@ -7,18 +7,19 @@
  * nome oficial no PyPI, apontado pelo próprio repositório Graphify-Labs).
  *
  * Diferente do docs/MAPA.md (índice enxuto, pensado pra consulta rápida), isto
- * liga cada função, classe e import num grafo navegável. Não se atualiza
- * sozinho: rode de novo depois de mudar o código.
+ * liga cada função, classe e import num grafo navegável. Pra CONSULTAR, use
+ * `node scripts/grafo.mjs`, que chama este script sozinho quando o código
+ * mudou.
  *
  * Três decisões que moram aqui:
  *
- * 1. PASTA LIMPA. O Graphify não documenta modo só-código nem arquivo de
- *    ignore, e processa docs/PDF/imagem com um LLM quando os encontra. Em vez
- *    de confiar em comportamento não documentado, copiamos só .ts/.js/.mjs de
- *    código pra uma pasta temporária: sem .env, sem .md, sem banco. Nada
- *    sensível pode ser lido, e nada que dispare chamada a IA existe ali.
+ * 1. PASTA LIMPA. O CLI tem `extract --code-only` e lê .graphifyignore, mas
+ *    o comportamento padrão manda docs/PDF/imagem pra um LLM. Usamos o
+ *    --code-only E uma pasta temporária só com .ts/.js/.mjs: sem .env, sem
+ *    .md, sem banco. Se uma versão futura mudar o que o --code-only faz, a
+ *    pasta limpa continua garantindo que não há nada sensível pra ler.
  *
- * 2. SEM LLM. `update --no-cluster` extrai com tree-sitter, localmente, e
+ * 2. SEM LLM. `extract --code-only` extrai com tree-sitter, localmente, e
  *    `cluster-only --no-label` agrupa sem pedir nomes a uma IA. As chaves de
  *    API ainda são retiradas do ambiente do processo, por garantia: nem nome
  *    de função sai da máquina.
@@ -46,15 +47,8 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
+import { RAIZ, arquivosDeCodigo } from './grafo-fontes.mjs';
 
-const RAIZ = join(import.meta.dirname, '..');
-const PASTAS = [
-  'server/src',
-  'extension/content',
-  'extension/background',
-  'extension/popup',
-  'scripts',
-];
 // O nome da pasta de palco vira o prefixo dos caminhos dentro do grafo.
 const NOME = 'extensao_transcricao';
 const TMP = join(tmpdir(), 'grafo-extensao');
@@ -66,21 +60,14 @@ rmSync(TMP, { recursive: true, force: true });
 mkdirSync(PALCO, { recursive: true });
 
 let copiados = 0;
-function copiar(dir) {
-  for (const item of readdirSync(dir)) {
-    const p = join(dir, item);
-    if (/node_modules|[\\/]dist$|[\\/]data$/.test(p)) continue;
-    if (statSync(p).isDirectory()) {
-      copiar(p);
-    } else if (/\.(ts|js|mjs)$/.test(item) && !/\.test\.ts$/.test(item)) {
-      const destino = join(PALCO, relative(RAIZ, p));
-      mkdirSync(dirname(destino), { recursive: true });
-      cpSync(p, destino);
-      copiados += 1;
-    }
-  }
+// A lista vem de grafo-fontes.mjs, a mesma que o grafo.mjs usa pra decidir se
+// o grafo está velho. Duas listas escritas à mão divergiriam em silêncio.
+for (const p of arquivosDeCodigo()) {
+  const destino = join(PALCO, relative(RAIZ, p));
+  mkdirSync(dirname(destino), { recursive: true });
+  cpSync(p, destino);
+  copiados += 1;
 }
-for (const pasta of PASTAS) copiar(join(RAIZ, pasta));
 
 // ── Trava: confere o que está NO PALCO, não o que foi filtrado ────────────
 // O filtro acima já deveria bastar. A checagem existe pelo mesmo motivo da
@@ -156,7 +143,13 @@ function graphify(args) {
 }
 
 console.log(`Palco: ${copiados} arquivos de código. Extraindo (tree-sitter, local)...`);
-graphify(['update', NOME, '--no-cluster']);
+// `extract --code-only`, e não `update`. O grafo do `update` saía com o aviso
+// "pre-#1504 node-ID scheme ... fixes same-name-file collisions", e este
+// repositório tem quatro client.ts (painel, chatpro, recall, voreo). Com o
+// `extract`, `explain "client.ts"` responde "Ambiguous" e lista os quatro.
+// `--force` pula manifesto e cache de rodada anterior. O palco é recriado a
+// cada vez, então é só garantia.
+graphify(['extract', NOME, '--code-only', '--force', '--no-cluster']);
 console.log('Agrupando (sem nomeação por IA)...');
 graphify(['cluster-only', NOME, '--no-label']);
 
@@ -190,13 +183,15 @@ const AREAS = {
 };
 
 function areaDe(arquivo) {
-  // extensao_transcricao/server/src/painel/client.ts
-  const partes = arquivo.split('/');
-  if (partes[1] === 'extension') return 'Extensão';
-  if (partes[1] === 'scripts') return 'Script';
-  if (partes[1] === 'server') {
-    if (partes.length === 4) return 'Servidor'; // server/src/db.ts
-    return AREAS[partes[3]] ?? partes[3];
+  // O `extract` grava "server/src/painel/client.ts"; o antigo `update` gravava
+  // com o nome do palco na frente. Sem tirar o prefixo, a troca de comando fez
+  // os grupos virarem "Outro". O grafo ficou ilegível, e nenhum erro apareceu.
+  const partes = arquivo.replace(new RegExp(`^${NOME}/`), '').split('/');
+  if (partes[0] === 'extension') return 'Extensão';
+  if (partes[0] === 'scripts') return 'Script';
+  if (partes[0] === 'server') {
+    if (partes.length === 3) return 'Servidor'; // server/src/db.ts
+    return AREAS[partes[2]] ?? partes[2];
   }
   return 'Outro';
 }
