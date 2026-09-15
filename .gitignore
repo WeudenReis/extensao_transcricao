@@ -22,3 +22,8 @@ server/data/
 *.log
 .DS_Store
 Thumbs.db
+
+# Cérebro visual gerado pelo Graphify (node scripts/gerar-grafo.mjs).
+# São ~2,3 MB regenerados a cada execução: versionar só criaria diffs
+# gigantes a cada mudança de código.
+grafo/

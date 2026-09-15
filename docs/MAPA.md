@@ -85,6 +85,7 @@
 | `scripts/checar-css.mjs` (60) | Trava contra o erro que já quebrou o arquivo DUAS vezes: crase dentro do bloco de CSS. | — |
 | `scripts/checar-mensagens.mjs` (110) | Duas travas sobre a ponte entre a aba e o service worker. | — |
 | `scripts/configurar-segredo.mjs` (160) | Grava o signing secret do Recall no server/.env, reinicia o servidor e confere a assinatura de ponta a ponta — tudo num comando. | — |
+| `scripts/gerar-grafo.mjs` (254) | Gera o CÉREBRO VISUAL do repositório com o Graphify: grafo/graph.html. | — |
 | `scripts/gerar-id-extensao.mjs` (57) | Gera um par de chaves e fixa o ID da extensão no manifest.json. | — |
 | `scripts/gerar-mapa.mjs` (108) | Gera `docs/MAPA.md` — o índice do repositório. | — |
 | `scripts/recuperar.mjs` (106) | Pergunta ao Recall o que aconteceu com as reuniões que ficaram paradas, e recupera as transcrições que o webhook não trouxe. | — |
@@ -93,4 +94,4 @@
 
 ---
 
-65 arquivos indexados.
+66 arquivos indexados.

@@ -91,6 +91,13 @@ Antes de varrer o repositório com `grep`, leia **`docs/MAPA.md`** — índice
 gerado de 63 arquivos com o que cada um resolve e o que exporta. Regerar:
 `node scripts/gerar-mapa.mjs`.
 
+Para ver as LIGAÇÕES entre funções, classes e imports, há o **cérebro
+visual**: `node scripts/gerar-grafo.mjs` gera `grafo/graph.html` com o
+Graphify (pré-requisito: `uv tool install graphifyy`). Roda só sobre o
+código, numa pasta limpa, sem LLM — nem `.env` nem nome de função sai da
+máquina. Não é versionado e não se atualiza sozinho: regere depois de mudar
+o código.
+
 Antes de sondar a API do painel por tentativa e erro, leia
 **`docs/CAMPOS-DO-PAINEL.md`** — o schema já foi mapeado campo a campo,
 inclusive os doze nomes que **não** existem.
